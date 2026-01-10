@@ -2,6 +2,8 @@
 name = "signaling-server"
 version = "0.1.0"
 edition = "2021"
+description = "WebSocket signaling server for Roommate P2P voice chat"
+authors = ["Pey-K"]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
