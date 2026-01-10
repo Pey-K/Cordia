@@ -1,12 +1,15 @@
-# Build stage
-FROM rust:1.75 as builder
+# Build stage - use slim image
+FROM rust:1.75-slim as builder
+
+# Install minimal build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy manifests
-COPY Cargo.toml Cargo.lock* ./
-
-# Copy source code
+# Copy everything
+COPY Cargo.toml ./
 COPY src ./src
 
 # Build for release
