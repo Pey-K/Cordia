@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
-import { checkSignalingServer, getDefaultSignalingServer } from '../lib/tauri'
+import { checkSignalingServer, getSignalingServerUrl } from '../lib/tauri'
 
 export type SignalingStatus = 'connected' | 'disconnected' | 'checking'
 
@@ -27,9 +27,11 @@ export function SignalingProvider({ children }: { children: ReactNode }) {
   }
 
   useEffect(() => {
-    // Load default signaling server URL
-    getDefaultSignalingServer().then(url => {
+    // Load saved signaling server URL
+    getSignalingServerUrl().then(url => {
       setSignalingUrl(url)
+    }).catch(error => {
+      console.error('Failed to load signaling URL:', error)
     })
   }, [])
 

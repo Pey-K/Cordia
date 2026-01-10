@@ -116,3 +116,11 @@ export async function checkSignalingServer(url?: string): Promise<boolean> {
 export async function getDefaultSignalingServer(): Promise<string> {
   return await invoke('get_default_signaling_server')
 }
+
+export async function getSignalingServerUrl(): Promise<string> {
+  return await invoke('get_signaling_server_url')
+}
+
+export async function setSignalingServerUrl(url: string): Promise<void> {
+  return await invoke('set_signaling_server_url', { url })
+}

@@ -1,12 +1,13 @@
 import { Link } from 'react-router-dom'
 import { useState } from 'react'
-import { ArrowLeft, User, Volume2, Info } from 'lucide-react'
+import { ArrowLeft, User, Volume2, Info, Wifi } from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { AccountSettings } from './settings/AccountSettings'
 import { AudioSettingsPage } from './settings/AudioSettings'
 import { InfoExportSettings } from './settings/InfoExportSettings'
+import { ConnectionSettings } from './settings/ConnectionSettings'
 
-type SettingsPage = 'account' | 'audio' | 'info'
+type SettingsPage = 'account' | 'audio' | 'connections' | 'info'
 
 function SettingsPage() {
   const [activePage, setActivePage] = useState<SettingsPage>('account')
@@ -14,6 +15,7 @@ function SettingsPage() {
   const pages: { id: SettingsPage; label: string; icon: typeof User }[] = [
     { id: 'account', label: 'Account', icon: User },
     { id: 'audio', label: 'Audio', icon: Volume2 },
+    { id: 'connections', label: 'Connections', icon: Wifi },
     { id: 'info', label: 'Info & Export', icon: Info },
   ]
 
@@ -76,6 +78,7 @@ function SettingsPage() {
             <div key={activePage} className="animate-fade-in">
               {activePage === 'account' && <AccountSettings />}
               {activePage === 'audio' && <AudioSettingsPage />}
+              {activePage === 'connections' && <ConnectionSettings />}
               {activePage === 'info' && <InfoExportSettings />}
             </div>
           </div>

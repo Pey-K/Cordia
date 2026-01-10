@@ -1,9 +1,6 @@
 #!/bin/sh
 set -e
 
-# Default PUID and PGID
-PUID=${PUID:-1000}
-PGID=${PGID:-1000}
 
 # Create group if it doesn't exist
 if ! getent group roommate >/dev/null 2>&1; then

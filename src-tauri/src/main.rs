@@ -141,6 +141,50 @@ fn get_default_signaling_server() -> String {
     get_default_signaling_url()
 }
 
+#[tauri::command]
+async fn get_signaling_server_url(app_handle: tauri::AppHandle) -> Result<String, String> {
+    let config_dir = app_handle.path_resolver().app_config_dir()
+        .ok_or_else(|| "Could not determine config directory".to_string())?;
+
+    let config_file = config_dir.join("signaling.json");
+
+    if !config_file.exists() {
+        // Return default if no custom URL is saved
+        return Ok(get_default_signaling_url());
+    }
+
+    let content = std::fs::read_to_string(config_file)
+        .map_err(|e| format!("Failed to read signaling config: {}", e))?;
+
+    let config: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse signaling config: {}", e))?;
+
+    Ok(config.get("url")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&get_default_signaling_url())
+        .to_string())
+}
+
+#[tauri::command]
+async fn set_signaling_server_url(app_handle: tauri::AppHandle, url: String) -> Result<(), String> {
+    let config_dir = app_handle.path_resolver().app_config_dir()
+        .ok_or_else(|| "Could not determine config directory".to_string())?;
+
+    std::fs::create_dir_all(&config_dir)
+        .map_err(|e| format!("Failed to create config directory: {}", e))?;
+
+    let config_file = config_dir.join("signaling.json");
+
+    let config = serde_json::json!({
+        "url": url
+    });
+
+    std::fs::write(config_file, serde_json::to_string_pretty(&config).unwrap())
+        .map_err(|e| format!("Failed to write signaling config: {}", e))?;
+
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -160,7 +204,9 @@ fn main() {
             add_room,
             remove_room,
             check_signaling_server,
-            get_default_signaling_server
+            get_default_signaling_server,
+            get_signaling_server_url,
+            set_signaling_server_url
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
