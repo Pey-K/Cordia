@@ -233,6 +233,15 @@ async fn handle_message(
 
 #[tokio::main]
 async fn main() {
+    // Healthcheck mode: exit 0 if server is running (port in use), exit 1 if not
+    if std::env::args().any(|a| a == "--healthcheck") {
+        use std::net::TcpListener;
+        match TcpListener::bind("127.0.0.1:9001") {
+            Ok(_) => std::process::exit(1), // Port free = server NOT running
+            Err(_) => std::process::exit(0), // Port in use = server IS running (healthy)
+        }
+    }
+
     env_logger::init();
 
     let addr: SocketAddr = "0.0.0.0:9001".parse().expect("Invalid address");

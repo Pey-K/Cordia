@@ -18,7 +18,7 @@ services:
       - "9001:9001"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "echo > /dev/tcp/127.0.0.1/9001"]
+      test: ["/app/signaling-server", "--healthcheck"]
       interval: 10s
       timeout: 3s
       retries: 5
