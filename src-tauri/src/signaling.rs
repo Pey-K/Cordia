@@ -21,46 +21,43 @@ pub enum SignalingStatus {
 
 /// Check if signaling server is available at the given URL
 pub async fn check_signaling_health(url: &str) -> Result<bool, SignalingError> {
-    // For now, we'll do a simple TCP connection check
-    // In the future, we can upgrade this to a WebSocket handshake
+    let timeout = Duration::from_secs(5);
 
-    let timeout = Duration::from_secs(3);
-
-    // Parse the URL to extract host and port
-    let url_str = if url.starts_with("ws://") || url.starts_with("wss://") {
-        url
-    } else {
+    // Parse the URL to validate it
+    if !url.starts_with("ws://") && !url.starts_with("wss://") {
         return Err(SignalingError::InvalidUrl(
             "URL must start with ws:// or wss://".to_string()
         ));
+    }
+
+    // Convert ws:// to http:// and wss:// to https:// for health check
+    let http_url = if url.starts_with("wss://") {
+        url.replace("wss://", "https://")
+    } else {
+        url.replace("ws://", "http://")
     };
 
-    // Extract host:port from ws://host:port
-    let url_without_scheme = url_str
-        .trim_start_matches("ws://")
-        .trim_start_matches("wss://");
+    // Add /health endpoint
+    let health_url = format!("{}/health", http_url.trim_end_matches('/'));
 
-    let host_port = url_without_scheme
-        .split('/')
-        .next()
-        .ok_or_else(|| SignalingError::InvalidUrl("Invalid URL format".to_string()))?;
+    // Try HTTP health check first (works through proxies/tunnels)
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| SignalingError::ConnectionFailed(e.to_string()))?;
 
-    // Try to establish TCP connection with timeout
-    match tokio::time::timeout(
-        timeout,
-        tokio::net::TcpStream::connect(host_port)
-    ).await {
-        Ok(Ok(_stream)) => {
-            // Successfully connected
-            Ok(true)
+    match client.get(&health_url).send().await {
+        Ok(response) => {
+            if response.status().is_success() {
+                Ok(true)
+            } else {
+                Err(SignalingError::ConnectionFailed(
+                    format!("HTTP {} from health endpoint", response.status())
+                ))
+            }
         }
-        Ok(Err(e)) => {
-            // Connection failed
+        Err(e) => {
             Err(SignalingError::ConnectionFailed(e.to_string()))
-        }
-        Err(_) => {
-            // Timeout
-            Err(SignalingError::Timeout)
         }
     }
 }
