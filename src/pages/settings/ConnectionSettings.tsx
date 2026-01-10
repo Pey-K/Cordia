@@ -22,7 +22,14 @@ export function ConnectionSettings() {
     setIsSaving(true)
     setSaveMessage('')
     try {
-      await setSignalingServerUrl(url)
+      // Ensure URL has ws:// prefix
+      let formattedUrl = url.trim()
+      if (!formattedUrl.startsWith('ws://') && !formattedUrl.startsWith('wss://')) {
+        formattedUrl = `ws://${formattedUrl}`
+      }
+
+      await setSignalingServerUrl(formattedUrl)
+      setUrl(formattedUrl) // Update the input to show formatted URL
       setSaveMessage('Saved successfully!')
       setTimeout(() => setSaveMessage(''), 3000)
       // Trigger health check with new URL
