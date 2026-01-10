@@ -30,10 +30,10 @@ services:
       - "9001:9001"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "9001"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      test: ["CMD", "curl", "-f", "http://localhost:9001/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
       start_period: 10s
 
 networks: {}
@@ -85,10 +85,10 @@ services:
       - "9001:9001"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "9001"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      test: ["CMD", "curl", "-f", "http://localhost:9001/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
       start_period: 10s
 
 networks: {}

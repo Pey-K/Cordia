@@ -6,12 +6,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
+use hyper::service::{make_service_fn, service_fn};
+use hyper::{Body, Request, Response, Server, StatusCode};
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
-use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::WebSocketStream;
 
 type PeerId = String;
 type HouseId = String;
@@ -118,21 +117,20 @@ impl ServerState {
 }
 
 type SharedState = Arc<Mutex<ServerState>>;
-type WebSocket = WebSocketStream<TcpStream>;
 
 async fn handle_connection(
-    ws: WebSocket,
+    ws: hyper_tungstenite::WebSocketStream<hyper::upgrade::Upgraded>,
     addr: SocketAddr,
     state: SharedState,
 ) {
-    info!("New connection from {}", addr);
+    info!("WebSocket connection established from {}", addr);
 
     let (mut ws_sender, mut ws_receiver) = ws.split();
     let mut current_peer_id: Option<PeerId> = None;
 
     while let Some(msg_result) = ws_receiver.next().await {
         match msg_result {
-            Ok(Message::Text(text)) => {
+            Ok(hyper_tungstenite::tungstenite::Message::Text(text)) => {
                 match serde_json::from_str::<SignalingMessage>(&text) {
                     Ok(msg) => {
                         match handle_message(msg, &mut current_peer_id, &state, &mut ws_sender).await {
@@ -143,7 +141,7 @@ async fn handle_connection(
                                     message: e.to_string(),
                                 };
                                 if let Ok(json) = serde_json::to_string(&error_msg) {
-                                    let _ = ws_sender.send(Message::Text(json)).await;
+                                    let _ = ws_sender.send(hyper_tungstenite::tungstenite::Message::Text(json)).await;
                                 }
                             }
                         }
@@ -154,17 +152,17 @@ async fn handle_connection(
                             message: format!("Invalid message format: {}", e),
                         };
                         if let Ok(json) = serde_json::to_string(&error_msg) {
-                            let _ = ws_sender.send(Message::Text(json)).await;
+                            let _ = ws_sender.send(hyper_tungstenite::tungstenite::Message::Text(json)).await;
                         }
                     }
                 }
             }
-            Ok(Message::Close(_)) => {
+            Ok(hyper_tungstenite::tungstenite::Message::Close(_)) => {
                 info!("Client {} closed connection", addr);
                 break;
             }
-            Ok(Message::Ping(data)) => {
-                let _ = ws_sender.send(Message::Pong(data)).await;
+            Ok(hyper_tungstenite::tungstenite::Message::Ping(data)) => {
+                let _ = ws_sender.send(hyper_tungstenite::tungstenite::Message::Pong(data)).await;
             }
             Ok(_) => {}
             Err(e) => {
@@ -186,7 +184,10 @@ async fn handle_message(
     msg: SignalingMessage,
     current_peer_id: &mut Option<PeerId>,
     state: &SharedState,
-    ws_sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    ws_sender: &mut futures_util::stream::SplitSink<
+        hyper_tungstenite::WebSocketStream<hyper::upgrade::Upgraded>,
+        hyper_tungstenite::tungstenite::Message,
+    >,
 ) -> Result<(), String> {
     match msg {
         SignalingMessage::Register { house_id, peer_id } => {
@@ -205,7 +206,7 @@ async fn handle_message(
                 .map_err(|e| format!("Failed to serialize response: {}", e))?;
 
             ws_sender
-                .send(Message::Text(json))
+                .send(hyper_tungstenite::tungstenite::Message::Text(json))
                 .await
                 .map_err(|e| format!("Failed to send response: {}", e))?;
 
@@ -234,27 +235,64 @@ async fn handle_message(
 async fn main() {
     env_logger::init();
 
-    let addr = "127.0.0.1:9001";
-    let listener = TcpListener::bind(addr)
-        .await
-        .expect("Failed to bind to address");
-
-    info!("Signaling server listening on ws://{}", addr);
-
+    let addr: SocketAddr = "0.0.0.0:9001".parse().expect("Invalid address");
     let state = Arc::new(Mutex::new(ServerState::new()));
 
-    while let Ok((stream, addr)) = listener.accept().await {
+    let make_svc = make_service_fn(move |_conn| {
         let state = state.clone();
+        async move {
+            Ok::<_, hyper::Error>(service_fn(move |req| {
+                let state = state.clone();
+                handle_request(req, state)
+            }))
+        }
+    });
 
+    let server = Server::bind(&addr).serve(make_svc);
+
+    info!("Signaling server listening on http://{}", addr);
+    info!("WebSocket endpoint: ws://{}", addr);
+    info!("Health check: http://{}/health", addr);
+
+    if let Err(e) = server.await {
+        error!("Server error: {}", e);
+    }
+}
+
+async fn handle_request(
+    mut req: Request<Body>,
+    state: SharedState,
+) -> Result<Response<Body>, hyper::Error> {
+    // Health check endpoint
+    if req.uri().path() == "/health" {
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::from("ok"))
+            .unwrap());
+    }
+
+    // WebSocket upgrade
+    if hyper_tungstenite::is_upgrade_request(&req) {
+        let (response, websocket) = hyper_tungstenite::upgrade(&mut req, None)
+            .map_err(|e| {
+                error!("WebSocket upgrade error: {}", e);
+                e
+            })?;
+
+        // Spawn a task to handle the WebSocket connection
         tokio::spawn(async move {
-            match tokio_tungstenite::accept_async(stream).await {
-                Ok(ws) => {
-                    handle_connection(ws, addr, state).await;
-                }
-                Err(e) => {
-                    error!("Failed to accept WebSocket connection: {}", e);
-                }
+            if let Ok(ws) = websocket.await {
+                let addr = "0.0.0.0:9001".parse().unwrap(); // Placeholder for actual client addr
+                handle_connection(ws, addr, state).await;
             }
         });
+
+        return Ok(response);
     }
+
+    // Default response for other requests
+    Ok(Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .body(Body::from("Not found. Use /health for health check or upgrade to WebSocket."))
+        .unwrap())
 }
