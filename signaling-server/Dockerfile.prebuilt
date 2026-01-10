@@ -1,0 +1,27 @@
+# Runtime-only dockerfile for prebuilt binaries
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    gosu \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy the prebuilt binary from GitHub Actions
+COPY target/release/signaling-server /app/signaling-server
+
+# Copy entrypoint script
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+# Expose WebSocket port
+EXPOSE 9001
+
+# Set environment variables
+ENV RUST_LOG=info
+ENV PUID=1000
+ENV PGID=1000
+
+# Use entrypoint script
+ENTRYPOINT ["/app/entrypoint.sh"]
