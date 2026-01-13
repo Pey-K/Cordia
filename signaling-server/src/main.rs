@@ -19,6 +19,23 @@ type HouseId = String;
 type SigningPubkey = String;
 type WebSocketSender = mpsc::UnboundedSender<hyper_tungstenite::tungstenite::Message>;
 
+fn decode_path_segment(seg: &str) -> String {
+    urlencoding::decode(seg)
+        .map(|s| s.into_owned())
+        .unwrap_or_else(|_| seg.to_string())
+}
+
+/// Simple invite codes: deterministic, short, and human-shareable.
+/// NOTE: This is not meant to be cryptographic; it's a lookup key into server-side mappings.
+fn derive_invite_code(signing_pubkey: &str) -> String {
+    signing_pubkey
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_uppercase())
+        .take(18)
+        .collect()
+}
+
 // ============================================
 // WebSocket Signaling Messages
 // ============================================
@@ -30,6 +47,8 @@ enum SignalingMessage {
     Register {
         house_id: HouseId,
         peer_id: PeerId,
+        #[serde(default)]
+        signing_pubkey: Option<SigningPubkey>,
     },
     /// SDP offer from one peer to another
     Offer {
@@ -63,6 +82,14 @@ enum SignalingMessage {
         house_id: HouseId,
         member_user_id: String,
         member_display_name: String,
+    },
+
+    /// Broadcast when a house hint (snapshot) is updated via REST API
+    HouseHintUpdated {
+        signing_pubkey: SigningPubkey,
+        encrypted_state: String,
+        signature: String,
+        last_updated: DateTime<Utc>,
     },
 }
 
@@ -105,6 +132,7 @@ struct AckRequest {
 struct PeerConnection {
     peer_id: PeerId,
     house_id: HouseId,
+    signing_pubkey: Option<SigningPubkey>,
 }
 
 const EVENT_RETENTION_DAYS: i64 = 30;
@@ -116,12 +144,16 @@ struct ServerState {
     peers: HashMap<PeerId, PeerConnection>,
     /// Map of house_id -> list of peer_ids in that house
     houses: HashMap<HouseId, Vec<PeerId>>,
+    /// Map of signing_pubkey -> list of peer_ids subscribed to that house
+    signing_houses: HashMap<SigningPubkey, Vec<PeerId>>,
     /// Map of peer_id -> WebSocket sender (for message forwarding)
     peer_senders: HashMap<PeerId, WebSocketSender>,
 
     // === Event queue state (REST API) ===
     /// Hints only - clients treat local state as authoritative
     house_hints: HashMap<SigningPubkey, EncryptedHouseHint>,
+    /// Invite-code lookup (short code -> signing_pubkey)
+    invite_codes: HashMap<String, SigningPubkey>,
     /// Event queue - time-limited, not consensus-based
     event_queues: HashMap<SigningPubkey, Vec<HouseEvent>>,
     /// Best-effort acks - soft tracking, not hard requirement
@@ -133,20 +165,28 @@ impl ServerState {
         Self {
             peers: HashMap::new(),
             houses: HashMap::new(),
+            signing_houses: HashMap::new(),
             peer_senders: HashMap::new(),
             house_hints: HashMap::new(),
+            invite_codes: HashMap::new(),
             event_queues: HashMap::new(),
             member_acks: HashMap::new(),
         }
     }
 
-    fn register_peer(&mut self, peer_id: PeerId, house_id: HouseId) -> Vec<PeerId> {
+    fn register_peer(
+        &mut self,
+        peer_id: PeerId,
+        house_id: HouseId,
+        signing_pubkey: Option<SigningPubkey>,
+    ) -> Vec<PeerId> {
         // Add peer connection
         self.peers.insert(
             peer_id.clone(),
             PeerConnection {
                 peer_id: peer_id.clone(),
                 house_id: house_id.clone(),
+                signing_pubkey: signing_pubkey.clone(),
             },
         );
 
@@ -154,6 +194,14 @@ impl ServerState {
         let peers_in_house = self.houses.entry(house_id.clone()).or_insert_with(Vec::new);
         if !peers_in_house.contains(&peer_id) {
             peers_in_house.push(peer_id.clone());
+        }
+
+        // If a signing_pubkey was provided, treat this peer as subscribed for house-hint broadcasts
+        if let Some(spk) = signing_pubkey {
+            let peers_for_signing = self.signing_houses.entry(spk).or_insert_with(Vec::new);
+            if !peers_for_signing.contains(&peer_id) {
+                peers_for_signing.push(peer_id.clone());
+            }
         }
 
         // Return other peers in the same house
@@ -173,9 +221,42 @@ impl ServerState {
                     self.houses.remove(&conn.house_id);
                 }
             }
+
+            // Remove from signing house list (if subscribed)
+            if let Some(spk) = conn.signing_pubkey {
+                if let Some(peers_for_signing) = self.signing_houses.get_mut(&spk) {
+                    peers_for_signing.retain(|p| p != peer_id);
+                    if peers_for_signing.is_empty() {
+                        self.signing_houses.remove(&spk);
+                    }
+                }
+            }
         }
         // Remove WebSocket sender
         self.peer_senders.remove(peer_id);
+    }
+
+    fn broadcast_house_hint_updated(&self, signing_pubkey: &SigningPubkey, hint: &EncryptedHouseHint) {
+        let Some(peers) = self.signing_houses.get(signing_pubkey) else {
+            return;
+        };
+
+        let msg = SignalingMessage::HouseHintUpdated {
+            signing_pubkey: signing_pubkey.clone(),
+            encrypted_state: hint.encrypted_state.clone(),
+            signature: hint.signature.clone(),
+            last_updated: hint.last_updated,
+        };
+
+        let Ok(json) = serde_json::to_string(&msg) else {
+            return;
+        };
+
+        for peer_id in peers {
+            if let Some(sender) = self.peer_senders.get(peer_id) {
+                let _ = sender.send(hyper_tungstenite::tungstenite::Message::Text(json.clone()));
+            }
+        }
     }
 
     fn get_house(&self, peer_id: &PeerId) -> Option<HouseId> {
@@ -189,9 +270,35 @@ impl ServerState {
         self.house_hints.insert(signing_pubkey, hint);
     }
 
+    fn register_invite_code(&mut self, hint: &EncryptedHouseHint) {
+        let code = derive_invite_code(&hint.signing_pubkey);
+        self.invite_codes.insert(code, hint.signing_pubkey.clone());
+    }
+
     /// Get house hint
     fn get_house_hint(&self, signing_pubkey: &str) -> Option<&EncryptedHouseHint> {
         self.house_hints.get(signing_pubkey)
+    }
+
+    fn resolve_invite_code(&self, code: &str) -> Option<SigningPubkey> {
+        if let Some(spk) = self.invite_codes.get(code).cloned() {
+            return Some(spk);
+        }
+
+        // Fallback: resolve by scanning known house hints.
+        // This avoids brittle "must-have-mapping" behavior; the mapping can always be derived from signing_pubkey.
+        let mut match_spk: Option<SigningPubkey> = None;
+        for signing_pubkey in self.house_hints.keys() {
+            if derive_invite_code(signing_pubkey) == code {
+                if match_spk.is_some() {
+                    warn!("Invite code collision for code={} (multiple houses match)", code);
+                    // Return first match; collisions should be extremely rare with 18 chars.
+                    break;
+                }
+                match_spk = Some(signing_pubkey.clone());
+            }
+        }
+        match_spk
     }
 
     /// Post event to queue
@@ -340,9 +447,9 @@ async fn handle_message(
     sender: &WebSocketSender,
 ) -> Result<(), String> {
     match msg {
-        SignalingMessage::Register { house_id, peer_id } => {
+        SignalingMessage::Register { house_id, peer_id, signing_pubkey } => {
             let mut state = state.lock().await;
-            let peers = state.register_peer(peer_id.clone(), house_id.clone());
+            let peers = state.register_peer(peer_id.clone(), house_id.clone(), signing_pubkey);
 
             // Store the sender for this peer
             state.peer_senders.insert(peer_id.clone(), sender.clone());
@@ -446,28 +553,77 @@ async fn handle_api_request(
     let path = req.uri().path().to_string();
     let method = req.method().clone();
 
-    // Parse path: /api/houses/{signing_pubkey}/...
+    // Parse path: /api/...
     let path_parts: Vec<&str> = path.split('/').collect();
 
     // Check if it's an API request
-    if path_parts.len() < 4 || path_parts[1] != "api" || path_parts[2] != "houses" {
+    if path_parts.len() < 3 || path_parts[1] != "api" {
         return Ok(Response::builder()
             .status(StatusCode::NOT_FOUND)
             .body(Body::from("API endpoint not found"))
             .unwrap());
     }
 
-    let signing_pubkey = path_parts[3].to_string();
-    let endpoint = path_parts.get(4).map(|s| *s);
+    match path_parts[2] {
+        // GET /api/invites/{code} - Resolve short invite code to signing_pubkey
+        "invites" => {
+            if path_parts.len() < 4 {
+                return Ok(Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .body(Body::from("Invite endpoint not found"))
+                    .unwrap());
+            }
 
-    match (method, endpoint) {
+            let code = path_parts[3].trim().to_ascii_uppercase();
+            if method != Method::GET {
+                return Ok(Response::builder()
+                    .status(StatusCode::METHOD_NOT_ALLOWED)
+                    .body(Body::from("Method not allowed"))
+                    .unwrap());
+            }
+
+            let state = state.lock().await;
+            match state.resolve_invite_code(&code) {
+                Some(signing_pubkey) => {
+                    let json = serde_json::to_string(&serde_json::json!({ "signing_pubkey": signing_pubkey }))
+                        .unwrap();
+                    Ok(Response::builder()
+                        .status(StatusCode::OK)
+                        .header("Content-Type", "application/json")
+                        .body(Body::from(json))
+                        .unwrap())
+                }
+                None => Ok(Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .body(Body::from("Invite code not found"))
+                    .unwrap()),
+            }
+        }
+        // /api/houses/{signing_pubkey}/...
+        "houses" => {
+            if path_parts.len() < 4 {
+                return Ok(Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .body(Body::from("House endpoint not found"))
+                    .unwrap());
+            }
+
+            let signing_pubkey = decode_path_segment(path_parts[3]);
+            let endpoint = path_parts.get(4).map(|s| *s);
+
+            match (method, endpoint) {
         // POST /api/houses/{signing_pubkey}/register - Register/update house hint
         (Method::POST, Some("register")) => {
             let body_bytes = hyper::body::to_bytes(req.into_body()).await?;
             match serde_json::from_slice::<EncryptedHouseHint>(&body_bytes) {
                 Ok(hint) => {
                     let mut state = state.lock().await;
-                    state.register_house_hint(signing_pubkey, hint);
+                    // Store the hint
+                    state.register_house_hint(signing_pubkey.clone(), hint.clone());
+                    // Populate invite-code mapping (short code -> signing_pubkey)
+                    state.register_invite_code(&hint);
+                    // Broadcast snapshot update to any subscribed peers
+                    state.broadcast_house_hint_updated(&signing_pubkey, &hint);
                     info!("Registered house hint");
                     Ok(Response::builder()
                         .status(StatusCode::OK)
@@ -603,6 +759,12 @@ async fn handle_api_request(
                 .body(Body::from("Method not allowed"))
                 .unwrap())
         }
+            }
+        }
+        _ => Ok(Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::from("API endpoint not found"))
+            .unwrap()),
     }
 }
 

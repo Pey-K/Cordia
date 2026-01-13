@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { ArrowLeft, Settings, Volume2, Copy, Check, Mic, MicOff, PhoneOff, Plus } from 'lucide-react'
 import { Button } from '../components/ui/button'
-import { loadHouse, addRoom, type House, type Room } from '../lib/tauri'
+import { loadHouse, addRoom, type House, type Room, getHouseHint, importHouseHint } from '../lib/tauri'
 import { useIdentity } from '../contexts/IdentityContext'
 import { useWebRTC } from '../contexts/WebRTCContext'
 import { SignalingStatus } from '../components/SignalingStatus'
@@ -48,7 +48,24 @@ function HouseViewPage() {
     if (!houseId) return
 
     try {
-      const loadedHouse = await loadHouse(houseId)
+      // Load local first for fast UI
+      let loadedHouse = await loadHouse(houseId)
+
+      // If signaling is connected, pull latest hint to refresh metadata (members/rooms) across accounts.
+      // This uses a merge-import on the backend that preserves local encrypted secrets.
+      if (signalingStatus === 'connected' && signalingUrl) {
+        try {
+          const hint = await getHouseHint(signalingUrl, loadedHouse.signing_pubkey)
+          if (hint) {
+            const hintedHouse: House = JSON.parse(hint.encrypted_state)
+            await importHouseHint(hintedHouse)
+            loadedHouse = await loadHouse(houseId)
+          }
+        } catch (e) {
+          console.warn('[HouseView] Failed to refresh house hint:', e)
+        }
+      }
+
       setHouse(loadedHouse)
     } catch (error) {
       console.error('Failed to load house:', error)
@@ -68,8 +85,14 @@ function HouseViewPage() {
 
   const copyInviteCode = () => {
     if (!house) return
-    // Copy an invite URI that points at the user's currently configured signaling server.
-    // (The backend currently defaults invite_uri to "signal.roommate.app", which may not resolve.)
+    // Simple in-app invite: short code (server-resolvable)
+    navigator.clipboard.writeText(house.invite_code)
+    setCopiedInvite(true)
+    setTimeout(() => setCopiedInvite(false), 2000)
+  }
+
+  const copyInviteLink = () => {
+    if (!house) return
     const invite = getInviteUriForCurrentServer()
     if (!invite) return
     navigator.clipboard.writeText(invite)
@@ -234,7 +257,7 @@ function HouseViewPage() {
               </h3>
               <div className="flex items-center gap-2">
               <div className="flex-1 px-3 py-2 bg-background border border-border rounded-md">
-                  <code className="text-xs font-mono break-all">{getInviteUriForCurrentServer() || house.invite_uri}</code>
+                  <code className="text-xs font-mono break-all">{house.invite_code}</code>
                 </div>
                 <Button
                   onClick={copyInviteCode}
@@ -249,9 +272,18 @@ function HouseViewPage() {
                   )}
                 </Button>
               </div>
-              <p className="text-xs text-muted-foreground px-2 leading-relaxed">
-                Share this code with friends to invite them to this house.
-              </p>
+              <div className="px-2 space-y-1">
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Share this short code with friends to invite them to this house.
+                </p>
+                <button
+                  onClick={copyInviteLink}
+                  className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground transition-colors"
+                  type="button"
+                >
+                  Copy full invite link (advanced)
+                </button>
+              </div>
             </div>
           </div>
         </div>

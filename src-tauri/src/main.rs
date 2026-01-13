@@ -325,6 +325,43 @@ async fn get_house_hint(signaling_server: String, signing_pubkey: String) -> Res
     Ok(Some(hint))
 }
 
+#[derive(serde::Deserialize)]
+struct InviteResolveResponse {
+    signing_pubkey: String,
+}
+
+#[tauri::command]
+async fn resolve_invite_code(signaling_server: String, invite_code: String) -> Result<Option<String>, String> {
+    // Usage command (joining) - require session
+    require_session()?;
+
+    let base = normalize_signaling_to_http(&signaling_server)?;
+    let code = invite_code.trim().to_ascii_uppercase();
+    let url = format!("{}/api/invites/{}", base, urlencoding::encode(&code));
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to resolve invite code: {}", e))?;
+
+    if resp.status().as_u16() == 404 {
+        return Ok(None);
+    }
+
+    if !resp.status().is_success() {
+        return Err(format!("Failed to resolve invite code: HTTP {}", resp.status()));
+    }
+
+    let parsed = resp
+        .json::<InviteResolveResponse>()
+        .await
+        .map_err(|e| format!("Failed to parse invite resolve JSON: {}", e))?;
+
+    Ok(Some(parsed.signing_pubkey))
+}
+
 #[tauri::command]
 async fn check_signaling_server(url: Option<String>) -> Result<bool, String> {
     let server_url = url.unwrap_or_else(get_default_signaling_url);
@@ -472,6 +509,7 @@ fn main() {
             import_house_hint,
             register_house_hint,
             get_house_hint,
+            resolve_invite_code,
             // Signaling commands
             check_signaling_server,
             get_default_signaling_server,

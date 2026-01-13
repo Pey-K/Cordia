@@ -550,6 +550,15 @@ impl House {
 
     /// Convert to HouseInfo for frontend serialization
     pub fn to_info(&self) -> HouseInfo {
+        fn derive_simple_invite_code(signing_pubkey: &str) -> String {
+            signing_pubkey
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .map(|c| c.to_ascii_uppercase())
+                .take(18)
+                .collect()
+        }
+
         HouseInfo {
             id: self.id.clone(),
             name: self.name.clone(),
@@ -560,7 +569,9 @@ impl House {
             invite_uri: self.invite_uri.clone(),
             connection_mode: self.connection_mode.clone(),
             signaling_url: self.signaling_url.clone(),
-            invite_code: self.invite_code.clone(),
+            // Use a deterministic, short invite code derived from signing_pubkey.
+            // This is what the signaling server resolves for network-backed joins.
+            invite_code: derive_simple_invite_code(&self.signing_pubkey),
             public_key: self.public_key.clone(),
             has_symmetric_key: self.house_symmetric_key.is_some(),
             has_signing_key: self.signing_secret.is_some(),
@@ -915,6 +926,21 @@ impl HouseManager {
     /// NOTE: This intentionally does NOT import any secrets. The encrypted secret fields
     /// are left as None. Key exchange / secret distribution is handled elsewhere.
     pub fn import_house_hint(&self, info: HouseInfo) -> Result<(), HouseError> {
+        let house_path = self.get_house_path(&info.id);
+
+        // If we already have this house locally (e.g. creator), preserve any locally-stored encrypted secrets.
+        let (preserve_encrypted_signing_secret, preserve_encrypted_symmetric_key) = if house_path.exists() {
+            match fs::read_to_string(&house_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<HouseStorage>(&s).ok())
+            {
+                Some(existing) => (existing.encrypted_signing_secret, existing.encrypted_symmetric_key),
+                None => (None, None),
+            }
+        } else {
+            (None, None)
+        };
+
         let storage = HouseStorage {
             id: info.id,
             name: info.name,
@@ -922,8 +948,8 @@ impl HouseManager {
             rooms: info.rooms,
             members: info.members,
             signing_pubkey: info.signing_pubkey,
-            encrypted_signing_secret: None,
-            encrypted_symmetric_key: None,
+            encrypted_signing_secret: preserve_encrypted_signing_secret,
+            encrypted_symmetric_key: preserve_encrypted_symmetric_key,
             invite_uri: info.invite_uri,
             connection_mode: info.connection_mode,
             signaling_url: info.signaling_url,
@@ -931,7 +957,6 @@ impl HouseManager {
             public_key: info.public_key,
         };
 
-        let house_path = self.get_house_path(&storage.id);
         let json = serde_json::to_string_pretty(&storage)?;
         fs::write(house_path, json)?;
         Ok(())

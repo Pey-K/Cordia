@@ -4,6 +4,7 @@ import { AccountProvider, useAccount } from './contexts/AccountContext'
 import { SignalingProvider } from './contexts/SignalingContext'
 import { WebRTCProvider } from './contexts/WebRTCContext'
 import TitleBar from './components/TitleBar'
+import { HouseSyncBootstrap } from './components/HouseSyncBootstrap'
 import SplashPage from './pages/SplashPage'
 import AccountSelectPage from './pages/AccountSelectPage'
 import IdentitySetupPage from './pages/IdentitySetupPage'
@@ -48,6 +49,7 @@ function App() {
       <AccountProvider>
         <SignalingProvider>
           <WebRTCProvider>
+            <HouseSyncBootstrap />
             <div className="flex flex-col h-screen overflow-hidden border-2 border-foreground/20">
               <TitleBar />
               <div className="flex-1 overflow-auto min-h-0">

@@ -3,7 +3,7 @@ import { Plus, Settings, Users, Trash2 } from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { useEffect, useState } from 'react'
 import { useSignaling } from '../contexts/SignalingContext'
-import { listHouses, createHouse, joinHouse, deleteHouse, importHouseHint, type House, parseInviteUri, getHouseHint, registerHouseHint } from '../lib/tauri'
+import { listHouses, createHouse, joinHouse, deleteHouse, importHouseHint, type House, parseInviteUri, getHouseHint, registerHouseHint, resolveInviteCode } from '../lib/tauri'
 import { useIdentity } from '../contexts/IdentityContext'
 
 function HouseListPage() {
@@ -21,6 +21,16 @@ function HouseListPage() {
 
   useEffect(() => {
     loadHouses()
+
+    // If another part of the app syncs houses (e.g. on login), refresh the list.
+    const onHousesUpdated = () => {
+      loadHouses()
+    }
+    window.addEventListener('roommate:houses-updated', onHousesUpdated)
+
+    return () => {
+      window.removeEventListener('roommate:houses-updated', onHousesUpdated)
+    }
   }, [])
 
   const loadHouses = async () => {
@@ -75,20 +85,44 @@ function HouseListPage() {
     setIsCreating(true)
 
     try {
-      // Network-backed join: input must be an invite URI (rmmt://{signing_pubkey}@{server})
-      const parsed = parseInviteUri(input)
-      if (!parsed) {
-        setJoinError('Invalid invite. Paste the full invite link (rmmt://...).')
-        return
+      // Network-backed join:
+      // - Accept full invite URI (rmmt://{signing_pubkey}@{server})
+      // - OR accept a short invite code (15-20 chars) resolved via the user's configured signaling server.
+      // - OR accept a raw signing_pubkey (fallback).
+      let signalingServer = signalingUrl || ''
+      let signingPubkey: string | null = null
+
+      if (/^rmmt:\/\//i.test(input)) {
+        const parsed = parseInviteUri(input)
+        if (!parsed) {
+          setJoinError('Invalid invite. Paste the full invite link (rmmt://...).')
+          return
+        }
+
+        signalingServer =
+          parsed.server.startsWith('ws://') || parsed.server.startsWith('wss://')
+            ? parsed.server
+            : `wss://${parsed.server}`
+        signingPubkey = parsed.signingPubkey
+      } else {
+        if (!signalingServer) {
+          setJoinError('No signaling server configured.')
+          return
+        }
+        // Heuristic: treat short inputs as invite codes; long inputs as raw signing pubkeys.
+        if (input.length <= 25) {
+          signingPubkey = await resolveInviteCode(signalingServer, input)
+          if (!signingPubkey) {
+            setJoinError('Invite code not found on signaling server.')
+            return
+          }
+        } else {
+          signingPubkey = input
+        }
       }
 
-      const signalingServer =
-        parsed.server.startsWith('ws://') || parsed.server.startsWith('wss://')
-          ? parsed.server
-          : `wss://${parsed.server}`
-
       // Fetch house hint from signaling server
-      const hint = await getHouseHint(signalingServer, parsed.signingPubkey)
+      const hint = await getHouseHint(signalingServer, signingPubkey)
       if (!hint) {
         setJoinError('Invite not found on signaling server.')
         return
@@ -107,6 +141,15 @@ function HouseListPage() {
         identity.user_id,
         identity.display_name
       )
+
+      // Republish hint with updated member list so other accounts (including creator) can see it.
+      // (Option B later: encrypted_state becomes a signed/encrypted blob; same flow.)
+      registerHouseHint(signalingServer, {
+        signing_pubkey: updatedHouse.signing_pubkey,
+        encrypted_state: JSON.stringify(updatedHouse),
+        signature: '',
+        last_updated: new Date().toISOString(),
+      }).catch(e => console.warn('Failed to republish house hint after join:', e))
 
       // Update local list state
       setHouses(prev => {
@@ -133,6 +176,24 @@ function HouseListPage() {
     }
 
     try {
+      // Advertise "leave" by republishing the house hint without this user in the member list.
+      // Other clients will pick this up via their normal house hint sync/polling.
+      if (identity && signalingStatus === 'connected' && signalingUrl) {
+        const existing = houses.find(h => h.id === houseId)
+        if (existing) {
+          const updated: House = {
+            ...existing,
+            members: existing.members.filter(m => m.user_id !== identity.user_id),
+          }
+          registerHouseHint(signalingUrl, {
+            signing_pubkey: updated.signing_pubkey,
+            encrypted_state: JSON.stringify(updated),
+            signature: '',
+            last_updated: new Date().toISOString(),
+          }).catch(err => console.warn('Failed to publish leave update:', err))
+        }
+      }
+
       await deleteHouse(houseId)
       setHouses(houses.filter(h => h.id !== houseId))
     } catch (error) {
@@ -221,8 +282,16 @@ function HouseListPage() {
                   key={house.id}
                   className="relative group"
                 >
-                  <button
+                  <div
                     onClick={() => navigate(`/houses/${house.id}`)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        navigate(`/houses/${house.id}`)
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
                     className="w-full p-6 border-2 border-border bg-card hover:bg-accent/50 transition-colors text-left rounded-lg"
                   >
                     <div className="flex items-start justify-between">
@@ -244,7 +313,7 @@ function HouseListPage() {
                         <Trash2 className="h-4 w-4" />
                       </button>
                     </div>
-                  </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -333,7 +402,7 @@ function HouseListPage() {
                     setJoinError('')
                   }
                 }}
-                placeholder="rmmt://...@your-server"
+                placeholder="Invite code (15–20 chars) or rmmt://..."
                 className="w-full px-4 py-2 bg-background border border-border rounded-md text-sm font-mono tracking-wider focus:outline-none focus:ring-2 focus:ring-primary"
                 autoFocus
               />

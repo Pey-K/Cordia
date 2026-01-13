@@ -135,6 +135,10 @@ export async function getHouseHint(signalingServer: string, signingPubkey: strin
   return await invoke('get_house_hint', { signalingServer, signingPubkey })
 }
 
+export async function resolveInviteCode(signalingServer: string, inviteCode: string): Promise<string | null> {
+  return await invoke('resolve_invite_code', { signalingServer, inviteCode })
+}
+
 export async function checkSignalingServer(url?: string): Promise<boolean> {
   return await invoke('check_signaling_server', { url })
 }
