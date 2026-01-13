@@ -102,7 +102,7 @@ struct EncryptedHouseHint {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct InviteTokenCreateRequest {
     code: String,
-    ttl_seconds: u64,
+    max_uses: u32, // 0 = unlimited
     encrypted_payload: String, // Server cannot decrypt
     signature: String,
 }
@@ -115,6 +115,8 @@ struct InviteTokenRecord {
     signature: String,
     created_at: DateTime<Utc>,
     expires_at: DateTime<Utc>,
+    max_uses: u32,
+    remaining_uses: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -291,7 +293,10 @@ impl ServerState {
             return Err("Invalid invite code length".to_string());
         }
         let now = Utc::now();
-        let expires_at = now + Duration::seconds(req.ttl_seconds.min(60 * 60 * 24 * 30) as i64);
+        // Keep server-side cleanup; not user-facing.
+        let expires_at = now + Duration::days(30);
+        let max_uses = req.max_uses;
+        let remaining_uses = req.max_uses; // 0 = unlimited
         let record = InviteTokenRecord {
             code: code.clone(),
             signing_pubkey: signing_pubkey.to_string(),
@@ -299,6 +304,8 @@ impl ServerState {
             signature: req.signature,
             created_at: now,
             expires_at,
+            max_uses,
+            remaining_uses,
         };
         self.invite_tokens.insert(code.clone(), record.clone());
         Ok(record)
@@ -306,6 +313,21 @@ impl ServerState {
 
     fn get_invite_token(&self, code: &str) -> Option<&InviteTokenRecord> {
         self.invite_tokens.get(code)
+    }
+
+    fn redeem_invite_token(&mut self, code: &str) -> Option<InviteTokenRecord> {
+        let Some(rec) = self.invite_tokens.get_mut(code) else {
+            return None;
+        };
+        // unlimited
+        if rec.max_uses == 0 {
+            return Some(rec.clone());
+        }
+        if rec.remaining_uses == 0 {
+            return None;
+        }
+        rec.remaining_uses = rec.remaining_uses.saturating_sub(1);
+        Some(rec.clone())
     }
 
     fn gc_expired_invites(&mut self) {
@@ -577,7 +599,9 @@ async fn handle_api_request(
     }
 
     match path_parts[2] {
-        // GET /api/invites/{code} - Fetch temporary invite token (opaque encrypted payload)
+        // GET /api/invites/{code} - Fetch invite token (opaque encrypted payload)
+        // POST /api/invites/{code}/redeem - Atomically redeem (decrement remaining_uses) and return payload
+        // POST /api/invites/{code}/revoke - Revoke (delete) the invite token
         "invites" => {
             if path_parts.len() < 4 {
                 return Ok(Response::builder()
@@ -587,28 +611,62 @@ async fn handle_api_request(
             }
 
             let code = decode_path_segment(path_parts[3]).trim().to_string();
-
-            if method != Method::GET {
-                return Ok(Response::builder()
-                    .status(StatusCode::METHOD_NOT_ALLOWED)
-                    .body(Body::from("Method not allowed"))
-                    .unwrap());
-            }
+            let maybe_sub = path_parts.get(4).copied();
 
             let mut state = state.lock().await;
             state.gc_expired_invites();
-            match state.get_invite_token(&code) {
-                Some(rec) => {
-                    let json = serde_json::to_string(rec).unwrap();
-                    Ok(Response::builder()
-                        .status(StatusCode::OK)
-                        .header("Content-Type", "application/json")
-                        .body(Body::from(json))
-                        .unwrap())
+
+            match (method, maybe_sub) {
+                (Method::POST, Some("redeem")) => {
+                    match state.redeem_invite_token(&code) {
+                        Some(rec) => {
+                            let json = serde_json::to_string(&rec).unwrap();
+                            Ok(Response::builder()
+                                .status(StatusCode::OK)
+                                .header("Content-Type", "application/json")
+                                .body(Body::from(json))
+                                .unwrap())
+                        }
+                        None => Ok(Response::builder()
+                            .status(StatusCode::NOT_FOUND)
+                            .body(Body::from("Invite expired or fully redeemed"))
+                            .unwrap()),
+                    }
                 }
-                None => Ok(Response::builder()
-                    .status(StatusCode::NOT_FOUND)
-                    .body(Body::from("Invite not found"))
+                (Method::POST, Some("revoke")) => {
+                    let existed = state.invite_tokens.remove(&code).is_some();
+                    if existed {
+                        Ok(Response::builder()
+                            .status(StatusCode::OK)
+                            .header("Content-Type", "application/json")
+                            .body(Body::from(r#"{"status":"revoked"}"#))
+                            .unwrap())
+                    } else {
+                        Ok(Response::builder()
+                            .status(StatusCode::NOT_FOUND)
+                            .body(Body::from("Invite not found"))
+                            .unwrap())
+                    }
+                }
+                (Method::GET, None) => {
+                    match state.get_invite_token(&code) {
+                        Some(rec) => {
+                            let json = serde_json::to_string(rec).unwrap();
+                            Ok(Response::builder()
+                                .status(StatusCode::OK)
+                                .header("Content-Type", "application/json")
+                                .body(Body::from(json))
+                                .unwrap())
+                        }
+                        None => Ok(Response::builder()
+                            .status(StatusCode::NOT_FOUND)
+                            .body(Body::from("Invite not found"))
+                            .unwrap()),
+                    }
+                }
+                _ => Ok(Response::builder()
+                    .status(StatusCode::METHOD_NOT_ALLOWED)
+                    .body(Body::from("Method not allowed"))
                     .unwrap()),
             }
         }

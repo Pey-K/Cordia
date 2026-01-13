@@ -153,8 +153,8 @@ export async function resolveInviteCode(signalingServer: string, inviteCode: str
   return await invoke('resolve_invite_code', { signalingServer, inviteCode })
 }
 
-export async function createTemporaryInvite(signalingServer: string, houseId: string, ttlSeconds: number): Promise<string> {
-  return await invoke('create_temporary_invite', { signalingServer, houseId, ttlSeconds })
+export async function createTemporaryInvite(signalingServer: string, houseId: string, maxUses: number): Promise<string> {
+  return await invoke('create_temporary_invite', { signalingServer, houseId, maxUses })
 }
 
 export async function redeemTemporaryInvite(
@@ -164,6 +164,10 @@ export async function redeemTemporaryInvite(
   displayName: string
 ): Promise<House> {
   return await invoke('redeem_temporary_invite', { signalingServer, code, userId, displayName })
+}
+
+export async function revokeActiveInvite(signalingServer: string, houseId: string): Promise<void> {
+  return await invoke('revoke_active_invite', { signalingServer, houseId })
 }
 
 export async function checkSignalingServer(url?: string): Promise<boolean> {

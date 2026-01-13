@@ -249,6 +249,8 @@ impl House {
             connection_mode: ConnectionMode::Signaling,
             signaling_url,
             invite_code,
+            active_invite_uri: None,
+            active_invite_expires_at: None,
             public_key: signing_pubkey,  // Legacy field
         })
     }
@@ -1018,7 +1020,7 @@ impl HouseManager {
     pub fn import_house_invite(&self, info: HouseInfo, house_symmetric_key: Vec<u8>) -> Result<(), HouseError> {
         // Encrypt symmetric key with device key for local storage
         let encrypted_symmetric_key = {
-            let cipher = XChaCha20Poly1305::new(self.device_key.into());
+            let cipher = XChaCha20Poly1305::new((&self.device_key).into());
             let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
             let ciphertext = cipher.encrypt(&nonce, house_symmetric_key.as_ref())
                 .map_err(|_| HouseError::EncryptionFailed)?;

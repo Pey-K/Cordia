@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { ArrowLeft, Settings, Volume2, Copy, Check, Mic, MicOff, PhoneOff, Plus } from 'lucide-react'
 import { Button } from '../components/ui/button'
-import { loadHouse, addRoom, type House, type Room, fetchAndImportHouseHintOpaque, publishHouseHintOpaque, createTemporaryInvite } from '../lib/tauri'
+import { loadHouse, addRoom, type House, type Room, fetchAndImportHouseHintOpaque, publishHouseHintOpaque, createTemporaryInvite, revokeActiveInvite } from '../lib/tauri'
 import { useIdentity } from '../contexts/IdentityContext'
 import { useWebRTC } from '../contexts/WebRTCContext'
 import { SignalingStatus } from '../components/SignalingStatus'
@@ -25,8 +25,8 @@ function HouseViewPage() {
   const [roomName, setRoomName] = useState('')
   const [roomDescription, setRoomDescription] = useState('')
   const [isCreatingRoom, setIsCreatingRoom] = useState(false)
-  const [inviteTtl, setInviteTtl] = useState<'3600' | '86400' | '259200' | '604800'>('86400')
   const [isCreatingInvite, setIsCreatingInvite] = useState(false)
+  const [isRevokingInvite, setIsRevokingInvite] = useState(false)
 
   useEffect(() => {
     if (!houseId) {
@@ -83,10 +83,10 @@ function HouseViewPage() {
 
   const copyInviteCode = () => {
     if (!house) return
-    const uri = getActiveInviteUri()
-    if (!uri) return
-    // Copy the full invite URI (rmmt://CODE@server). Join UI accepts either.
-    navigator.clipboard.writeText(uri)
+    const code = getActiveInviteCode()
+    if (!code) return
+    // Copy just the code. Join UI will use the user's configured signaling server under the hood.
+    navigator.clipboard.writeText(code)
     setCopiedInvite(true)
     setTimeout(() => setCopiedInvite(false), 2000)
   }
@@ -113,7 +113,8 @@ function HouseViewPage() {
 
     setIsCreatingInvite(true)
     try {
-      await createTemporaryInvite(signalingUrl, houseId, Number(inviteTtl))
+      // Default: unlimited uses until someone revokes.
+      await createTemporaryInvite(signalingUrl, houseId, 0)
       const updated = await loadHouse(houseId)
       setHouse(updated)
     } catch (e) {
@@ -122,6 +123,31 @@ function HouseViewPage() {
       setIsCreatingInvite(false)
     }
   }
+
+  const handleRevokeInvite = async () => {
+    if (!houseId) return
+    if (signalingStatus !== 'connected' || !signalingUrl) return
+    setIsRevokingInvite(true)
+    try {
+      await revokeActiveInvite(signalingUrl, houseId)
+      const updated = await loadHouse(houseId)
+      setHouse(updated)
+    } catch (e) {
+      console.warn('Failed to revoke invite:', e)
+    } finally {
+      setIsRevokingInvite(false)
+    }
+  }
+
+  // When house hints are imported via WS sync, refresh our local view.
+  useEffect(() => {
+    if (!houseId) return
+    const onHousesUpdated = () => {
+      loadHouse(houseId).then(setHouse).catch(() => {})
+    }
+    window.addEventListener('roommate:houses-updated', onHousesUpdated)
+    return () => window.removeEventListener('roommate:houses-updated', onHousesUpdated)
+  }, [houseId])
 
   const handleSelectRoom = (room: Room) => {
     if (currentRoom?.id === room.id) return
@@ -304,27 +330,29 @@ function HouseViewPage() {
                   </p>
                 )}
 
-                <div className="flex items-center gap-2">
-                  <select
-                    value={inviteTtl}
-                    onChange={(e) => setInviteTtl(e.target.value as any)}
-                    className="flex-1 h-9 px-3 bg-background border border-border rounded-md text-xs font-light"
-                    disabled={isCreatingInvite || signalingStatus !== 'connected'}
-                  >
-                    <option value="604800">7d</option>
-                    <option value="259200">3d</option>
-                    <option value="86400">1d</option>
-                    <option value="3600">1hr</option>
-                  </select>
-                  <Button
-                    onClick={handleCreateInvite}
-                    size="sm"
-                    className="h-9 font-light"
-                    disabled={isCreatingInvite || signalingStatus !== 'connected' || !signalingUrl}
-                  >
-                    {isCreatingInvite ? 'Creating…' : 'Create'}
-                  </Button>
-                </div>
+                {!getActiveInviteUri() ? (
+                  <div className="flex items-center gap-2">
+                    <Button
+                      onClick={handleCreateInvite}
+                      size="sm"
+                      className="h-9 font-light w-full"
+                      disabled={isCreatingInvite || signalingStatus !== 'connected' || !signalingUrl}
+                    >
+                      {isCreatingInvite ? 'Creating…' : 'Create invite'}
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    <button
+                      onClick={handleRevokeInvite}
+                      className="text-xs text-red-500 underline underline-offset-4 hover:text-red-400 transition-colors"
+                      type="button"
+                      disabled={isRevokingInvite || signalingStatus !== 'connected' || !signalingUrl}
+                    >
+                      {isRevokingInvite ? 'Revoking…' : 'Revoke access'}
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           </div>

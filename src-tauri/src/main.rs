@@ -28,7 +28,7 @@ struct EncryptedHouseHint {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct InviteTokenCreateRequest {
     code: String,
-    ttl_seconds: u64,
+    max_uses: u32, // 0 = unlimited
     encrypted_payload: String,
     signature: String,
 }
@@ -545,7 +545,7 @@ async fn resolve_invite_code(signaling_server: String, invite_code: String) -> R
 }
 
 #[tauri::command]
-async fn create_temporary_invite(signaling_server: String, house_id: String, ttl_seconds: u64) -> Result<String, String> {
+async fn create_temporary_invite(signaling_server: String, house_id: String, max_uses: u32) -> Result<String, String> {
     require_session()?;
 
     let manager = HouseManager::new()
@@ -585,7 +585,7 @@ async fn create_temporary_invite(signaling_server: String, house_id: String, ttl
     let client = reqwest::Client::new();
     let req = InviteTokenCreateRequest {
         code: code.clone(),
-        ttl_seconds,
+        max_uses,
         encrypted_payload,
         signature: "".to_string(),
     };
@@ -613,7 +613,44 @@ async fn create_temporary_invite(signaling_server: String, house_id: String, ttl
     manager.set_active_invite(&house_id, Some(invite_uri.clone()), Some(expires_at))
         .map_err(|e| format!("Failed to store active invite: {}", e))?;
 
+    // Propagate active invite to all members via encrypted house hint
+    publish_house_hint_opaque(signaling_server.clone(), house_id.clone()).await?;
+
     Ok(invite_uri)
+}
+
+#[tauri::command]
+async fn revoke_active_invite(signaling_server: String, house_id: String) -> Result<(), String> {
+    require_session()?;
+
+    let manager = HouseManager::new()
+        .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
+
+    let house = manager.load_house(&house_id)
+        .map_err(|e| format!("Failed to load house: {}", e))?;
+
+    let code = house
+        .active_invite_uri
+        .as_ref()
+        .and_then(|uri| uri.trim().strip_prefix("rmmt://"))
+        .and_then(|rest| rest.split('@').next())
+        .map(|s| s.to_string());
+
+    if let Some(code) = code {
+        let base = normalize_signaling_to_http(&signaling_server)?;
+        let url = format!("{}/api/invites/{}/revoke", base, urlencoding::encode(code.trim()));
+        let client = reqwest::Client::new();
+        let _ = client.post(url).send().await;
+    }
+
+    manager
+        .set_active_invite(&house_id, None, None)
+        .map_err(|e| format!("Failed to clear active invite: {}", e))?;
+
+    // Propagate revocation to all members
+    publish_house_hint_opaque(signaling_server.clone(), house_id.clone()).await?;
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -621,11 +658,11 @@ async fn redeem_temporary_invite(signaling_server: String, code: String, user_id
     require_session()?;
 
     let base = normalize_signaling_to_http(&signaling_server)?;
-    let url = format!("{}/api/invites/{}", base, urlencoding::encode(code.trim()));
+    let url = format!("{}/api/invites/{}/redeem", base, urlencoding::encode(code.trim()));
 
     let client = reqwest::Client::new();
     let resp = client
-        .get(url)
+        .post(url)
         .send()
         .await
         .map_err(|e| format!("Failed to fetch invite: {}", e))?;
@@ -810,6 +847,7 @@ fn main() {
             publish_house_hint_member_left,
             fetch_and_import_house_hint_opaque,
             create_temporary_invite,
+            revoke_active_invite,
             redeem_temporary_invite,
             // Signaling commands
             check_signaling_server,
