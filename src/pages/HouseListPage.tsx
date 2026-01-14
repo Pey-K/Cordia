@@ -1,27 +1,33 @@
 import { Link, useNavigate } from 'react-router-dom'
-import { Plus, Settings, Users, Trash2 } from 'lucide-react'
+import { Plus, Settings, Users, Trash2, Star, CornerDownLeft } from 'lucide-react'
 import { Button } from '../components/ui/button'
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useSignaling } from '../contexts/SignalingContext'
 import { SignalingStatus } from '../components/SignalingStatus'
 import { listHouses, createHouse, deleteHouse, type House, parseInviteUri, publishHouseHintOpaque, publishHouseHintMemberLeft, redeemTemporaryInvite } from '../lib/tauri'
 import { useIdentity } from '../contexts/IdentityContext'
 import { usePresence } from '../contexts/PresenceContext'
+import { useAccount } from '../contexts/AccountContext'
 
 function HouseListPage() {
   const navigate = useNavigate()
   const { identity } = useIdentity()
+  const { currentAccountId } = useAccount()
   const { getLevel } = usePresence()
   const { signalingUrl, status: signalingStatus } = useSignaling()
   const [houses, setHouses] = useState<House[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isCreating, setIsCreating] = useState(false)
   const [showCreateDialog, setShowCreateDialog] = useState(false)
-  const [showJoinDialog, setShowJoinDialog] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<House | null>(null)
   const [houseName, setHouseName] = useState('')
   const [inviteCode, setInviteCode] = useState('')
   const [joinError, setJoinError] = useState('')
+  const [showJoinInline, setShowJoinInline] = useState(false)
+  const [showCreateInline, setShowCreateInline] = useState(false)
+  const joinInputRef = useRef<HTMLInputElement | null>(null)
+  const createInputRef = useRef<HTMLInputElement | null>(null)
+  const [favoriteHouseIds, setFavoriteHouseIds] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     loadHouses()
@@ -36,6 +42,57 @@ function HouseListPage() {
       window.removeEventListener('roommate:houses-updated', onHousesUpdated)
     }
   }, [])
+
+  useEffect(() => {
+    if (showJoinInline) {
+      // Small delay lets the input mount before focusing
+      setTimeout(() => joinInputRef.current?.focus(), 0)
+    }
+  }, [showJoinInline])
+
+  useEffect(() => {
+    if (showCreateInline) {
+      setTimeout(() => createInputRef.current?.focus(), 0)
+    }
+  }, [showCreateInline])
+
+  const favoritesStorageKey = `rmmt:favorites:${currentAccountId || 'unknown'}`
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(favoritesStorageKey)
+      if (!raw) {
+        setFavoriteHouseIds(new Set())
+        return
+      }
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) {
+        setFavoriteHouseIds(new Set(parsed.filter((x) => typeof x === 'string')))
+      } else {
+        setFavoriteHouseIds(new Set())
+      }
+    } catch {
+      setFavoriteHouseIds(new Set())
+    }
+  }, [favoritesStorageKey])
+
+  const persistFavorites = (next: Set<string>) => {
+    try {
+      window.localStorage.setItem(favoritesStorageKey, JSON.stringify(Array.from(next)))
+    } catch {
+      // ignore
+    }
+  }
+
+  const toggleFavorite = (houseId: string) => {
+    setFavoriteHouseIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(houseId)) next.delete(houseId)
+      else next.add(houseId)
+      persistFavorites(next)
+      return next
+    })
+  }
 
   // Presence: "Neighborhood" (not active in a specific house)
   useEffect(() => {
@@ -77,13 +134,13 @@ function HouseListPage() {
 
     const PresenceMark = ({ level }: { level: 'active' | 'online' | 'offline' }) => {
       return (
-        <div className="absolute -bottom-1 left-1/2 -translate-x-1/2">
+        <div className="absolute -top-1 left-1/2 -translate-x-1/2">
           {level === 'active' ? (
             <div className="h-2 w-2 bg-green-500 ring-2 ring-background" />
           ) : level === 'online' ? (
             <div className="h-2 w-2 bg-amber-500 ring-2 ring-background" />
           ) : (
-            <div className="h-2 w-2 rounded-full bg-muted-foreground/60 ring-2 ring-background" />
+            <div className="h-2 w-2 bg-muted-foreground ring-2 ring-background" />
           )}
         </div>
       )
@@ -121,7 +178,7 @@ function HouseListPage() {
                   ) : level === 'online' ? (
                     <div className="h-2 w-2 bg-amber-500" />
                   ) : (
-                    <div className="h-2 w-2 rounded-full bg-muted-foreground/60" />
+                    <div className="h-2 w-2 bg-muted-foreground" />
                   )}
                   <p className="text-xs font-light">{m.display_name}</p>
                 </div>
@@ -144,7 +201,7 @@ function HouseListPage() {
               </div>
               <div className="absolute top-full mt-2 left-1/2 -translate-x-1/2 px-2 py-1 bg-popover border-2 border-border rounded-md shadow-lg opacity-0 invisible group-hover/avatar:opacity-100 group-hover/avatar:visible transition-all duration-200 pointer-events-none whitespace-nowrap">
                 <div className="flex items-center gap-2">
-                  <div className="h-2 w-2 rounded-full bg-muted-foreground/60" />
+                  <div className="h-2 w-2 bg-muted-foreground" />
                   <p className="text-xs font-light">{extraCount} more</p>
                 </div>
               </div>
@@ -166,6 +223,14 @@ function HouseListPage() {
     }
   }
 
+  const sortedHouses = [...houses].sort((a, b) => {
+    const af = favoriteHouseIds.has(a.id) ? 1 : 0
+    const bf = favoriteHouseIds.has(b.id) ? 1 : 0
+    if (af !== bf) return bf - af
+    // Stable-ish: fall back to name for deterministic order
+    return a.name.localeCompare(b.name)
+  })
+
   const handleCreateHouse = async () => {
     if (!identity || !houseName.trim()) return
 
@@ -182,7 +247,10 @@ function HouseListPage() {
       }
 
       setHouses([...houses, newHouse])
+      // Let WS-based bootstraps (presence + hint subscriptions) know a new house exists.
+      window.dispatchEvent(new Event('roommate:houses-updated'))
       setShowCreateDialog(false)
+      setShowCreateInline(false)
       setHouseName('')
       navigate(`/houses/${newHouse.id}`)
     } catch (error) {
@@ -232,8 +300,11 @@ function HouseListPage() {
           const exists = prev.some(h => h.id === updatedHouse.id)
           return exists ? prev.map(h => (h.id === updatedHouse.id ? updatedHouse : h)) : [...prev, updatedHouse]
         })
-        setShowJoinDialog(false)
+        // Let WS-based bootstraps (presence + hint subscriptions) know a new house exists.
+        window.dispatchEvent(new Event('roommate:houses-updated'))
+        setShowJoinInline(false)
         setInviteCode('')
+        setJoinError('')
         navigate(`/houses/${updatedHouse.id}`)
         return
       }
@@ -309,7 +380,8 @@ function HouseListPage() {
       </header>
 
       {/* Split-scroll layout: only the houses list scrolls; neighbors stays fixed */}
-      <main className="flex-1 overflow-hidden min-h-0">
+      {/* NOTE: overflow must be visible so the Join popover can float above this row without being clipped. */}
+      <main className="flex-1 overflow-visible min-h-0">
         <div className="p-8 h-full">
           <div className="grid grid-cols-1 md:grid-cols-10 gap-6 items-stretch h-full min-h-0">
             {/* Left: Houses (Neighborhood) */}
@@ -319,23 +391,113 @@ function HouseListPage() {
                   <div className="w-12 h-px bg-foreground/20"></div>
                   <h2 className="text-xs font-light tracking-wider uppercase text-muted-foreground">Houses</h2>
                 </div>
-                <div className="flex gap-2">
+                <div className="relative flex gap-2">
                   <Button
-                    onClick={() => setShowJoinDialog(true)}
-                    variant="outline"
+                    onClick={() => {
+                      setShowCreateInline(false)
+                      setShowJoinInline((v) => !v)
+                    }}
+                    variant={showJoinInline ? 'outline' : 'default'}
                     size="sm"
-                    className="h-9 font-light"
+                    className="h-9 font-light bg-background text-foreground hover:bg-background/90"
                   >
-                    Join House
+                    {showJoinInline ? 'Cancel' : 'Join House'}
                   </Button>
                   <Button
-                    onClick={() => setShowCreateDialog(true)}
+                    onClick={() => {
+                      setShowJoinInline(false)
+                      setShowCreateInline((v) => !v)
+                    }}
                     size="sm"
                     className="bg-foreground text-background hover:bg-foreground/90 h-9 font-light"
                   >
                     <Plus className="mr-2 h-4 w-4" />
-                    New House
+                    {showCreateInline ? 'Cancel' : 'New House'}
                   </Button>
+
+                  {/* Join popover (does not affect layout) */}
+                  {showJoinInline && (
+                    <div className="absolute right-0 bottom-full mb-2 z-50 w-[200px] max-w-[calc(100vw-4rem)]">
+                      <div className="border-2 border-border bg-card/80 backdrop-blur-sm rounded-lg p-2 shadow-lg">
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 px-2 py-1.5 bg-background border border-border rounded-md">
+                            <input
+                              ref={joinInputRef}
+                              type="text"
+                              value={inviteCode}
+                              onChange={(e) => {
+                                setInviteCode(e.target.value)
+                                setJoinError('')
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' && !isCreating) {
+                                  handleJoinHouse()
+                                } else if (e.key === 'Escape') {
+                                  setShowJoinInline(false)
+                                  setInviteCode('')
+                                  setJoinError('')
+                                }
+                              }}
+                              placeholder="Invite code or rmmt://..."
+                              className="w-full bg-transparent outline-none text-[11px] font-mono tracking-wider"
+                              autoComplete="off"
+                              spellCheck={false}
+                            />
+                          </div>
+                          <Button
+                            onClick={handleJoinHouse}
+                            variant="outline"
+                            size="icon"
+                            className="h-8 w-8 shrink-0"
+                            disabled={isCreating || !inviteCode.trim()}
+                            title="Join"
+                          >
+                            <CornerDownLeft className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                        {joinError && <p className="text-xs text-red-500">{joinError}</p>}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* New House popover (inverse styling, does not affect layout) */}
+                  {showCreateInline && (
+                    <div className="absolute right-0 bottom-full mb-2 z-50 w-[200px] max-w-[calc(100vw-4rem)]">
+                      <div className="border-2 border-background/20 bg-foreground text-background rounded-lg p-2 shadow-lg">
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 px-2 py-1.5 bg-background/10 border border-background/20 rounded-md">
+                            <input
+                              ref={createInputRef}
+                              type="text"
+                              value={houseName}
+                              onChange={(e) => setHouseName(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' && !isCreating) {
+                                  handleCreateHouse()
+                                } else if (e.key === 'Escape') {
+                                  setShowCreateInline(false)
+                                  setHouseName('')
+                                }
+                              }}
+                              placeholder="House name"
+                              className="w-full bg-transparent outline-none text-[11px] font-mono tracking-wider text-background placeholder:text-background/60"
+                              autoComplete="off"
+                              spellCheck={false}
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={handleCreateHouse}
+                            disabled={isCreating || !houseName.trim()}
+                            className="h-8 w-8 shrink-0 grid place-items-center border border-background/20 bg-background/10 hover:bg-background/20 disabled:opacity-50"
+                            title="Create"
+                          >
+                            <CornerDownLeft className="h-3.5 w-3.5 text-background" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -352,7 +514,11 @@ function HouseListPage() {
                   </div>
                 ) : (
                   <div className="grid gap-4 pb-2">
-                    {houses.map((house) => (
+                    {sortedHouses.map((house) => (
+                      (() => {
+                        const isFav = favoriteHouseIds.has(house.id)
+                        const cardBorder = isFav ? 'border-amber-500/70' : 'border-border'
+                        return (
                       <div key={house.id} className="relative group/card">
                         <div
                           onClick={() => navigate(`/houses/${house.id}`)}
@@ -364,9 +530,9 @@ function HouseListPage() {
                           }}
                           role="button"
                           tabIndex={0}
-                          className="w-full p-6 border-2 border-border bg-card hover:bg-accent/50 transition-colors text-left rounded-lg"
+                          className={`w-full p-6 border-2 ${cardBorder} bg-card hover:bg-accent/50 transition-colors text-left rounded-lg`}
                         >
-                          <div className="flex items-start justify-between">
+                          <div className="flex items-center justify-between gap-6">
                             <div className="space-y-2">
                               <h3 className="text-lg font-light tracking-tight">{house.name}</h3>
                               <div className="flex items-center gap-4 text-xs text-muted-foreground">
@@ -384,16 +550,34 @@ function HouseListPage() {
                                 </div>
                               )}
                             </div>
-                            <button
-                              onClick={(e) => handleDeleteHouse(e, house.id)}
-                            className="opacity-0 group-hover/card:opacity-100 p-2 rounded-md hover:bg-destructive/20 text-destructive transition-opacity"
-                              title="Leave and delete house"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
+                            <div className="flex flex-col items-center justify-center gap-2 shrink-0">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  toggleFavorite(house.id)
+                                }}
+                                className={`opacity-0 group-hover/card:opacity-100 h-9 w-9 grid place-items-center rounded-md transition-opacity hover:bg-amber-500/10 ${
+                                  isFav ? 'text-amber-500' : 'text-muted-foreground hover:text-amber-500'
+                                }`}
+                                title={isFav ? 'Unfavorite' : 'Favorite'}
+                              >
+                                <Star className={`h-4 w-4 ${isFav ? 'fill-current' : ''}`} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => handleDeleteHouse(e, house.id)}
+                                className="opacity-0 group-hover/card:opacity-100 h-9 w-9 grid place-items-center rounded-md hover:bg-destructive/20 text-destructive transition-opacity"
+                                title="Leave and delete house"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
                           </div>
                         </div>
                       </div>
+                        )
+                      })()
                     ))}
                   </div>
                 )}
@@ -464,68 +648,6 @@ function HouseListPage() {
                 disabled={isCreating || !houseName.trim()}
               >
                 {isCreating ? 'Creating...' : 'Create'}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showJoinDialog && (
-        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-card border-2 border-border rounded-lg p-6 max-w-md w-full space-y-6">
-            <div className="space-y-2">
-              <h2 className="text-xl font-light tracking-tight">Join House</h2>
-              <div className="w-8 h-px bg-foreground/20"></div>
-            </div>
-            <div className="space-y-2">
-              <label htmlFor="invite-code" className="text-sm text-muted-foreground font-light">
-                Invite Code
-              </label>
-              <input
-                id="invite-code"
-                type="text"
-                value={inviteCode}
-                onChange={(e) => {
-                  // Do NOT uppercase: invite URIs are case-sensitive in practice (and should be accepted as-is).
-                  setInviteCode(e.target.value)
-                  setJoinError('')
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !isCreating) {
-                    handleJoinHouse()
-                  } else if (e.key === 'Escape') {
-                    setShowJoinDialog(false)
-                    setInviteCode('')
-                    setJoinError('')
-                  }
-                }}
-                placeholder="Invite code (15–20 chars) or rmmt://..."
-                className="w-full px-4 py-2 bg-background border border-border rounded-md text-sm font-mono tracking-wider focus:outline-none focus:ring-2 focus:ring-primary"
-                autoFocus
-              />
-              {joinError && (
-                <p className="text-xs text-red-500">{joinError}</p>
-              )}
-            </div>
-            <div className="flex gap-3">
-              <Button
-                onClick={() => {
-                  setShowJoinDialog(false)
-                  setInviteCode('')
-                  setJoinError('')
-                }}
-                variant="outline"
-                className="flex-1 h-10 font-light"
-                disabled={isCreating}
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={handleJoinHouse}
-                className="flex-1 h-10 bg-foreground text-background hover:bg-foreground/90 font-light"
-                disabled={isCreating || !inviteCode.trim()}
-              >
-                {isCreating ? 'Joining...' : 'Join'}
               </Button>
             </div>
           </div>
