@@ -124,6 +124,10 @@ export async function addRoom(houseId: string, name: string, description: string
   return await invoke('add_room', { houseId, name, description })
 }
 
+export async function removeRoom(houseId: string, roomId: string): Promise<House> {
+  return await invoke('remove_room', { houseId, roomId })
+}
+
 
 export async function importHouseHint(house: House): Promise<void> {
   return await invoke('import_house_hint', { house })

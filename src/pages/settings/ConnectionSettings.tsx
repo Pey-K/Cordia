@@ -3,8 +3,10 @@ import { Save, RefreshCw, Circle } from 'lucide-react'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
+import { Select } from '../../components/ui/select'
 import { useSignaling } from '../../contexts/SignalingContext'
 import { getSignalingServerUrl, setSignalingServerUrl } from '../../lib/tauri'
+import { getNatOverride, setNatOverride, type NatOverride } from '../../lib/natOverride'
 
 export function ConnectionSettings() {
   const { status, checkHealth, reloadUrl } = useSignaling()
@@ -12,10 +14,15 @@ export function ConnectionSettings() {
   const [isSaving, setIsSaving] = useState(false)
   const [isChecking, setIsChecking] = useState(false)
   const [saveMessage, setSaveMessage] = useState('')
+  const [natOverride, setNatOverrideState] = useState<NatOverride>('auto')
 
   // Load current signaling server URL
   useEffect(() => {
     getSignalingServerUrl().then(setUrl).catch(console.error)
+  }, [])
+
+  useEffect(() => {
+    setNatOverrideState(getNatOverride())
   }, [])
 
   const handleSave = async () => {
@@ -161,6 +168,31 @@ export function ConnectionSettings() {
               Check
             </Button>
           </div>
+        </div>
+
+        {/* NAT Type (Testing) */}
+        <div className="space-y-3">
+          <Label htmlFor="nat-override" className="text-sm font-light">
+            NAT Type (testing)
+          </Label>
+          <Select
+            id="nat-override"
+            value={natOverride}
+            onChange={(e) => {
+              const v = e.target.value as NatOverride
+              setNatOverrideState(v)
+              setNatOverride(v)
+            }}
+          >
+            <option value="auto">Auto-detect (default)</option>
+            <option value="open">Force Open</option>
+            <option value="moderate">Force Moderate</option>
+            <option value="strict">Force Strict / CGNAT</option>
+          </Select>
+          <p className="text-xs text-muted-foreground font-light">
+            This only changes the <span className="text-foreground font-normal">UI indicator</span> so you can test flows.
+            It does <span className="text-foreground font-normal">not</span> change your real network/NAT behavior.
+          </p>
         </div>
 
         {/* Connection Info */}

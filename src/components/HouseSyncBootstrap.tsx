@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useAccount } from '../contexts/AccountContext'
+import { useIdentity } from '../contexts/IdentityContext'
+import { usePresence } from '../contexts/PresenceContext'
 import { useSignaling } from '../contexts/SignalingContext'
 import { fetchAndImportHouseHintOpaque, listHouses } from '../lib/tauri'
 
@@ -11,11 +13,14 @@ import { fetchAndImportHouseHintOpaque, listHouses } from '../lib/tauri'
  */
 export function HouseSyncBootstrap() {
   const { sessionLoaded, currentAccountId } = useAccount()
+  const { identity } = useIdentity()
+  const presence = usePresence()
   const { status: signalingStatus, signalingUrl } = useSignaling()
   const ranForSessionRef = useRef<string | null>(null)
   const isSyncingRef = useRef(false)
   const wsRef = useRef<WebSocket | null>(null)
   const subscribedSigningPubkeysRef = useRef<Set<string>>(new Set())
+  const activeSigningPubkeyRef = useRef<string | null>(null)
 
   useEffect(() => {
     // Only run when logged in + signaling is reachable
@@ -64,6 +69,25 @@ export function HouseSyncBootstrap() {
       const ws = new WebSocket(signalingUrl)
       wsRef.current = ws
 
+      const sendPresenceHello = async () => {
+        if (!identity?.user_id) return
+        if (ws.readyState !== WebSocket.OPEN) return
+        try {
+          const houses = await listHouses()
+          const signingPubkeys = houses.map(h => h.signing_pubkey)
+          ws.send(
+            JSON.stringify({
+              type: 'PresenceHello',
+              user_id: identity.user_id,
+              signing_pubkeys: signingPubkeys,
+              active_signing_pubkey: activeSigningPubkeyRef.current,
+            })
+          )
+        } catch (e) {
+          console.warn('[HouseSyncBootstrap] Failed to send presence hello:', e)
+        }
+      }
+
       const subscribeMissingHouses = async () => {
         if (ws.readyState !== WebSocket.OPEN) return
         try {
@@ -82,6 +106,8 @@ export function HouseSyncBootstrap() {
             )
           }
           subscribedSigningPubkeysRef.current = nextSet
+          // Presence set may have changed (new house joined/imported)
+          sendPresenceHello()
         } catch (e) {
           console.warn('[HouseSyncBootstrap] Failed to resubscribe after house list change:', e)
         }
@@ -104,6 +130,8 @@ export function HouseSyncBootstrap() {
             )
           }
           subscribedSigningPubkeysRef.current = nextSet
+          // Announce presence after subscriptions are set up
+          await sendPresenceHello()
         } catch (e) {
           console.warn('[HouseSyncBootstrap] Failed to subscribe houses over WS:', e)
         }
@@ -119,6 +147,23 @@ export function HouseSyncBootstrap() {
 
             await fetchAndImportHouseHintOpaque(signalingUrl, signingPubkey)
             window.dispatchEvent(new Event('roommate:houses-updated'))
+            return
+          }
+
+          if (msg.type === 'PresenceSnapshot') {
+            const spk: string = msg.signing_pubkey
+            const users = msg.users as Array<{ user_id: string; active_signing_pubkey?: string | null }>
+            presence.applySnapshot(spk, users)
+            return
+          }
+
+          if (msg.type === 'PresenceUpdate') {
+            const spk: string = msg.signing_pubkey
+            const userId: string = msg.user_id
+            const online: boolean = msg.online
+            const active: string | null | undefined = msg.active_signing_pubkey
+            presence.applyUpdate(spk, userId, online, active ?? null)
+            return
           }
         } catch (e) {
           // Ignore malformed/unrelated messages
@@ -155,13 +200,30 @@ export function HouseSyncBootstrap() {
         subscribeMissingHouses()
       }
 
+      const onActiveHouseChanged = (ev: Event) => {
+        const detail = (ev as CustomEvent<{ signing_pubkey?: string | null }>).detail
+        const next = detail?.signing_pubkey ?? null
+        activeSigningPubkeyRef.current = next
+        if (!identity?.user_id) return
+        if (ws.readyState !== WebSocket.OPEN) return
+        ws.send(
+          JSON.stringify({
+            type: 'PresenceActive',
+            user_id: identity.user_id,
+            active_signing_pubkey: next,
+          })
+        )
+      }
+
       window.addEventListener('roommate:house-removed', onHouseRemoved)
       window.addEventListener('roommate:houses-updated', onHousesUpdated)
+      window.addEventListener('roommate:active-house-changed', onActiveHouseChanged as any)
 
       // Ensure listeners are cleaned up when the WS is replaced.
       const cleanupListeners = () => {
         window.removeEventListener('roommate:house-removed', onHouseRemoved)
         window.removeEventListener('roommate:houses-updated', onHousesUpdated)
+        window.removeEventListener('roommate:active-house-changed', onActiveHouseChanged as any)
       }
       ws.addEventListener('close', cleanupListeners, { once: true })
       ws.addEventListener('error', cleanupListeners, { once: true })

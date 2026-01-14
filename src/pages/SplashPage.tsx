@@ -17,13 +17,13 @@ function SplashPage() {
     // Session state is the ONLY authority for login
     if (currentAccountId && identity) {
       // Active session with identity loaded - go to main app
-      navigate('/houses')
+        navigate('/houses')
     } else if (accounts.length > 0) {
       // Accounts exist but no active session - show account selector (login screen)
       navigate('/account/select')
-    } else {
+      } else {
       // No accounts exist - show setup to create first account
-      navigate('/identity/setup')
+        navigate('/identity/setup')
     }
   }, [accountsLoading, currentAccountId, identity, accounts, navigate])
 

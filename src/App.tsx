@@ -2,6 +2,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { IdentityProvider, useIdentity } from './contexts/IdentityContext'
 import { AccountProvider, useAccount } from './contexts/AccountContext'
 import { SignalingProvider } from './contexts/SignalingContext'
+import { PresenceProvider } from './contexts/PresenceContext'
 import { WebRTCProvider } from './contexts/WebRTCContext'
 import TitleBar from './components/TitleBar'
 import { HouseSyncBootstrap } from './components/HouseSyncBootstrap'
@@ -48,46 +49,48 @@ function App() {
     <IdentityProvider>
       <AccountProvider>
         <SignalingProvider>
-          <WebRTCProvider>
-            <HouseSyncBootstrap />
-            <div className="flex flex-col h-screen overflow-hidden border-2 border-foreground/20">
-              <TitleBar />
-              <div className="flex-1 overflow-auto min-h-0">
-                <Router>
-                  <Routes>
-                    <Route path="/" element={<SplashPage />} />
-                    <Route path="/account/select" element={<AccountSelectPage />} />
-                    <Route path="/identity/setup" element={<IdentitySetupPage />} />
-                    <Route path="/identity/restore" element={<IdentityRestorePage />} />
-                    <Route
-                      path="/houses"
-                      element={
-                        <ProtectedRoute>
-                          <HouseListPage />
-                        </ProtectedRoute>
-                      }
-                    />
-                    <Route
-                      path="/houses/:houseId"
-                      element={
-                        <ProtectedRoute>
-                          <HouseViewPage />
-                        </ProtectedRoute>
-                      }
-                    />
-                    <Route
-                      path="/settings"
-                      element={
-                        <ProtectedRoute>
-                          <SettingsPage />
-                        </ProtectedRoute>
-                      }
-                    />
-                  </Routes>
-                </Router>
+          <PresenceProvider>
+            <WebRTCProvider>
+              <HouseSyncBootstrap />
+              <div className="flex flex-col h-screen overflow-hidden border-2 border-foreground/20">
+                <TitleBar />
+                <div className="flex-1 overflow-auto min-h-0">
+                  <Router>
+                    <Routes>
+                      <Route path="/" element={<SplashPage />} />
+                      <Route path="/account/select" element={<AccountSelectPage />} />
+                      <Route path="/identity/setup" element={<IdentitySetupPage />} />
+                      <Route path="/identity/restore" element={<IdentityRestorePage />} />
+                      <Route
+                        path="/houses"
+                        element={
+                          <ProtectedRoute>
+                            <HouseListPage />
+                          </ProtectedRoute>
+                        }
+                      />
+                      <Route
+                        path="/houses/:houseId"
+                        element={
+                          <ProtectedRoute>
+                            <HouseViewPage />
+                          </ProtectedRoute>
+                        }
+                      />
+                      <Route
+                        path="/settings"
+                        element={
+                          <ProtectedRoute>
+                            <SettingsPage />
+                          </ProtectedRoute>
+                        }
+                      />
+                    </Routes>
+                  </Router>
+                </div>
               </div>
-            </div>
-          </WebRTCProvider>
+            </WebRTCProvider>
+          </PresenceProvider>
         </SignalingProvider>
       </AccountProvider>
     </IdentityProvider>

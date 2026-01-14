@@ -1,7 +1,7 @@
 // Allow unused code during WebRTC scaffolding phase
 #![allow(dead_code, unused_variables)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -18,6 +18,7 @@ type PeerId = String;
 type HouseId = String;
 type SigningPubkey = String;
 type WebSocketSender = mpsc::UnboundedSender<hyper_tungstenite::tungstenite::Message>;
+type ConnId = String;
 
 fn decode_path_segment(seg: &str) -> String {
     match urlencoding::decode(seg) {
@@ -83,6 +84,47 @@ enum SignalingMessage {
         signature: String,
         last_updated: DateTime<Utc>,
     },
+
+    // ============================
+    // Presence (online/offline + active house)
+    // ============================
+
+    /// Client declares it is online for a set of houses and optionally which house is currently active.
+    PresenceHello {
+        user_id: String,
+        signing_pubkeys: Vec<SigningPubkey>,
+        #[serde(default)]
+        active_signing_pubkey: Option<SigningPubkey>,
+    },
+
+    /// Client updates which house is currently active (or clears it to indicate "neighborhood").
+    PresenceActive {
+        user_id: String,
+        #[serde(default)]
+        active_signing_pubkey: Option<SigningPubkey>,
+    },
+
+    /// Server snapshot of currently-online users for a signing_pubkey.
+    PresenceSnapshot {
+        signing_pubkey: SigningPubkey,
+        users: Vec<PresenceUserStatus>,
+    },
+
+    /// Server update for a single user relevant to a signing_pubkey.
+    PresenceUpdate {
+        signing_pubkey: SigningPubkey,
+        user_id: String,
+        online: bool,
+        #[serde(default)]
+        active_signing_pubkey: Option<SigningPubkey>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PresenceUserStatus {
+    user_id: String,
+    #[serde(default)]
+    active_signing_pubkey: Option<SigningPubkey>,
 }
 
 // ============================================
@@ -147,6 +189,19 @@ struct PeerConnection {
     signing_pubkey: Option<SigningPubkey>,
 }
 
+#[derive(Debug, Clone)]
+struct PresenceConn {
+    user_id: String,
+    signing_pubkeys: HashSet<SigningPubkey>,
+}
+
+#[derive(Debug, Clone)]
+struct PresenceUser {
+    conns: HashSet<ConnId>,
+    signing_pubkeys: HashSet<SigningPubkey>,
+    active_signing_pubkey: Option<SigningPubkey>,
+}
+
 const EVENT_RETENTION_DAYS: i64 = 30;
 
 /// Shared state across all connections
@@ -160,6 +215,13 @@ struct ServerState {
     signing_houses: HashMap<SigningPubkey, Vec<PeerId>>,
     /// Map of peer_id -> WebSocket sender (for message forwarding)
     peer_senders: HashMap<PeerId, WebSocketSender>,
+
+    /// Map of conn_id -> peer_ids registered on that websocket connection (allows correct cleanup)
+    conn_peers: HashMap<ConnId, Vec<PeerId>>,
+
+    // === Presence state ===
+    presence_conns: HashMap<ConnId, PresenceConn>,
+    presence_users: HashMap<String, PresenceUser>,
 
     // === Event queue state (REST API) ===
     /// Hints only - clients treat local state as authoritative
@@ -179,6 +241,9 @@ impl ServerState {
             houses: HashMap::new(),
             signing_houses: HashMap::new(),
             peer_senders: HashMap::new(),
+            conn_peers: HashMap::new(),
+            presence_conns: HashMap::new(),
+            presence_users: HashMap::new(),
             house_hints: HashMap::new(),
             invite_tokens: HashMap::new(),
             event_queues: HashMap::new(),
@@ -381,6 +446,95 @@ impl ServerState {
         // Also clean up empty queues
         self.event_queues.retain(|_, events| !events.is_empty());
     }
+
+    fn broadcast_presence_update(&self, signing_pubkey: &SigningPubkey, user_id: &str, online: bool, active: Option<SigningPubkey>) {
+        let Some(peers) = self.signing_houses.get(signing_pubkey) else {
+            return;
+        };
+
+        let msg = SignalingMessage::PresenceUpdate {
+            signing_pubkey: signing_pubkey.clone(),
+            user_id: user_id.to_string(),
+            online,
+            active_signing_pubkey: active,
+        };
+
+        let Ok(json) = serde_json::to_string(&msg) else {
+            return;
+        };
+
+        for peer_id in peers {
+            if let Some(sender) = self.peer_senders.get(peer_id) {
+                let _ = sender.send(hyper_tungstenite::tungstenite::Message::Text(json.clone()));
+            }
+        }
+    }
+
+    fn presence_snapshot_for(&self, signing_pubkey: &SigningPubkey) -> Vec<PresenceUserStatus> {
+        let mut out = Vec::new();
+        for (user_id, u) in self.presence_users.iter() {
+            if u.signing_pubkeys.contains(signing_pubkey) {
+                out.push(PresenceUserStatus {
+                    user_id: user_id.clone(),
+                    active_signing_pubkey: u.active_signing_pubkey.clone(),
+                });
+            }
+        }
+        out
+    }
+
+    fn upsert_presence_hello(
+        &mut self,
+        conn_id: &ConnId,
+        user_id: String,
+        signing_pubkeys: Vec<SigningPubkey>,
+        active_signing_pubkey: Option<SigningPubkey>,
+    ) -> Vec<SigningPubkey> {
+        let spk_set: HashSet<SigningPubkey> = signing_pubkeys.into_iter().collect();
+        self.presence_conns.insert(
+            conn_id.clone(),
+            PresenceConn {
+                user_id: user_id.clone(),
+                signing_pubkeys: spk_set.clone(),
+            },
+        );
+
+        let u = self.presence_users.entry(user_id.clone()).or_insert_with(|| PresenceUser {
+            conns: HashSet::new(),
+            signing_pubkeys: HashSet::new(),
+            active_signing_pubkey: None,
+        });
+
+        u.conns.insert(conn_id.clone());
+        for spk in spk_set.iter() {
+            u.signing_pubkeys.insert(spk.clone());
+        }
+        u.active_signing_pubkey = active_signing_pubkey;
+
+        u.signing_pubkeys.iter().cloned().collect()
+    }
+
+    fn update_presence_active(&mut self, user_id: &str, active_signing_pubkey: Option<SigningPubkey>) -> Option<Vec<SigningPubkey>> {
+        let u = self.presence_users.get_mut(user_id)?;
+        u.active_signing_pubkey = active_signing_pubkey;
+        Some(u.signing_pubkeys.iter().cloned().collect())
+    }
+
+    fn remove_presence_conn(&mut self, conn_id: &ConnId) -> Option<(String, Vec<SigningPubkey>)> {
+        let conn = self.presence_conns.remove(conn_id)?;
+        let user_id = conn.user_id.clone();
+        let spks: Vec<SigningPubkey> = conn.signing_pubkeys.iter().cloned().collect();
+
+        if let Some(u) = self.presence_users.get_mut(&user_id) {
+            u.conns.remove(conn_id);
+            if u.conns.is_empty() {
+                self.presence_users.remove(&user_id);
+                return Some((user_id, spks));
+            }
+        }
+        // User still has another connection; keep online.
+        None
+    }
 }
 
 type SharedState = Arc<Mutex<ServerState>>;
@@ -397,7 +551,7 @@ async fn handle_connection(
     info!("WebSocket connection established from {}", addr);
 
     let (mut ws_sender, mut ws_receiver) = ws.split();
-    let mut current_peer_id: Option<PeerId> = None;
+    let conn_id: ConnId = uuid::Uuid::new_v4().to_string();
 
     // Create channel for sending messages to this WebSocket
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -419,7 +573,7 @@ async fn handle_connection(
                     Some(Ok(hyper_tungstenite::tungstenite::Message::Text(text))) => {
                         match serde_json::from_str::<SignalingMessage>(&text) {
                             Ok(msg) => {
-                                match handle_message(msg, &mut current_peer_id, &state, &tx).await {
+                                match handle_message(msg, &conn_id, &state, &tx).await {
                                     Ok(_) => {}
                                     Err(e) => {
                                         warn!("Error handling message: {}", e);
@@ -465,10 +619,20 @@ async fn handle_connection(
     }
 
     // Clean up when connection closes
-    if let Some(peer_id) = current_peer_id {
+    {
         let mut state = state.lock().await;
-        state.unregister_peer(&peer_id);
-        info!("Unregistered peer {}", peer_id);
+
+        if let Some(peer_ids) = state.conn_peers.remove(&conn_id) {
+            for peer_id in peer_ids {
+                state.unregister_peer(&peer_id);
+            }
+        }
+
+        if let Some((user_id, spks)) = state.remove_presence_conn(&conn_id) {
+            for spk in spks {
+                state.broadcast_presence_update(&spk, &user_id, false, None);
+            }
+        }
     }
 
     send_task.abort();
@@ -476,7 +640,7 @@ async fn handle_connection(
 
 async fn handle_message(
     msg: SignalingMessage,
-    current_peer_id: &mut Option<PeerId>,
+    conn_id: &ConnId,
     state: &SharedState,
     sender: &WebSocketSender,
 ) -> Result<(), String> {
@@ -488,7 +652,12 @@ async fn handle_message(
             // Store the sender for this peer
             state.peer_senders.insert(peer_id.clone(), sender.clone());
 
-            *current_peer_id = Some(peer_id.clone());
+            // Track all peer_ids for this ws connection (fixes leaks when a single ws registers multiple peer_ids).
+            state
+                .conn_peers
+                .entry(conn_id.clone())
+                .or_insert_with(Vec::new)
+                .push(peer_id.clone());
 
             info!("Registered peer {} in house {}", peer_id, house_id);
 
@@ -504,6 +673,39 @@ async fn handle_message(
                 .send(hyper_tungstenite::tungstenite::Message::Text(json))
                 .map_err(|e| format!("Failed to send response: {}", e))?;
 
+            Ok(())
+        }
+        SignalingMessage::PresenceHello { user_id, signing_pubkeys, active_signing_pubkey } => {
+            let mut st = state.lock().await;
+            // Upsert presence
+            let affected_spks = st.upsert_presence_hello(conn_id, user_id.clone(), signing_pubkeys.clone(), active_signing_pubkey.clone());
+
+            // Send snapshots to this sender for the houses the client asked about
+            for spk in signing_pubkeys.iter() {
+                let users = st.presence_snapshot_for(spk);
+                let snap = SignalingMessage::PresenceSnapshot {
+                    signing_pubkey: spk.clone(),
+                    users,
+                };
+                if let Ok(json) = serde_json::to_string(&snap) {
+                    let _ = sender.send(hyper_tungstenite::tungstenite::Message::Text(json));
+                }
+            }
+
+            // Broadcast this user's presence to relevant houses
+            for spk in affected_spks {
+                st.broadcast_presence_update(&spk, &user_id, true, active_signing_pubkey.clone());
+            }
+
+            Ok(())
+        }
+        SignalingMessage::PresenceActive { user_id, active_signing_pubkey } => {
+            let mut st = state.lock().await;
+            if let Some(spks) = st.update_presence_active(&user_id, active_signing_pubkey.clone()) {
+                for spk in spks {
+                    st.broadcast_presence_update(&spk, &user_id, true, active_signing_pubkey.clone());
+                }
+            }
             Ok(())
         }
         SignalingMessage::Offer { from_peer, to_peer, sdp } => {

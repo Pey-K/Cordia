@@ -1,14 +1,17 @@
 import { Link, useNavigate } from 'react-router-dom'
 import { Plus, Settings, Users, Trash2 } from 'lucide-react'
 import { Button } from '../components/ui/button'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import { useSignaling } from '../contexts/SignalingContext'
+import { SignalingStatus } from '../components/SignalingStatus'
 import { listHouses, createHouse, deleteHouse, type House, parseInviteUri, publishHouseHintOpaque, publishHouseHintMemberLeft, redeemTemporaryInvite } from '../lib/tauri'
 import { useIdentity } from '../contexts/IdentityContext'
+import { usePresence } from '../contexts/PresenceContext'
 
 function HouseListPage() {
   const navigate = useNavigate()
   const { identity } = useIdentity()
+  const { getLevel } = usePresence()
   const { signalingUrl, status: signalingStatus } = useSignaling()
   const [houses, setHouses] = useState<House[]>([])
   const [isLoading, setIsLoading] = useState(true)
@@ -33,6 +36,124 @@ function HouseListPage() {
       window.removeEventListener('roommate:houses-updated', onHousesUpdated)
     }
   }, [])
+
+  // Presence: "Neighborhood" (not active in a specific house)
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('roommate:active-house-changed', { detail: { signing_pubkey: null } }))
+  }, [])
+
+  const getInitials = (name: string) => {
+    const cleaned = name.trim()
+    if (!cleaned) return '?'
+    const parts = cleaned.split(/\s+/).filter(Boolean)
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
+    return (parts[0][0] + parts[1][0]).toUpperCase()
+  }
+
+  const hashId = (s: string) => {
+    let hash = 0
+    for (let i = 0; i < s.length; i++) hash = (hash * 31 + s.charCodeAt(i)) >>> 0
+    return hash
+  }
+
+  const avatarStyleForUser = (userId: string): CSSProperties => {
+    // Deterministic pastel color using full hue space → minimal collisions and a softer aesthetic.
+    const h = hashId(userId) % 360
+    return {
+      backgroundColor: `hsl(${h} 60% 78%)`,
+      color: `hsl(${h} 35% 25%)`,
+    }
+  }
+
+  const MemberStack = ({ house }: { house: House }) => {
+    const maxVisible = 6
+    const avatarPx = 28 // h-7/w-7
+    const stepPx = 19    // overlap step (smaller = more overlap)
+
+    const visible = house.members.slice(0, maxVisible)
+    const extraCount = Math.max(0, house.members.length - maxVisible)
+    const itemCount = visible.length + (extraCount > 0 ? 1 : 0)
+    const widthPx = itemCount > 0 ? avatarPx + (itemCount - 1) * stepPx : avatarPx
+
+    const PresenceMark = ({ level }: { level: 'active' | 'online' | 'offline' }) => {
+      return (
+        <div className="absolute -bottom-1 left-1/2 -translate-x-1/2">
+          {level === 'active' ? (
+            <div className="h-2 w-2 bg-green-500 ring-2 ring-background" />
+          ) : level === 'online' ? (
+            <div className="h-2 w-2 bg-amber-500 ring-2 ring-background" />
+          ) : (
+            <div className="h-2 w-2 rounded-full bg-muted-foreground/60 ring-2 ring-background" />
+          )}
+        </div>
+      )
+    }
+
+    return (
+      <div
+        className="relative h-7 isolation-isolate"
+        style={{ width: widthPx }}
+      >
+        {visible.map((m, i) => (
+          (() => {
+            const level = getLevel(house.signing_pubkey, m.user_id)
+            return (
+          <div
+            key={m.user_id}
+            className="absolute top-0 z-[var(--z)] hover:z-50"
+            style={{ left: i * stepPx, ['--z' as any]: i }}
+          >
+            <div className="relative group/avatar">
+              <div
+                className="relative h-7 w-7 grid place-items-center rounded-none text-[10px] font-mono tracking-wider ring-2 ring-background will-change-transform transition-transform duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.06]"
+                style={avatarStyleForUser(m.user_id)}
+                aria-label={m.display_name}
+              >
+                {getInitials(m.display_name)}
+                <PresenceMark level={level} />
+              </div>
+
+              {/* Tooltip */}
+              <div className="absolute top-full mt-2 left-1/2 -translate-x-1/2 px-2 py-1 bg-popover border-2 border-border rounded-md shadow-lg opacity-0 invisible group-hover/avatar:opacity-100 group-hover/avatar:visible transition-all duration-200 pointer-events-none whitespace-nowrap">
+                <div className="flex items-center gap-2">
+                  {level === 'active' ? (
+                    <div className="h-2 w-2 bg-green-500" />
+                  ) : level === 'online' ? (
+                    <div className="h-2 w-2 bg-amber-500" />
+                  ) : (
+                    <div className="h-2 w-2 rounded-full bg-muted-foreground/60" />
+                  )}
+                  <p className="text-xs font-light">{m.display_name}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+            )
+          })()
+        ))}
+
+        {extraCount > 0 && (
+          <div
+            className="absolute top-0 z-[var(--z)] hover:z-50"
+            style={{ left: visible.length * stepPx, ['--z' as any]: visible.length }}
+            title={`${extraCount} more`}
+          >
+            <div className="relative group/avatar">
+              <div className="h-7 w-7 grid place-items-center rounded-none text-[10px] font-mono text-muted-foreground bg-muted ring-2 ring-background will-change-transform transition-transform duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.06]">
+                +{extraCount}
+              </div>
+              <div className="absolute top-full mt-2 left-1/2 -translate-x-1/2 px-2 py-1 bg-popover border-2 border-border rounded-md shadow-lg opacity-0 invisible group-hover/avatar:opacity-100 group-hover/avatar:visible transition-all duration-200 pointer-events-none whitespace-nowrap">
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-muted-foreground/60" />
+                  <p className="text-xs font-light">{extraCount} more</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
 
   const loadHouses = async () => {
     try {
@@ -169,114 +290,132 @@ function HouseListPage() {
   }
 
   return (
-    <div className="h-full bg-background grid-pattern flex flex-col">
-      <header className="border-b-2 border-border">
-        <div className="container flex h-16 items-center justify-between px-6">
+    <div className="h-full bg-background grid-pattern flex flex-col overflow-hidden">
+      <header className="border-b-2 border-border shrink-0">
+        <div className="w-full flex h-16 items-center justify-between px-6">
           <div className="flex items-center gap-4">
             <div className="w-px h-6 bg-foreground/20"></div>
-            <h1 className="text-sm font-light tracking-wider uppercase">Houses</h1>
+            <h1 className="text-sm font-light tracking-wider uppercase">Neighborhood</h1>
           </div>
-          <Link to="/settings">
-            <Button variant="ghost" size="icon" className="h-9 w-9">
-              <Settings className="h-4 w-4" />
-            </Button>
-          </Link>
+          <div className="flex items-center gap-2">
+            <SignalingStatus />
+            <Link to="/settings">
+              <Button variant="ghost" size="icon" className="h-9 w-9">
+                <Settings className="h-4 w-4" />
+              </Button>
+            </Link>
+          </div>
         </div>
       </header>
 
-      <main className="flex-1 flex items-center justify-center p-8">
-        {houses.length === 0 ? (
-          <div className="max-w-md w-full space-y-8">
-            <div className="space-y-4">
-              <div className="w-12 h-px bg-foreground/20"></div>
-              <h2 className="text-2xl font-light tracking-tight">No houses</h2>
-              <p className="text-muted-foreground text-sm leading-relaxed font-light">
-                Create or join a house to start voice chatting with your roommates.
-              </p>
-            </div>
-            <div className="flex gap-3">
-              <Button
-                onClick={() => setShowCreateDialog(true)}
-                className="flex-1 bg-foreground text-background hover:bg-foreground/90 h-11 font-light tracking-wide"
-              >
-                <Plus className="mr-2 h-4 w-4" />
-                Create House
-              </Button>
-              <Button
-                onClick={() => setShowJoinDialog(true)}
-                variant="outline"
-                className="flex-1 h-11 font-light tracking-wide"
-              >
-                Join House
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <div className="max-w-2xl w-full space-y-6">
-            <div className="flex items-center justify-between">
-              <div className="w-12 h-px bg-foreground/20"></div>
-              <div className="flex gap-2">
-                <Button
-                  onClick={() => setShowJoinDialog(true)}
-                  variant="outline"
-                  size="sm"
-                  className="h-9 font-light"
-                >
-                  Join House
-                </Button>
-                <Button
-                  onClick={() => setShowCreateDialog(true)}
-                  size="sm"
-                  className="bg-foreground text-background hover:bg-foreground/90 h-9 font-light"
-                >
-                  <Plus className="mr-2 h-4 w-4" />
-                  New House
-                </Button>
-              </div>
-            </div>
-            <div className="grid gap-4">
-              {houses.map((house) => (
-                <div
-                  key={house.id}
-                  className="relative group"
-                >
-                  <div
-                    onClick={() => navigate(`/houses/${house.id}`)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault()
-                        navigate(`/houses/${house.id}`)
-                      }
-                    }}
-                    role="button"
-                    tabIndex={0}
-                    className="w-full p-6 border-2 border-border bg-card hover:bg-accent/50 transition-colors text-left rounded-lg"
+      {/* Split-scroll layout: only the houses list scrolls; neighbors stays fixed */}
+      <main className="flex-1 overflow-hidden min-h-0">
+        <div className="p-8 h-full">
+          <div className="grid grid-cols-1 md:grid-cols-10 gap-6 items-stretch h-full min-h-0">
+            {/* Left: Houses (Neighborhood) */}
+            <section className="col-span-1 md:col-span-7 flex flex-col min-h-0 h-full">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-px bg-foreground/20"></div>
+                  <h2 className="text-xs font-light tracking-wider uppercase text-muted-foreground">Houses</h2>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={() => setShowJoinDialog(true)}
+                    variant="outline"
+                    size="sm"
+                    className="h-9 font-light"
                   >
-                    <div className="flex items-start justify-between">
-                      <div className="space-y-2">
-                        <h3 className="text-lg font-light tracking-tight">{house.name}</h3>
-                        <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                          <span className="flex items-center gap-1">
-                            <Users className="h-3 w-3" />
-                            {house.members.length} {house.members.length === 1 ? 'member' : 'members'}
-                          </span>
-                          <span>{house.rooms.length} {house.rooms.length === 1 ? 'room' : 'rooms'}</span>
-                        </div>
-                      </div>
-                      <button
-                        onClick={(e) => handleDeleteHouse(e, house.id)}
-                        className="opacity-0 group-hover:opacity-100 p-2 rounded-md hover:bg-destructive/20 text-destructive transition-opacity"
-                        title="Leave and delete house"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                    Join House
+                  </Button>
+                  <Button
+                    onClick={() => setShowCreateDialog(true)}
+                    size="sm"
+                    className="bg-foreground text-background hover:bg-foreground/90 h-9 font-light"
+                  >
+                    <Plus className="mr-2 h-4 w-4" />
+                    New House
+                  </Button>
+                </div>
+              </div>
+
+              {/* Houses list (scrolls) */}
+              <div className="mt-6 flex-1 min-h-0 overflow-y-auto pr-1">
+                {houses.length === 0 ? (
+                  <div className="border-2 border-border bg-card/50 rounded-lg p-8">
+                    <div className="max-w-md space-y-4">
+                      <h3 className="text-2xl font-light tracking-tight">No houses yet</h3>
+                      <p className="text-muted-foreground text-sm leading-relaxed font-light">
+                        Create or join a house to start voice chatting with your roommates.
+                      </p>
                     </div>
                   </div>
+                ) : (
+                  <div className="grid gap-4 pb-2">
+                    {houses.map((house) => (
+                      <div key={house.id} className="relative group/card">
+                        <div
+                          onClick={() => navigate(`/houses/${house.id}`)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault()
+                              navigate(`/houses/${house.id}`)
+                            }
+                          }}
+                          role="button"
+                          tabIndex={0}
+                          className="w-full p-6 border-2 border-border bg-card hover:bg-accent/50 transition-colors text-left rounded-lg"
+                        >
+                          <div className="flex items-start justify-between">
+                            <div className="space-y-2">
+                              <h3 className="text-lg font-light tracking-tight">{house.name}</h3>
+                              <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                                <span className="flex items-center gap-1">
+                                  <Users className="h-3 w-3" />
+                                  {house.members.length} {house.members.length === 1 ? 'member' : 'members'}
+                                </span>
+                                <span>{house.rooms.length} {house.rooms.length === 1 ? 'room' : 'rooms'}</span>
+                              </div>
+                              {house.members.length > 0 && (
+                                <div className="pt-1">
+                                  <div className="flex items-center">
+                                    <MemberStack house={house} />
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                            <button
+                              onClick={(e) => handleDeleteHouse(e, house.id)}
+                            className="opacity-0 group-hover/card:opacity-100 p-2 rounded-md hover:bg-destructive/20 text-destructive transition-opacity"
+                              title="Leave and delete house"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </section>
+
+            {/* Right: Neighbors (placeholder) */}
+            <aside className="hidden md:block md:col-span-3 h-full min-h-0">
+              <div className="border-2 border-border bg-card/50 rounded-lg p-4">
+                <div className="space-y-2">
+                  <h3 className="text-xs font-light tracking-wider uppercase text-muted-foreground">Neighbors</h3>
+                  <p className="text-sm font-light leading-relaxed text-muted-foreground">
+                    Friends list is coming soon. This panel will show who’s online and what house they’re in.
+                  </p>
                 </div>
-              ))}
-            </div>
+                <div className="mt-4 border border-border/60 bg-background/40 rounded-md p-3">
+                  <p className="text-xs font-mono text-muted-foreground">0 online</p>
+                </div>
+              </div>
+            </aside>
           </div>
-        )}
+        </div>
       </main>
 
       {showCreateDialog && (

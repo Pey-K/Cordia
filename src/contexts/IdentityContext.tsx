@@ -13,7 +13,7 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
   const [identity, setIdentity] = useState<UserIdentity | null>(null);
 
   function clearIdentity() {
-    setIdentity(null);
+      setIdentity(null);
   }
 
   return (

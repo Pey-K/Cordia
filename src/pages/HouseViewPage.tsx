@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Settings, Volume2, Copy, Check, Mic, MicOff, PhoneOff, Plus } from 'lucide-react'
+import { ArrowLeft, Settings, Volume2, Copy, Check, Mic, MicOff, PhoneOff, Plus, Trash2 } from 'lucide-react'
 import { Button } from '../components/ui/button'
-import { loadHouse, addRoom, type House, type Room, fetchAndImportHouseHintOpaque, publishHouseHintOpaque, createTemporaryInvite, revokeActiveInvite } from '../lib/tauri'
+import { loadHouse, addRoom, removeRoom, type House, type Room, fetchAndImportHouseHintOpaque, publishHouseHintOpaque, createTemporaryInvite, revokeActiveInvite } from '../lib/tauri'
 import { useIdentity } from '../contexts/IdentityContext'
 import { useWebRTC } from '../contexts/WebRTCContext'
 import { SignalingStatus } from '../components/SignalingStatus'
@@ -26,6 +26,9 @@ function HouseViewPage() {
   const [isCreatingRoom, setIsCreatingRoom] = useState(false)
   const [isCreatingInvite, setIsCreatingInvite] = useState(false)
   const [isRevokingInvite, setIsRevokingInvite] = useState(false)
+  const [deleteRoomTarget, setDeleteRoomTarget] = useState<Room | null>(null)
+  const [isDeletingRoom, setIsDeletingRoom] = useState(false)
+  const [deleteRoomError, setDeleteRoomError] = useState('')
 
   useEffect(() => {
     if (!houseId) {
@@ -44,6 +47,17 @@ function HouseViewPage() {
     window.addEventListener('focus', handleFocus)
     return () => window.removeEventListener('focus', handleFocus)
   }, [houseId])
+
+  // Presence: mark this house as "active" while the user is viewing it.
+  useEffect(() => {
+    if (!house?.signing_pubkey) return
+    window.dispatchEvent(
+      new CustomEvent('roommate:active-house-changed', { detail: { signing_pubkey: house.signing_pubkey } })
+    )
+    return () => {
+      window.dispatchEvent(new CustomEvent('roommate:active-house-changed', { detail: { signing_pubkey: null } }))
+    }
+  }, [house?.signing_pubkey])
 
   const loadHouseData = async () => {
     if (!houseId) return
@@ -204,6 +218,47 @@ function HouseViewPage() {
     }
   }
 
+  const handleDeleteRoomClick = (e: React.MouseEvent, room: Room) => {
+    e.stopPropagation()
+    setDeleteRoomError('')
+    setDeleteRoomTarget(room)
+  }
+
+  const confirmDeleteRoom = async () => {
+    if (!houseId || !house || !deleteRoomTarget) return
+    setIsDeletingRoom(true)
+    setDeleteRoomError('')
+
+    try {
+      // If we're currently in this room's voice channel, disconnect first.
+      if (currentRoom?.id === deleteRoomTarget.id && isInVoice) {
+        leaveVoice()
+        setIsInVoice(false)
+        setIsMuted(false)
+      }
+
+      const updatedHouse = await removeRoom(houseId, deleteRoomTarget.id)
+      setHouse(updatedHouse)
+
+      if (currentRoom?.id === deleteRoomTarget.id) {
+        setCurrentRoom(null)
+      }
+
+      // Publish updated hint (rooms changed) so WS subscribers refresh.
+      if (signalingStatus === 'connected' && signalingUrl) {
+        publishHouseHintOpaque(signalingUrl, updatedHouse.id).catch(e => console.warn('Failed to publish house hint:', e))
+      }
+
+      setDeleteRoomTarget(null)
+      window.dispatchEvent(new Event('roommate:houses-updated'))
+    } catch (e) {
+      console.error('Failed to delete room:', e)
+      setDeleteRoomError('Failed to delete room. Please try again.')
+    } finally {
+      setIsDeletingRoom(false)
+    }
+  }
+
   if (isLoading) {
     return (
       <div className="h-full bg-background grid-pattern flex items-center justify-center">
@@ -223,7 +278,7 @@ function HouseViewPage() {
   return (
     <div className="h-full bg-background grid-pattern flex flex-col">
       <header className="border-b-2 border-border">
-        <div className="container flex h-16 items-center justify-between px-6">
+        <div className="w-full flex h-16 items-center justify-between px-6">
           <div className="flex items-center gap-4">
             <button
               onClick={() => navigate('/houses')}
@@ -264,9 +319,17 @@ function HouseViewPage() {
               </div>
               <div className="space-y-1">
                 {house.rooms.map((room) => (
-                  <button
+                  <div
                     key={room.id}
                     onClick={() => handleSelectRoom(room)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        handleSelectRoom(room)
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
                     className={`w-full px-3 py-2 rounded-md transition-colors text-left group ${
                       currentRoom?.id === room.id
                         ? 'bg-primary text-primary-foreground'
@@ -278,11 +341,25 @@ function HouseViewPage() {
                         <span className="text-lg">#</span>
                         <span className="text-sm font-light">{room.name}</span>
                       </div>
-                      {currentRoom?.id === room.id && isInVoice && (
-                        <Volume2 className="h-3 w-3" />
-                      )}
+                      <div className="flex items-center gap-2">
+                        {currentRoom?.id === room.id && isInVoice && (
+                          <Volume2 className="h-3 w-3" />
+                        )}
+                        <button
+                          type="button"
+                          title="Delete room"
+                          onClick={(e) => handleDeleteRoomClick(e, room)}
+                          className={`p-1 rounded transition-colors ${
+                            currentRoom?.id === room.id
+                              ? 'hover:bg-primary-foreground/10 text-primary-foreground/80 hover:text-primary-foreground'
+                              : 'hover:bg-accent/70 text-muted-foreground hover:text-foreground'
+                          } opacity-0 group-hover:opacity-100 focus:opacity-100`}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </div>
                     </div>
-                  </button>
+                  </div>
                 ))}
               </div>
             </div>
@@ -566,6 +643,40 @@ function HouseViewPage() {
                 className="flex-1"
               >
                 {isCreatingRoom ? 'Creating...' : 'Create Room'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Room Modal */}
+      {deleteRoomTarget && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="w-full max-w-md border-2 border-border bg-background rounded-lg p-6 space-y-4">
+            <div className="space-y-2">
+              <h2 className="text-lg font-light tracking-tight">Delete room?</h2>
+              <p className="text-sm text-muted-foreground font-light leading-relaxed">
+                This will remove <span className="text-foreground font-normal">#{deleteRoomTarget.name}</span> for everyone in this house.
+              </p>
+              {deleteRoomError && (
+                <p className="text-sm text-red-500 font-light">{deleteRoomError}</p>
+              )}
+            </div>
+            <div className="flex gap-3 pt-2">
+              <Button
+                variant="outline"
+                className="flex-1 h-10 font-light"
+                onClick={() => setDeleteRoomTarget(null)}
+                disabled={isDeletingRoom}
+              >
+                Cancel
+              </Button>
+              <Button
+                className="flex-1 h-10 font-light bg-red-600 hover:bg-red-700 text-white"
+                onClick={confirmDeleteRoom}
+                disabled={isDeletingRoom}
+              >
+                {isDeletingRoom ? 'Deleting…' : 'Delete'}
               </Button>
             </div>
           </div>

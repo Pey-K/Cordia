@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react'
+import { createContext, useContext, useState, useEffect, useCallback, ReactNode, useRef } from 'react'
 import { checkSignalingServer, getSignalingServerUrl } from '../lib/tauri'
 
 export type SignalingStatus = 'connected' | 'disconnected' | 'checking'
@@ -15,8 +15,13 @@ const SignalingContext = createContext<SignalingContextType | null>(null)
 export function SignalingProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<SignalingStatus>('checking')
   const [signalingUrl, setSignalingUrl] = useState<string>('')
+  const healthCheckInFlightRef = useRef(false)
 
+  // Manual/foreground health check: shows "checking" in the UI (used on initial load and when a user explicitly triggers it).
   const checkHealth = useCallback(async () => {
+    if (healthCheckInFlightRef.current) return
+    healthCheckInFlightRef.current = true
+
     setStatus('checking')
     try {
       const isHealthy = await checkSignalingServer(signalingUrl || undefined)
@@ -24,6 +29,29 @@ export function SignalingProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       console.error('Signaling health check failed:', error)
       setStatus('disconnected')
+    } finally {
+      healthCheckInFlightRef.current = false
+    }
+  }, [signalingUrl])
+
+  // Background health check: does NOT flip the UI to "checking" (prevents flicker/disabled-button flashes).
+  const checkHealthSilent = useCallback(async () => {
+    if (healthCheckInFlightRef.current) return
+    healthCheckInFlightRef.current = true
+
+    try {
+      const isHealthy = await checkSignalingServer(signalingUrl || undefined)
+      setStatus(prev => {
+        const next: SignalingStatus = isHealthy ? 'connected' : 'disconnected'
+        // Don't overwrite "checking" during the initial load until the first foreground check runs.
+        if (prev === 'checking') return prev
+        return next
+      })
+    } catch (error) {
+      console.error('Signaling health check failed:', error)
+      setStatus(prev => (prev === 'checking' ? prev : 'disconnected'))
+    } finally {
+      healthCheckInFlightRef.current = false
     }
   }, [signalingUrl])
 
@@ -48,10 +76,10 @@ export function SignalingProvider({ children }: { children: ReactNode }) {
     checkHealth()
 
     // Periodic health check every 30 seconds
-    const interval = setInterval(checkHealth, 30000)
+    const interval = setInterval(checkHealthSilent, 30000)
 
     return () => clearInterval(interval)
-  }, [signalingUrl, checkHealth])
+  }, [signalingUrl, checkHealth, checkHealthSilent])
 
   return (
     <SignalingContext.Provider value={{ status, signalingUrl, checkHealth, reloadUrl }}>
