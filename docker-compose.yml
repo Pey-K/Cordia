@@ -5,11 +5,12 @@ services:
     build:
       context: ./signaling-server
       dockerfile: Dockerfile
+      args:
+        - SIGNALING_FEATURES=${SIGNALING_FEATURES:-}
     container_name: roommate-signaling
     hostname: roommate-signaling
     environment:
-      - PUID=1000
-      - PGID=1000
+
       - TZ=America/New_York
       - RUST_LOG=info
     volumes:

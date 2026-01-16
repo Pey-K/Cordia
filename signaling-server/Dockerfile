@@ -8,12 +8,15 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
+# Optional cargo feature flags (e.g. "postgres,redis-backend")
+ARG SIGNALING_FEATURES=""
+
 # Copy everything
 COPY Cargo.toml ./
 COPY src ./src
 
 # Build for release
-RUN cargo build --release
+RUN if [ -n "$SIGNALING_FEATURES" ]; then cargo build --release --features "$SIGNALING_FEATURES"; else cargo build --release; fi
 
 # Runtime stage
 FROM debian:bookworm-slim

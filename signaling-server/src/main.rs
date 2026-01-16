@@ -15,7 +15,9 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 
 #[cfg(feature = "postgres")]
-use sqlx::{PgPool, postgres::PgPoolOptions};
+use sqlx::{PgPool, postgres::PgPoolOptions, Row};
+#[cfg(feature = "redis-backend")]
+use redis::AsyncCommands;
 
 type PeerId = String;
 type HouseId = String;
@@ -279,6 +281,38 @@ async fn init_db(pool: &PgPool) -> Result<(), String> {
     .execute(pool)
     .await
     .map_err(|e| format!("init_db profiles: {}", e))?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS house_hints (
+          signing_pubkey TEXT PRIMARY KEY,
+          encrypted_state TEXT NOT NULL,
+          signature TEXT NOT NULL,
+          last_updated TIMESTAMPTZ NOT NULL
+        );
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| format!("init_db house_hints: {}", e))?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS invite_tokens (
+          code TEXT PRIMARY KEY,
+          signing_pubkey TEXT NOT NULL,
+          encrypted_payload TEXT NOT NULL,
+          signature TEXT NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL,
+          expires_at TIMESTAMPTZ NOT NULL,
+          max_uses INTEGER NOT NULL,
+          remaining_uses INTEGER NOT NULL
+        );
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| format!("init_db invite_tokens: {}", e))?;
     Ok(())
 }
 
@@ -311,31 +345,378 @@ async fn upsert_profile_db(pool: &PgPool, user_id: &str, rec: &ProfileRecord) ->
 #[cfg(feature = "postgres")]
 async fn load_profiles_db(pool: &PgPool, user_ids: &[String]) -> Result<Vec<ProfileSnapshotRecord>, String> {
     // NOTE: We intentionally don’t expose updated_at; rev is the authoritative ordering.
-    let rows = sqlx::query!(
+    let rows = sqlx::query(
         r#"
         SELECT user_id, display_name, real_name, show_real_name, rev
         FROM profiles
         WHERE user_id = ANY($1)
         "#,
-        user_ids
     )
+    .bind(user_ids)
     .fetch_all(pool)
     .await
     .map_err(|e| format!("load_profiles_db: {}", e))?;
 
-    Ok(rows
-        .into_iter()
-        .map(|r| ProfileSnapshotRecord {
-            user_id: r.user_id,
-            display_name: r.display_name,
-            real_name: r.real_name,
-            show_real_name: r.show_real_name,
-            rev: r.rev,
-        })
-        .collect())
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        out.push(ProfileSnapshotRecord {
+            user_id: row.try_get("user_id").map_err(|e| format!("load_profiles_db user_id: {}", e))?,
+            display_name: row
+                .try_get("display_name")
+                .map_err(|e| format!("load_profiles_db display_name: {}", e))?,
+            real_name: row
+                .try_get::<Option<String>, _>("real_name")
+                .map_err(|e| format!("load_profiles_db real_name: {}", e))?,
+            show_real_name: row
+                .try_get("show_real_name")
+                .map_err(|e| format!("load_profiles_db show_real_name: {}", e))?,
+            rev: row.try_get("rev").map_err(|e| format!("load_profiles_db rev: {}", e))?,
+        });
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "postgres")]
+async fn upsert_house_hint_db(pool: &PgPool, hint: &EncryptedHouseHint) -> Result<(), String> {
+    sqlx::query(
+        r#"
+        INSERT INTO house_hints (signing_pubkey, encrypted_state, signature, last_updated)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (signing_pubkey) DO UPDATE
+        SET encrypted_state = EXCLUDED.encrypted_state,
+            signature = EXCLUDED.signature,
+            last_updated = EXCLUDED.last_updated;
+        "#,
+    )
+    .bind(&hint.signing_pubkey)
+    .bind(&hint.encrypted_state)
+    .bind(&hint.signature)
+    .bind(hint.last_updated)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("upsert_house_hint_db: {}", e))?;
+    Ok(())
+}
+
+#[cfg(feature = "postgres")]
+async fn get_house_hint_db(pool: &PgPool, signing_pubkey: &str) -> Result<Option<EncryptedHouseHint>, String> {
+    let row = sqlx::query(
+        r#"
+        SELECT signing_pubkey, encrypted_state, signature, last_updated
+        FROM house_hints
+        WHERE signing_pubkey = $1
+        "#,
+    )
+    .bind(signing_pubkey)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("get_house_hint_db: {}", e))?;
+
+    Ok(row.map(|r| EncryptedHouseHint {
+        signing_pubkey: r.try_get("signing_pubkey").unwrap_or_default(),
+        encrypted_state: r.try_get("encrypted_state").unwrap_or_default(),
+        signature: r.try_get("signature").unwrap_or_default(),
+        last_updated: r.try_get("last_updated").unwrap_or_else(|_| Utc::now()),
+    }))
+}
+
+#[cfg(feature = "postgres")]
+async fn gc_expired_invites_db(pool: &PgPool) -> Result<(), String> {
+    sqlx::query("DELETE FROM invite_tokens WHERE expires_at <= NOW()")
+        .execute(pool)
+        .await
+        .map_err(|e| format!("gc_expired_invites_db: {}", e))?;
+    Ok(())
+}
+
+#[cfg(feature = "postgres")]
+async fn upsert_invite_db(pool: &PgPool, signing_pubkey: &str, req: InviteTokenCreateRequest) -> Result<InviteTokenRecord, String> {
+    let code = req.code.trim().to_string();
+    if code.len() < 10 || code.len() > 64 {
+        return Err("Invalid invite code length".to_string());
+    }
+    let now = Utc::now();
+    let expires_at = now + Duration::days(30);
+    let max_uses = req.max_uses;
+    let remaining_uses = req.max_uses;
+
+    sqlx::query(
+        r#"
+        INSERT INTO invite_tokens (code, signing_pubkey, encrypted_payload, signature, created_at, expires_at, max_uses, remaining_uses)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT (code) DO UPDATE
+        SET signing_pubkey = EXCLUDED.signing_pubkey,
+            encrypted_payload = EXCLUDED.encrypted_payload,
+            signature = EXCLUDED.signature,
+            created_at = EXCLUDED.created_at,
+            expires_at = EXCLUDED.expires_at,
+            max_uses = EXCLUDED.max_uses,
+            remaining_uses = EXCLUDED.remaining_uses;
+        "#,
+    )
+    .bind(&code)
+    .bind(signing_pubkey)
+    .bind(&req.encrypted_payload)
+    .bind(&req.signature)
+    .bind(now)
+    .bind(expires_at)
+    .bind(max_uses as i32)
+    .bind(remaining_uses as i32)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("upsert_invite_db: {}", e))?;
+
+    Ok(InviteTokenRecord {
+        code,
+        signing_pubkey: signing_pubkey.to_string(),
+        encrypted_payload: req.encrypted_payload,
+        signature: req.signature,
+        created_at: now,
+        expires_at,
+        max_uses,
+        remaining_uses,
+    })
+}
+
+#[cfg(feature = "postgres")]
+async fn get_invite_db(pool: &PgPool, code: &str) -> Result<Option<InviteTokenRecord>, String> {
+    let row = sqlx::query(
+        r#"
+        SELECT code, signing_pubkey, encrypted_payload, signature, created_at, expires_at, max_uses, remaining_uses
+        FROM invite_tokens
+        WHERE code = $1 AND expires_at > NOW()
+        "#,
+    )
+    .bind(code)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("get_invite_db: {}", e))?;
+
+    Ok(row.map(|r| InviteTokenRecord {
+        code: r.try_get("code").unwrap_or_default(),
+        signing_pubkey: r.try_get("signing_pubkey").unwrap_or_default(),
+        encrypted_payload: r.try_get("encrypted_payload").unwrap_or_default(),
+        signature: r.try_get("signature").unwrap_or_default(),
+        created_at: r.try_get("created_at").unwrap_or_else(|_| Utc::now()),
+        expires_at: r.try_get("expires_at").unwrap_or_else(|_| Utc::now()),
+        max_uses: r.try_get::<i32, _>("max_uses").unwrap_or(0) as u32,
+        remaining_uses: r.try_get::<i32, _>("remaining_uses").unwrap_or(0) as u32,
+    }))
+}
+
+#[cfg(feature = "postgres")]
+async fn redeem_invite_db(pool: &PgPool, code: &str) -> Result<Option<InviteTokenRecord>, String> {
+    let row = sqlx::query(
+        r#"
+        UPDATE invite_tokens
+        SET remaining_uses = CASE WHEN max_uses = 0 THEN remaining_uses ELSE remaining_uses - 1 END
+        WHERE code = $1
+          AND expires_at > NOW()
+          AND (max_uses = 0 OR remaining_uses > 0)
+        RETURNING code, signing_pubkey, encrypted_payload, signature, created_at, expires_at, max_uses, remaining_uses
+        "#,
+    )
+    .bind(code)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("redeem_invite_db: {}", e))?;
+
+    Ok(row.map(|r| InviteTokenRecord {
+        code: r.try_get("code").unwrap_or_default(),
+        signing_pubkey: r.try_get("signing_pubkey").unwrap_or_default(),
+        encrypted_payload: r.try_get("encrypted_payload").unwrap_or_default(),
+        signature: r.try_get("signature").unwrap_or_default(),
+        created_at: r.try_get("created_at").unwrap_or_else(|_| Utc::now()),
+        expires_at: r.try_get("expires_at").unwrap_or_else(|_| Utc::now()),
+        max_uses: r.try_get::<i32, _>("max_uses").unwrap_or(0) as u32,
+        remaining_uses: r.try_get::<i32, _>("remaining_uses").unwrap_or(0) as u32,
+    }))
+}
+
+#[cfg(feature = "postgres")]
+async fn revoke_invite_db(pool: &PgPool, code: &str) -> Result<bool, String> {
+    let res = sqlx::query("DELETE FROM invite_tokens WHERE code = $1")
+        .bind(code)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("revoke_invite_db: {}", e))?;
+    Ok(res.rows_affected() > 0)
+}
+
+#[cfg(feature = "redis-backend")]
+fn redis_user_key(user_id: &str) -> String {
+    format!("presence:user:{}", user_id)
+}
+
+#[cfg(feature = "redis-backend")]
+fn redis_house_key(signing_pubkey: &str) -> String {
+    format!("presence:house:{}", signing_pubkey)
+}
+
+#[cfg(feature = "redis-backend")]
+async fn redis_presence_hello(
+    client: &redis::Client,
+    ttl_secs: u64,
+    user_id: &str,
+    signing_pubkeys: &[SigningPubkey],
+    active_signing_pubkey: &Option<SigningPubkey>,
+) -> Result<(), String> {
+    let mut conn = client
+        .get_multiplexed_tokio_connection()
+        .await
+        .map_err(|e| format!("redis_presence_hello conn: {}", e))?;
+    let user_key = redis_user_key(user_id);
+    let active_value = active_signing_pubkey.clone().unwrap_or_default();
+
+    let mut pipe = redis::pipe();
+    pipe.hset(&user_key, "active_signing_pubkey", active_value)
+        .expire(&user_key, ttl_secs as i64);
+    for spk in signing_pubkeys {
+        let house_key = redis_house_key(spk);
+        pipe.sadd(house_key, user_id);
+    }
+    pipe.query_async::<_, ()>(&mut conn)
+        .await
+        .map_err(|e| format!("redis_presence_hello query: {}", e))?;
+    Ok(())
+}
+
+#[cfg(feature = "redis-backend")]
+async fn redis_presence_active(
+    client: &redis::Client,
+    ttl_secs: u64,
+    user_id: &str,
+    active_signing_pubkey: &Option<SigningPubkey>,
+) -> Result<(), String> {
+    let mut conn = client
+        .get_multiplexed_tokio_connection()
+        .await
+        .map_err(|e| format!("redis_presence_active conn: {}", e))?;
+    let user_key = redis_user_key(user_id);
+    let active_value = active_signing_pubkey.clone().unwrap_or_default();
+    let mut pipe = redis::pipe();
+    pipe.hset(&user_key, "active_signing_pubkey", active_value)
+        .expire(&user_key, ttl_secs as i64);
+    pipe.query_async::<_, ()>(&mut conn)
+        .await
+        .map_err(|e| format!("redis_presence_active query: {}", e))?;
+    Ok(())
+}
+
+#[cfg(feature = "redis-backend")]
+async fn redis_presence_disconnect(
+    client: &redis::Client,
+    user_id: &str,
+    signing_pubkeys: &[SigningPubkey],
+) -> Result<(), String> {
+    let mut conn = client
+        .get_multiplexed_tokio_connection()
+        .await
+        .map_err(|e| format!("redis_presence_disconnect conn: {}", e))?;
+    let user_key = redis_user_key(user_id);
+    let mut pipe = redis::pipe();
+    pipe.del(&user_key);
+    for spk in signing_pubkeys {
+        let house_key = redis_house_key(spk);
+        pipe.srem(house_key, user_id);
+    }
+    pipe.query_async::<_, ()>(&mut conn)
+        .await
+        .map_err(|e| format!("redis_presence_disconnect query: {}", e))?;
+    Ok(())
+}
+
+#[cfg(feature = "redis-backend")]
+async fn redis_presence_snapshot(
+    client: &redis::Client,
+    signing_pubkey: &SigningPubkey,
+) -> Result<Vec<PresenceUserStatus>, String> {
+    let mut conn = client
+        .get_multiplexed_tokio_connection()
+        .await
+        .map_err(|e| format!("redis_presence_snapshot conn: {}", e))?;
+    let house_key = redis_house_key(signing_pubkey);
+    let user_ids: Vec<String> = conn
+        .smembers::<_, Vec<String>>(&house_key)
+        .await
+        .map_err(|e| format!("redis_presence_snapshot smembers: {}", e))?;
+    if user_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut pipe = redis::pipe();
+    for user_id in user_ids.iter() {
+        let user_key = redis_user_key(user_id);
+        pipe.hget(user_key, "active_signing_pubkey");
+    }
+    let active_values: Vec<Option<String>> = pipe
+        .query_async::<_, Vec<Option<String>>>(&mut conn)
+        .await
+        .map_err(|e| format!("redis_presence_snapshot hget: {}", e))?;
+
+    let mut out = Vec::new();
+    let mut stale_users = Vec::new();
+    for (user_id, active) in user_ids.into_iter().zip(active_values.into_iter()) {
+        if let Some(active_value) = active {
+            let active_signing_pubkey = if active_value.is_empty() {
+                None
+            } else {
+                Some(active_value)
+            };
+            out.push(PresenceUserStatus {
+                user_id,
+                active_signing_pubkey,
+            });
+        } else {
+            stale_users.push(user_id);
+        }
+    }
+
+    if !stale_users.is_empty() {
+        let _: () = redis::cmd("SREM")
+            .arg(&house_key)
+            .arg(stale_users)
+            .query_async::<_, ()>(&mut conn)
+            .await
+            .map_err(|e| format!("redis_presence_snapshot cleanup: {}", e))?;
+    }
+
+    Ok(out)
+}
+
+#[cfg(feature = "redis-backend")]
+async fn redis_presence_refresh(
+    client: &redis::Client,
+    ttl_secs: u64,
+    users: &[(String, Vec<SigningPubkey>, Option<SigningPubkey>)],
+) -> Result<(), String> {
+    if users.is_empty() {
+        return Ok(());
+    }
+    let mut conn = client
+        .get_multiplexed_tokio_connection()
+        .await
+        .map_err(|e| format!("redis_presence_refresh conn: {}", e))?;
+    let mut pipe = redis::pipe();
+    for (user_id, spks, active) in users.iter() {
+        let user_key = redis_user_key(user_id);
+        let active_value = active.clone().unwrap_or_default();
+        pipe.hset(&user_key, "active_signing_pubkey", active_value)
+            .expire(&user_key, ttl_secs as i64);
+        for spk in spks.iter() {
+            let house_key = redis_house_key(spk);
+            pipe.sadd(house_key, user_id);
+        }
+    }
+    pipe.query_async::<_, ()>(&mut conn)
+        .await
+        .map_err(|e| format!("redis_presence_refresh query: {}", e))?;
+    Ok(())
 }
 
 const EVENT_RETENTION_DAYS: i64 = 30;
+#[cfg(feature = "redis-backend")]
+const DEFAULT_REDIS_PRESENCE_TTL_SECS: u64 = 120;
 
 /// Shared state across all connections
 struct ServerState {
@@ -362,6 +743,10 @@ struct ServerState {
     // Optional durable backends
     #[cfg(feature = "postgres")]
     db: Option<PgPool>,
+    #[cfg(feature = "redis-backend")]
+    redis: Option<redis::Client>,
+    #[cfg(feature = "redis-backend")]
+    redis_presence_ttl_secs: u64,
 
     // === Event queue state (REST API) ===
     /// Hints only - clients treat local state as authoritative
@@ -387,6 +772,10 @@ impl ServerState {
             profiles: HashMap::new(),
             #[cfg(feature = "postgres")]
             db: None,
+            #[cfg(feature = "redis-backend")]
+            redis: None,
+            #[cfg(feature = "redis-backend")]
+            redis_presence_ttl_secs: DEFAULT_REDIS_PRESENCE_TTL_SECS,
             house_hints: HashMap::new(),
             invite_tokens: HashMap::new(),
             event_queues: HashMap::new(),
@@ -787,7 +1176,7 @@ async fn handle_connection(
     }
 
     // Clean up when connection closes
-    {
+    let (presence_removed, redis_client) = {
         let mut state = state.lock().await;
 
         if let Some(peer_ids) = state.conn_peers.remove(&conn_id) {
@@ -796,10 +1185,26 @@ async fn handle_connection(
             }
         }
 
-        if let Some((user_id, spks)) = state.remove_presence_conn(&conn_id) {
-            for spk in spks {
-                state.broadcast_presence_update(&spk, &user_id, false, None);
+        let presence_removed = state.remove_presence_conn(&conn_id);
+        #[cfg(feature = "redis-backend")]
+        let redis_client = state.redis.clone();
+        #[cfg(not(feature = "redis-backend"))]
+        let redis_client: Option<()> = None;
+
+        (presence_removed, redis_client)
+    };
+
+    if let Some((user_id, spks)) = presence_removed {
+        #[cfg(feature = "redis-backend")]
+        if let Some(client) = redis_client.as_ref() {
+            if let Err(e) = redis_presence_disconnect(client, &user_id, &spks).await {
+                warn!("Redis presence disconnect failed: {}", e);
             }
+        }
+
+        let state = state.lock().await;
+        for spk in spks {
+            state.broadcast_presence_update(&spk, &user_id, false, None);
         }
     }
 
@@ -844,32 +1249,104 @@ async fn handle_message(
             Ok(())
         }
         SignalingMessage::PresenceHello { user_id, signing_pubkeys, active_signing_pubkey } => {
-            let mut st = state.lock().await;
-            // Upsert presence
-            let affected_spks = st.upsert_presence_hello(conn_id, user_id.clone(), signing_pubkeys.clone(), active_signing_pubkey.clone());
+            let (affected_spks, redis_client, redis_ttl, local_snaps) = {
+                let mut st = state.lock().await;
+                // Upsert presence
+                let affected_spks = st.upsert_presence_hello(conn_id, user_id.clone(), signing_pubkeys.clone(), active_signing_pubkey.clone());
+                #[cfg(feature = "redis-backend")]
+                let redis_client = st.redis.clone();
+                #[cfg(not(feature = "redis-backend"))]
+                let redis_client: Option<()> = None;
+                #[cfg(feature = "redis-backend")]
+                let redis_ttl = st.redis_presence_ttl_secs;
+                #[cfg(not(feature = "redis-backend"))]
+                let redis_ttl: u64 = 0;
 
-            // Send snapshots to this sender for the houses the client asked about
-            for spk in signing_pubkeys.iter() {
-                let users = st.presence_snapshot_for(spk);
-                let snap = SignalingMessage::PresenceSnapshot {
-                    signing_pubkey: spk.clone(),
-                    users,
+                let local_snaps: Vec<(SigningPubkey, Vec<PresenceUserStatus>)> = if redis_client.is_none() {
+                    signing_pubkeys
+                        .iter()
+                        .map(|spk| (spk.clone(), st.presence_snapshot_for(spk)))
+                        .collect()
+                } else {
+                    Vec::new()
                 };
-                if let Ok(json) = serde_json::to_string(&snap) {
-                    let _ = sender.send(hyper_tungstenite::tungstenite::Message::Text(json));
+                (affected_spks, redis_client, redis_ttl, local_snaps)
+            };
+
+            #[cfg(feature = "redis-backend")]
+            if let Some(client) = redis_client.as_ref() {
+                if let Err(e) = redis_presence_hello(client, redis_ttl, &user_id, &signing_pubkeys, &active_signing_pubkey).await {
+                    warn!("Redis presence hello failed: {}", e);
+                }
+                for spk in signing_pubkeys.iter() {
+                    let users = redis_presence_snapshot(client, spk).await.unwrap_or_default();
+                    let snap = SignalingMessage::PresenceSnapshot {
+                        signing_pubkey: spk.clone(),
+                        users,
+                    };
+                    if let Ok(json) = serde_json::to_string(&snap) {
+                        let _ = sender.send(hyper_tungstenite::tungstenite::Message::Text(json));
+                    }
+                }
+            } else {
+                for (spk, users) in local_snaps {
+                    let snap = SignalingMessage::PresenceSnapshot {
+                        signing_pubkey: spk,
+                        users,
+                    };
+                    if let Ok(json) = serde_json::to_string(&snap) {
+                        let _ = sender.send(hyper_tungstenite::tungstenite::Message::Text(json));
+                    }
+                }
+            }
+
+            #[cfg(not(feature = "redis-backend"))]
+            {
+                for (spk, users) in local_snaps {
+                    let snap = SignalingMessage::PresenceSnapshot {
+                        signing_pubkey: spk,
+                        users,
+                    };
+                    if let Ok(json) = serde_json::to_string(&snap) {
+                        let _ = sender.send(hyper_tungstenite::tungstenite::Message::Text(json));
+                    }
                 }
             }
 
             // Broadcast this user's presence to relevant houses
-            for spk in affected_spks {
-                st.broadcast_presence_update(&spk, &user_id, true, active_signing_pubkey.clone());
+            {
+                let st = state.lock().await;
+                for spk in affected_spks {
+                    st.broadcast_presence_update(&spk, &user_id, true, active_signing_pubkey.clone());
+                }
             }
 
             Ok(())
         }
         SignalingMessage::PresenceActive { user_id, active_signing_pubkey } => {
-            let mut st = state.lock().await;
-            if let Some(spks) = st.update_presence_active(&user_id, active_signing_pubkey.clone()) {
+            let (spks, redis_client, redis_ttl) = {
+                let mut st = state.lock().await;
+                let spks = st.update_presence_active(&user_id, active_signing_pubkey.clone());
+                #[cfg(feature = "redis-backend")]
+                let redis_client = st.redis.clone();
+                #[cfg(not(feature = "redis-backend"))]
+                let redis_client: Option<()> = None;
+                #[cfg(feature = "redis-backend")]
+                let redis_ttl = st.redis_presence_ttl_secs;
+                #[cfg(not(feature = "redis-backend"))]
+                let redis_ttl: u64 = 0;
+                (spks, redis_client, redis_ttl)
+            };
+
+            #[cfg(feature = "redis-backend")]
+            if let Some(client) = redis_client.as_ref() {
+                if let Err(e) = redis_presence_active(client, redis_ttl, &user_id, &active_signing_pubkey).await {
+                    warn!("Redis presence active failed: {}", e);
+                }
+            }
+
+            if let Some(spks) = spks {
+                let st = state.lock().await;
                 for spk in spks {
                     st.broadcast_presence_update(&spk, &user_id, true, active_signing_pubkey.clone());
                 }
@@ -1069,6 +1546,67 @@ async fn handle_api_request(
             let code = decode_path_segment(path_parts[3]).trim().to_string();
             let maybe_sub = path_parts.get(4).copied();
 
+            #[cfg(feature = "postgres")]
+            {
+                let db = { state.lock().await.db.clone() };
+                if let Some(pool) = db {
+                    let _ = gc_expired_invites_db(&pool).await;
+                    return match (method, maybe_sub) {
+                        (Method::POST, Some("redeem")) => {
+                            match redeem_invite_db(&pool, &code).await.unwrap_or(None) {
+                                Some(rec) => {
+                                    let json = serde_json::to_string(&rec).unwrap();
+                                    Ok(Response::builder()
+                                        .status(StatusCode::OK)
+                                        .header("Content-Type", "application/json")
+                                        .body(Body::from(json))
+                                        .unwrap())
+                                }
+                                None => Ok(Response::builder()
+                                    .status(StatusCode::NOT_FOUND)
+                                    .body(Body::from("Invite expired or fully redeemed"))
+                                    .unwrap()),
+                            }
+                        }
+                        (Method::POST, Some("revoke")) => {
+                            let existed = revoke_invite_db(&pool, &code).await.unwrap_or(false);
+                            if existed {
+                                Ok(Response::builder()
+                                    .status(StatusCode::OK)
+                                    .header("Content-Type", "application/json")
+                                    .body(Body::from(r#"{"status":"revoked"}"#))
+                                    .unwrap())
+                            } else {
+                                Ok(Response::builder()
+                                    .status(StatusCode::NOT_FOUND)
+                                    .body(Body::from("Invite not found"))
+                                    .unwrap())
+                            }
+                        }
+                        (Method::GET, None) => {
+                            match get_invite_db(&pool, &code).await.unwrap_or(None) {
+                                Some(rec) => {
+                                    let json = serde_json::to_string(&rec).unwrap();
+                                    Ok(Response::builder()
+                                        .status(StatusCode::OK)
+                                        .header("Content-Type", "application/json")
+                                        .body(Body::from(json))
+                                        .unwrap())
+                                }
+                                None => Ok(Response::builder()
+                                    .status(StatusCode::NOT_FOUND)
+                                    .body(Body::from("Invite not found"))
+                                    .unwrap()),
+                            }
+                        }
+                        _ => Ok(Response::builder()
+                            .status(StatusCode::METHOD_NOT_ALLOWED)
+                            .body(Body::from("Method not allowed"))
+                            .unwrap()),
+                    };
+                }
+            }
+
             let mut state = state.lock().await;
             state.gc_expired_invites();
 
@@ -1144,10 +1682,27 @@ async fn handle_api_request(
             let body_bytes = hyper::body::to_bytes(req.into_body()).await?;
             match serde_json::from_slice::<EncryptedHouseHint>(&body_bytes) {
                 Ok(hint) => {
-                    let mut state = state.lock().await;
-                    // Store the hint
-                    state.register_house_hint(signing_pubkey.clone(), hint.clone());
+                    #[cfg(feature = "postgres")]
+                    {
+                        let db = { state.lock().await.db.clone() };
+                        if let Some(pool) = db {
+                            if let Err(e) = upsert_house_hint_db(&pool, &hint).await {
+                                warn!("Failed to persist house hint: {}", e);
+                            }
+                        } else {
+                            let mut state = state.lock().await;
+                            // Store the hint
+                            state.register_house_hint(signing_pubkey.clone(), hint.clone());
+                        }
+                    }
+                    #[cfg(not(feature = "postgres"))]
+                    {
+                        let mut state = state.lock().await;
+                        // Store the hint
+                        state.register_house_hint(signing_pubkey.clone(), hint.clone());
+                    }
                     // Broadcast snapshot update to any subscribed peers
+                    let state = state.lock().await;
                     state.broadcast_house_hint_updated(&signing_pubkey, &hint);
                     info!("Registered house hint");
                     Ok(Response::builder()
@@ -1171,6 +1726,27 @@ async fn handle_api_request(
             let body_bytes = hyper::body::to_bytes(req.into_body()).await?;
             match serde_json::from_slice::<InviteTokenCreateRequest>(&body_bytes) {
                 Ok(inv) => {
+                    #[cfg(feature = "postgres")]
+                    {
+                        let db = { state.lock().await.db.clone() };
+                        if let Some(pool) = db {
+                            let _ = gc_expired_invites_db(&pool).await;
+                            return match upsert_invite_db(&pool, &signing_pubkey, inv).await {
+                                Ok(record) => {
+                                    let json = serde_json::to_string(&record).unwrap();
+                                    Ok(Response::builder()
+                                        .status(StatusCode::OK)
+                                        .header("Content-Type", "application/json")
+                                        .body(Body::from(json))
+                                        .unwrap())
+                                }
+                                Err(e) => Ok(Response::builder()
+                                    .status(StatusCode::BAD_REQUEST)
+                                    .body(Body::from(e))
+                                    .unwrap()),
+                            };
+                        }
+                    }
                     let mut state = state.lock().await;
                     state.gc_expired_invites();
                     match state.put_invite_token(&signing_pubkey, inv) {
@@ -1200,6 +1776,26 @@ async fn handle_api_request(
 
         // GET /api/houses/{signing_pubkey}/hint - Get house hint
         (Method::GET, Some("hint")) => {
+            #[cfg(feature = "postgres")]
+            {
+                let db = { state.lock().await.db.clone() };
+                if let Some(pool) = db {
+                    return match get_house_hint_db(&pool, &signing_pubkey).await.unwrap_or(None) {
+                        Some(hint) => {
+                            let json = serde_json::to_string(&hint).unwrap();
+                            Ok(Response::builder()
+                                .status(StatusCode::OK)
+                                .header("Content-Type", "application/json")
+                                .body(Body::from(json))
+                                .unwrap())
+                        }
+                        None => Ok(Response::builder()
+                            .status(StatusCode::NOT_FOUND)
+                            .body(Body::from("House hint not found"))
+                            .unwrap()),
+                    };
+                }
+            }
             let state = state.lock().await;
             match state.get_house_hint(&signing_pubkey) {
                 Some(hint) => {
@@ -1210,12 +1806,10 @@ async fn handle_api_request(
                         .body(Body::from(json))
                         .unwrap())
                 }
-                None => {
-                    Ok(Response::builder()
-                        .status(StatusCode::NOT_FOUND)
-                        .body(Body::from("House hint not found"))
-                        .unwrap())
-                }
+                None => Ok(Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .body(Body::from("House hint not found"))
+                    .unwrap()),
             }
         }
 
@@ -1439,6 +2033,40 @@ async fn main() {
         }
     }
 
+    // Optional Redis presence backend (ephemeral data with TTL)
+    #[cfg(feature = "redis-backend")]
+    {
+        let ttl_secs = std::env::var("SIGNALING_REDIS_PRESENCE_TTL_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_REDIS_PRESENCE_TTL_SECS);
+
+        if let Ok(redis_url) = std::env::var("SIGNALING_REDIS_URL") {
+            match redis::Client::open(redis_url.as_str()) {
+                Ok(client) => {
+                    match client.get_multiplexed_tokio_connection().await {
+                        Ok(mut conn) => {
+                            let pong: Result<String, _> = redis::cmd("PING").query_async(&mut conn).await;
+                            match pong {
+                                Ok(_) => {
+                                    let mut st = state.lock().await;
+                                    st.redis = Some(client);
+                                    st.redis_presence_ttl_secs = ttl_secs;
+                                    info!("Redis presence enabled (SIGNALING_REDIS_URL set).");
+                                }
+                                Err(e) => warn!("Redis PING failed; continuing without Redis: {}", e),
+                            }
+                        }
+                        Err(e) => warn!("Failed to connect to Redis; continuing without Redis: {}", e),
+                    }
+                }
+                Err(e) => warn!("Invalid Redis URL; continuing without Redis: {}", e),
+            }
+        } else {
+            info!("Redis presence disabled (SIGNALING_REDIS_URL not set).");
+        }
+    }
+
     // Spawn background task for garbage collection
     let gc_state = state.clone();
     tokio::spawn(async move {
@@ -1449,6 +2077,39 @@ async fn main() {
             info!("Garbage collected old events");
         }
     });
+
+    #[cfg(feature = "redis-backend")]
+    {
+        let refresh_state = state.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+                let (client, ttl, users) = {
+                    let st = refresh_state.lock().await;
+                    let client = st.redis.clone();
+                    let ttl = st.redis_presence_ttl_secs;
+                    let users = st
+                        .presence_users
+                        .iter()
+                        .map(|(user_id, u)| {
+                            (
+                                user_id.clone(),
+                                u.signing_pubkeys.iter().cloned().collect::<Vec<_>>(),
+                                u.active_signing_pubkey.clone(),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    (client, ttl, users)
+                };
+
+                if let Some(client) = client {
+                    if let Err(e) = redis_presence_refresh(&client, ttl, &users).await {
+                        warn!("Redis presence refresh failed: {}", e);
+                    }
+                }
+            }
+        });
+    }
 
     let make_svc = make_service_fn(move |_conn| {
         let state = state.clone();

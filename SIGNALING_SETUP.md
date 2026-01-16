@@ -124,6 +124,54 @@ environment:
 ### Default Signaling Server URL
 The app defaults to `ws://127.0.0.1:9001`.
 
+### Optional Postgres Durability (Profiles + Invites + House Hints)
+Postgres is **compile-time optional** and **runtime optional**:
+
+- Build with `--features postgres` (or `SIGNALING_FEATURES=postgres` in Docker)
+- Set `SIGNALING_DB_URL` at runtime
+
+**Local dev (Rust):**
+```bash
+SIGNALING_DB_URL=postgres://user:pass@localhost:5432/roommate \
+cargo run --features postgres
+```
+
+**Docker (build with features):**
+```bash
+SIGNALING_FEATURES=postgres docker-compose up -d --build
+```
+
+Then set the runtime env var in `docker-compose.yml`:
+```yaml
+environment:
+  - SIGNALING_DB_URL=postgres://user:pass@db:5432/roommate
+```
+
+**Note:** the prebuilt image in `deploy/docker-compose.yml` does not include optional features.
+
+### Optional Redis Presence Backend
+Redis is **compile-time optional** and **runtime optional**. It stores ephemeral presence
+state with a TTL and falls back to in-memory if Redis is unavailable.
+
+- Build with `--features redis-backend` (or `SIGNALING_FEATURES=redis-backend` in Docker)
+- Set `SIGNALING_REDIS_URL` at runtime
+
+**Local dev (Rust):**
+```bash
+SIGNALING_REDIS_URL=redis://localhost:6379 \
+cargo run --features redis-backend
+```
+
+**Docker (build with features):**
+```bash
+SIGNALING_FEATURES=redis-backend docker-compose up -d --build
+```
+
+Optional TTL override (default: 120 seconds):
+```bash
+SIGNALING_REDIS_PRESENCE_TTL_SECS=120
+```
+
 ### Changing the Port
 
 **Option 1: Using Docker (recommended)**
