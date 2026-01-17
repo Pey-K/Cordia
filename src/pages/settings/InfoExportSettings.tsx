@@ -42,7 +42,7 @@ export function InfoExportSettings() {
       <div className="bg-card/50 backdrop-blur-sm border border-border/50 space-y-6">
         <div className="space-y-1">
           <div className="inline-block">
-            <h2 className="text-lg font-light tracking-tight">Backup & Export</h2>
+          <h2 className="text-lg font-light tracking-tight">Backup & Export</h2>
             <div className="h-px bg-foreground/20 mt-1 w-full"></div>
           </div>
           <p className="text-xs text-muted-foreground font-light">Export your identity for backup</p>
@@ -80,7 +80,7 @@ export function InfoExportSettings() {
       <div className="bg-card/50 backdrop-blur-sm border border-border/50 space-y-6">
         <div className="space-y-1">
           <div className="inline-block">
-            <h2 className="text-lg font-light tracking-tight">About</h2>
+          <h2 className="text-lg font-light tracking-tight">About</h2>
             <div className="h-px bg-foreground/20 mt-1 w-full"></div>
           </div>
         </div>

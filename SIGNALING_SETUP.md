@@ -126,7 +126,8 @@ The app defaults to `ws://127.0.0.1:9001`.
 
 ### Optional Postgres Durability (Profiles + Invites + House Hints + Events)
 Postgres is **compile-time optional** and **runtime optional**. The `latest` image now
-ships with Postgres support enabled by default; you only need to set `SIGNALING_DB_URL`.
+ships with Postgres and Redis support enabled by default; you only need to set `SIGNALING_DB_URL`
+and `SIGNALING_REDIS_URL` to activate them.
 When enabled it persists the event queue and acknowledgements for reliable offline catch-up.
 
 - Build with `--features postgres` (or `SIGNALING_FEATURES=postgres` in Docker)
@@ -139,10 +140,11 @@ cargo run --features postgres
 ```
 
 **Docker (prebuilt image):**
-Just set the runtime env var in `docker-compose.yml`:
+Just set the runtime env vars in `docker-compose.yml`:
 ```yaml
 environment:
   - SIGNALING_DB_URL=postgres://user:pass@db:5432/roommate
+  - SIGNALING_REDIS_URL=redis://redis:6379
 ```
 
 **Docker (build from source):**
@@ -154,7 +156,8 @@ SIGNALING_FEATURES=postgres docker-compose up -d --build
 
 ### Optional Redis Presence Backend
 Redis is **compile-time optional** and **runtime optional**. It stores ephemeral presence
-state with a TTL and falls back to in-memory if Redis is unavailable.
+state with a TTL and falls back to in-memory if Redis is unavailable. Redis is **not**
+used for durable storage; keep persistence on Postgres.
 
 - Build with `--features redis-backend` (or `SIGNALING_FEATURES=redis-backend` in Docker)
 - Set `SIGNALING_REDIS_URL` at runtime
