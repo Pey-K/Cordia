@@ -226,6 +226,16 @@ enum SignalingMessage {
         room_id: String,
         candidate: String,
     },
+
+    // ============================
+    // Keepalive (prevents idle WebSocket disconnect)
+    // ============================
+
+    /// Client ping to keep connection alive
+    Ping,
+
+    /// Server pong response
+    Pong,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2062,6 +2072,21 @@ async fn handle_message(
             }
             // Don't warn on missing peer for ICE candidates - they may have left
 
+            Ok(())
+        }
+
+        SignalingMessage::Ping => {
+            // Client keepalive - respond with Pong
+            let pong = SignalingMessage::Pong;
+            let json = serde_json::to_string(&pong)
+                .map_err(|e| format!("Failed to serialize Pong: {}", e))?;
+            sender.send(hyper_tungstenite::tungstenite::Message::Text(json))
+                .map_err(|e| format!("Failed to send Pong: {}", e))?;
+            Ok(())
+        }
+
+        SignalingMessage::Pong => {
+            // Server shouldn't receive Pong, ignore
             Ok(())
         }
 

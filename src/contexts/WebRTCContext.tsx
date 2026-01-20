@@ -16,13 +16,18 @@ import { loadAudioSettings } from '../lib/tauri'
 /**
  * WebRTC Context for peer-to-peer voice communication.
  *
- * Layer A Implementation: Core correctness with minimal UX.
- * - Room-scoped voice isolation
- * - Ephemeral peer_id / stable user_id separation
- * - Clean join/leave lifecycle
- * - Barebones reconnect (no exponential backoff)
- * - ICE state monitoring (logging only, no auto-restart)
+ * Architecture: Signaling and Media are SEPARATE planes.
+ * - Signaling (WebSocket): Control plane for peer discovery and SDP/ICE exchange
+ * - Media (RTCPeerConnection): Data plane for actual audio
+ *
+ * Key invariant: Signaling disconnects do NOT tear down media.
+ * - WebSocket can drop and reconnect without affecting active calls
+ * - Media teardown only happens on actual ICE failure or explicit leave
+ * - Audio stack rebuild only happens when track is dead, not on signaling events
  */
+
+// Keepalive interval for signaling WebSocket (prevents idle disconnects)
+const SIGNALING_KEEPALIVE_INTERVAL_MS = 25000
 
 export type PeerConnectionState = RTCPeerConnectionState
 
@@ -77,6 +82,8 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
   const isInVoiceRef = useRef<boolean>(false)            // For reconnect logic
   const peersRef = useRef<Map<string, PeerConnectionInfo>>(new Map())  // For message handlers
   const isRebuildingAudioRef = useRef<boolean>(false)    // Guard against concurrent rebuilds
+  const keepaliveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)  // Signaling keepalive
+  const signalingConnectedRef = useRef<boolean>(false)   // Track signaling state separately from media
 
   // Keep peersRef in sync with state
   useEffect(() => {
@@ -149,7 +156,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     return undefined
   }, [])
 
-  const createPeerConnectionForPeer = useCallback(async (remotePeerId: string, remoteUserId: string): Promise<RTCPeerConnection> => {
+  const createPeerConnectionForPeer = useCallback(async (remotePeerId: string, _remoteUserId: string): Promise<RTCPeerConnection> => {
     const pc = createPeerConnection()
     const roomId = currentRoomRef.current
 
@@ -168,26 +175,33 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    // Handle ICE connection state changes (Layer A: logging only)
+    // Handle ICE connection state changes
+    // NOTE: This is MEDIA plane - separate from signaling
     pc.oniceconnectionstatechange = () => {
       const state = pc.iceConnectionState
-      console.log(`[WebRTC] ICE state for peer=${remotePeerId} user=${remoteUserId}: ${state}`)
+      console.log(`[Media] ICE state for peer=${remotePeerId}: ${state}`)
 
       if (state === 'failed') {
-        console.error(`[WebRTC] ICE FAILED for peer ${remotePeerId} - no automatic restart in Layer A`)
-        // Layer A: No automatic ICE restart. Log clearly and let it fail.
+        console.error(`[Media] ICE FAILED for peer ${remotePeerId} - media connection lost`)
+        // ICE failure is a real media failure - clean up this peer
+        handlePeerDisconnect(remotePeerId)
       }
 
       if (state === 'disconnected') {
-        console.warn(`[WebRTC] ICE disconnected for peer ${remotePeerId} - may recover automatically`)
-        // May recover automatically. Log but don't act.
+        console.warn(`[Media] ICE disconnected for peer ${remotePeerId} - may recover automatically`)
+        // ICE disconnected often recovers on its own. Don't act yet.
+      }
+
+      if (state === 'connected' || state === 'completed') {
+        console.log(`[Media] ICE connected for peer ${remotePeerId} - media flowing`)
       }
     }
 
     // Handle connection state changes
+    // NOTE: This is MEDIA plane - separate from signaling
     pc.onconnectionstatechange = () => {
       const state = pc.connectionState
-      console.log(`[WebRTC] Connection state for peer=${remotePeerId} user=${remoteUserId}: ${state}`)
+      console.log(`[Media] Connection state for peer=${remotePeerId}: ${state}`)
 
       setPeers(prev => {
         const updated = new Map(prev)
@@ -198,33 +212,28 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
         return updated
       })
 
-      // Clean up if connection fails or closes
-      if (state === 'failed' || state === 'closed') {
-        console.log(`[WebRTC] Connection ${state} for peer ${remotePeerId}, cleaning up`)
+      // Clean up only on actual media failure
+      if (state === 'failed') {
+        console.error(`[Media] Connection FAILED for peer ${remotePeerId} - cleaning up`)
         handlePeerDisconnect(remotePeerId)
       }
+      // Note: 'closed' is expected when we clean up, don't double-cleanup
     }
 
     // Handle remote audio track
+    // NOTE: This is MEDIA plane - receiving audio from peer
     pc.ontrack = (event) => {
-      console.log(`[WebRTC] Received remote track from peer=${remotePeerId} user=${remoteUserId}`)
-      console.log(`[WebRTC] Track kind: ${event.track.kind}, enabled: ${event.track.enabled}, muted: ${event.track.muted}, readyState: ${event.track.readyState}`)
-      console.log(`[WebRTC] Streams in event: ${event.streams.length}`)
+      console.log(`[Media] Received remote track from peer=${remotePeerId}`)
+      console.log(`[Media] Track: kind=${event.track.kind}, enabled=${event.track.enabled}, readyState=${event.track.readyState}`)
       const remoteStream = event.streams[0]
 
       if (remoteStream) {
-        const audioTracks = remoteStream.getAudioTracks()
-        console.log(`[WebRTC] Remote stream has ${audioTracks.length} audio tracks`)
-        if (audioTracks.length > 0) {
-          console.log(`[WebRTC] Remote track readyState: ${audioTracks[0].readyState}`)
-        }
-
         const audioElement = createRemoteAudioElement(remoteStream, outputDeviceRef.current || undefined)
-        console.log(`[WebRTC] Created audio element, paused: ${audioElement.paused}, volume: ${audioElement.volume}, muted: ${audioElement.muted}`)
+        console.log(`[Media] Created audio element for peer=${remotePeerId}`)
 
         // Listen for track unmute events
         event.track.onunmute = () => {
-          console.log(`[WebRTC] Remote track unmuted for peer=${remotePeerId}`)
+          console.log(`[Media] Remote track unmuted for peer=${remotePeerId}`)
         }
 
         setPeers(prev => {
@@ -240,36 +249,37 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
           return updated
         })
       } else {
-        console.error('[WebRTC] No stream in ontrack event!')
+        console.error('[Media] No stream in ontrack event!')
       }
     }
 
-    // Attach local audio track - rebuild audio stack if needed
+    // Attach local audio track - rebuild audio stack ONLY if track is dead
+    // NOTE: This is the ONLY place audio rebuild should happen during a call
     let localStream = localStreamRef.current
     let needsRebuild = false
 
     if (localStream) {
       const audioTracks = localStream.getAudioTracks()
-      console.log(`[WebRTC] Checking local audio track. Stream has ${audioTracks.length} audio tracks`)
       if (audioTracks.length > 0) {
         const track = audioTracks[0]
-        console.log(`[WebRTC] Track label: ${track.label}, enabled: ${track.enabled}, muted: ${track.muted}, readyState: ${track.readyState}`)
+        console.log(`[Media] Local track: readyState=${track.readyState}, enabled=${track.enabled}`)
         if (track.readyState === 'ended') {
-          console.warn('[WebRTC] Local audio track is ended, need to rebuild audio stack')
+          console.warn('[Media] Local audio track is ENDED - need to rebuild audio stack')
           needsRebuild = true
         }
       } else {
+        console.warn('[Media] No audio tracks in local stream')
         needsRebuild = true
       }
     } else {
-      console.error('[WebRTC] No local stream available!')
+      console.error('[Media] No local stream available!')
       needsRebuild = true
     }
 
     if (needsRebuild) {
-      // Guard against concurrent rebuilds (rapid peer joins/reconnects)
+      // Guard against concurrent rebuilds
       if (isRebuildingAudioRef.current) {
-        console.log('[WebRTC] Audio rebuild already in progress, waiting...')
+        console.log('[Media] Audio rebuild already in progress, waiting...')
         // Wait for existing rebuild to complete
         await new Promise<void>(resolve => {
           const checkInterval = setInterval(() => {
@@ -284,7 +294,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
         if (localStream) {
           const tracks = localStream.getAudioTracks()
           if (tracks.length > 0 && tracks[0].readyState === 'live') {
-            console.log('[WebRTC] Audio stack was rebuilt by another call, using it')
+            console.log('[Media] Audio stack was rebuilt by another call, using it')
             needsRebuild = false
           }
         }
@@ -292,7 +302,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
 
       if (needsRebuild) {
         isRebuildingAudioRef.current = true
-        console.log('[WebRTC] Rebuilding entire audio stack from scratch...')
+        console.log('[Media] Rebuilding entire audio stack from scratch...')
         try {
           // Stop the old meter completely
           if (inputLevelMeterRef.current) {
@@ -318,17 +328,17 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
           if (freshStream) {
             const freshTracks = freshStream.getAudioTracks()
             if (freshTracks.length > 0 && freshTracks[0].readyState === 'live') {
-              console.log('[WebRTC] Audio stack rebuilt successfully, track is live')
+              console.log('[Media] Audio stack rebuilt successfully, track is live')
               localStream = freshStream
               localStreamRef.current = freshStream
             } else {
-              console.error('[WebRTC] Rebuilt audio stack but track is still not live!')
+              console.error('[Media] Rebuilt audio stack but track is still not live!')
             }
           } else {
-            console.error('[WebRTC] Rebuilt audio stack but no stream available!')
+            console.error('[Media] Rebuilt audio stack but no stream available!')
           }
         } catch (error) {
-          console.error('[WebRTC] Failed to rebuild audio stack:', error)
+          console.error('[Media] Failed to rebuild audio stack:', error)
         } finally {
           isRebuildingAudioRef.current = false
         }
@@ -337,15 +347,16 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
 
     if (localStream) {
       attachAudioTrack(pc, localStream)
+      console.log('[Media] Attached local audio track to peer connection')
     } else {
-      console.error('[WebRTC] Cannot attach audio - no valid local stream!')
+      console.error('[Media] Cannot attach audio - no valid local stream!')
     }
 
     return pc
   }, [])
 
   const handlePeerDisconnect = useCallback((remotePeerId: string) => {
-    console.log(`[WebRTC] Peer ${remotePeerId} disconnected`)
+    console.log(`[Media] Peer ${remotePeerId} disconnected - cleaning up connection`)
 
     setPeers(prev => {
       const updated = new Map(prev)
@@ -367,7 +378,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     switch (msg.type) {
       case 'VoiceRegistered': {
         const { peers: serverPeers, room_id } = msg
-        console.log(`[WebRTC] Registered in room ${room_id}. Peers:`, serverPeers)
+        console.log(`[Signal] Registered in room ${room_id}. Existing peers:`, serverPeers.length)
 
         // Create connections to all existing peers in the room
         for (const peerInfo of serverPeers) {
@@ -377,7 +388,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
           const existingByUserId = findPeerByUserId(remoteUserId)
           if (existingByUserId) {
             // Same user, different peer_id (reconnect case)
-            console.log(`[WebRTC] User ${remoteUserId} reconnected with new peer_id, replacing old connection`)
+            console.log(`[Signal] User ${remoteUserId} reconnected with new peer_id, replacing old connection`)
             handlePeerDisconnect(existingByUserId.peerId)
           }
 
@@ -408,17 +419,17 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
               sdp: offerSdp
             }
             wsRef.current?.send(JSON.stringify(offerMessage))
-            console.log(`[WebRTC] Sent VoiceOffer to peer=${remotePeerId} user=${remoteUserId}`)
+            console.log(`[Signal] Sent VoiceOffer to peer=${remotePeerId}`)
           } catch (error) {
-            console.error(`[WebRTC] Failed to create offer for ${remotePeerId}:`, error)
+            console.error(`[Signal] Failed to create offer for ${remotePeerId}:`, error)
           }
         }
         break
       }
 
       case 'VoicePeerJoined': {
-        const { peer_id: remotePeerId, user_id: remoteUserId, room_id } = msg
-        console.log(`[WebRTC] Peer joined: peer=${remotePeerId} user=${remoteUserId} room=${room_id}`)
+        const { peer_id: remotePeerId } = msg
+        console.log(`[Signal] Peer joined room: peer=${remotePeerId}`)
 
         // Don't clean up existing connections here - let VoiceOffer handle it
         // The new peer will send us an offer, and we'll handle any duplicate
@@ -430,8 +441,8 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
       }
 
       case 'VoicePeerLeft': {
-        const { peer_id: remotePeerId, user_id: remoteUserId, room_id } = msg
-        console.log(`[WebRTC] Peer left: peer=${remotePeerId} user=${remoteUserId} room=${room_id}`)
+        const { peer_id: remotePeerId } = msg
+        console.log(`[Signal] Peer left room: peer=${remotePeerId}`)
 
         handlePeerDisconnect(remotePeerId)
         break
@@ -439,13 +450,13 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
 
       case 'VoiceOffer': {
         const { from_peer, from_user, sdp } = msg
-        console.log(`[WebRTC] Received VoiceOffer from peer=${from_peer} user=${from_user}`)
+        console.log(`[Signal] Received VoiceOffer from peer=${from_peer}`)
 
         try {
           // Check if we already have a connection to this user
           const existingByUserId = findPeerByUserId(from_user)
           if (existingByUserId && existingByUserId.peerId !== from_peer) {
-            console.log(`[WebRTC] User ${from_user} reconnected with new peer_id, replacing old connection`)
+            console.log(`[Signal] User reconnected with new peer_id, replacing old connection`)
             handlePeerDisconnect(existingByUserId.peerId)
           }
 
@@ -475,48 +486,54 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
             sdp: answerSdp
           }
           wsRef.current?.send(JSON.stringify(answerMessage))
-          console.log(`[WebRTC] Sent VoiceAnswer to peer=${from_peer}`)
+          console.log(`[Signal] Sent VoiceAnswer to peer=${from_peer}`)
         } catch (error) {
-          console.error(`[WebRTC] Failed to handle VoiceOffer from ${from_peer}:`, error)
+          console.error(`[Signal] Failed to handle VoiceOffer from ${from_peer}:`, error)
         }
         break
       }
 
       case 'VoiceAnswer': {
-        const { from_peer, from_user, sdp } = msg
-        console.log(`[WebRTC] Received VoiceAnswer from peer=${from_peer} user=${from_user}`)
+        const { from_peer, sdp } = msg
+        console.log(`[Signal] Received VoiceAnswer from peer=${from_peer}`)
 
         const peerInfo = peersRef.current.get(from_peer)
         if (peerInfo) {
           try {
             await handleAnswer(peerInfo.connection, sdp)
-            console.log(`[WebRTC] Applied VoiceAnswer from peer=${from_peer}`)
+            console.log(`[Signal] Applied VoiceAnswer from peer=${from_peer}`)
           } catch (error) {
-            console.error(`[WebRTC] Failed to apply VoiceAnswer from ${from_peer}:`, error)
+            console.error(`[Signal] Failed to apply VoiceAnswer:`, error)
           }
         } else {
-          console.warn(`[WebRTC] Received VoiceAnswer from unknown peer ${from_peer}`)
+          console.warn(`[Signal] Received VoiceAnswer from unknown peer ${from_peer}`)
         }
         break
       }
 
       case 'VoiceIceCandidate': {
         const { from_peer, candidate } = msg
-        // Don't log every ICE candidate
+        // Don't log every ICE candidate - too noisy
 
         const peerInfo = peersRef.current.get(from_peer)
         if (peerInfo) {
           try {
             await addIceCandidate(peerInfo.connection, candidate)
           } catch (error) {
-            console.error(`[WebRTC] Failed to add ICE candidate from ${from_peer}:`, error)
+            // ICE candidate errors are common and often recoverable
+            console.warn(`[Signal] Failed to add ICE candidate:`, error)
           }
         }
         break
       }
 
       case 'Error': {
-        console.error('[WebRTC] Signaling error:', msg.message)
+        console.error('[Signal] Signaling error:', msg.message)
+        break
+      }
+
+      case 'Pong': {
+        // Keepalive response - no action needed
         break
       }
 
@@ -526,26 +543,60 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     }
   }, [createPeerConnectionForPeer, handlePeerDisconnect, findPeerByUserId])
 
+  // Start keepalive timer for signaling WebSocket
+  const startKeepalive = useCallback(() => {
+    // Clear any existing keepalive
+    if (keepaliveIntervalRef.current) {
+      clearInterval(keepaliveIntervalRef.current)
+    }
+
+    keepaliveIntervalRef.current = setInterval(() => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        // Send application-level ping to prevent idle timeout
+        wsRef.current.send(JSON.stringify({ type: 'Ping' }))
+        // Don't log every ping - too noisy
+      }
+    }, SIGNALING_KEEPALIVE_INTERVAL_MS)
+  }, [])
+
+  const stopKeepalive = useCallback(() => {
+    if (keepaliveIntervalRef.current) {
+      clearInterval(keepaliveIntervalRef.current)
+      keepaliveIntervalRef.current = null
+    }
+  }, [])
+
   // Connect to signaling server (used for initial connect and reconnect)
+  // NOTE: This is CONTROL PLANE only - does not touch media
   const connectToSignaling = useCallback(() => {
     if (!signalingUrl) {
-      console.error('[WebRTC] Cannot connect: no signalingUrl')
+      console.error('[Signal] Cannot connect: no signalingUrl')
       return
     }
 
     if (!currentRoomRef.current || !currentHouseRef.current) {
-      console.error('[WebRTC] Cannot connect: missing room or house')
+      console.error('[Signal] Cannot connect: missing room or house')
       return
     }
 
-    console.log('[WebRTC] Connecting to signaling server...')
+    // Don't reconnect if already connected
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      console.log('[Signal] Already connected, skipping reconnect')
+      return
+    }
+
+    console.log('[Signal] Connecting to signaling server...')
     const ws = new WebSocket(signalingUrl)
     wsRef.current = ws
 
     ws.onopen = () => {
-      console.log('[WebRTC] Connected to signaling server')
+      console.log('[Signal] Connected to signaling server')
+      signalingConnectedRef.current = true
 
-      // Register for voice in the room
+      // Start keepalive to prevent idle disconnect
+      startKeepalive()
+
+      // Register for voice in the room (re-register with same peer_id)
       const registerMessage = {
         type: 'VoiceRegister',
         house_id: currentHouseRef.current,
@@ -554,7 +605,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
         user_id: currentUserIdRef.current
       }
       ws.send(JSON.stringify(registerMessage))
-      console.log(`[WebRTC] Sent VoiceRegister: peer=${currentPeerIdRef.current} user=${currentUserIdRef.current}`)
+      console.log(`[Signal] Sent VoiceRegister: peer=${currentPeerIdRef.current}`)
     }
 
     ws.onmessage = (event) => {
@@ -562,84 +613,33 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     }
 
     ws.onerror = (error) => {
-      console.error('[WebRTC] WebSocket error:', error)
+      console.error('[Signal] WebSocket error:', error)
     }
 
     ws.onclose = (event) => {
-      console.log(`[WebRTC] WebSocket closed: code=${event.code} reason=${event.reason}`)
+      console.log(`[Signal] WebSocket closed: code=${event.code} reason=${event.reason}`)
       wsRef.current = null
+      signalingConnectedRef.current = false
+      stopKeepalive()
 
-      // Clean up all peer connections - they'll be stale after reconnect
-      // because the signaling state is lost
-      console.log('[WebRTC] Cleaning up peer connections due to WebSocket disconnect')
-      peersRef.current.forEach((peerInfo, peerId) => {
-        cleanupPeerConnection(peerId, peerInfo)
-      })
-      setPeers(new Map())
-      peersRef.current = new Map()
+      // IMPORTANT: Do NOT tear down media here!
+      // Existing RTCPeerConnections continue to work without signaling.
+      // Only new peer connections require signaling.
 
-      // Destroy the audio stack - it will be rebuilt on reconnect
-      // This ensures we don't try to reuse a poisoned AudioContext
-      console.log('[WebRTC] Destroying audio stack for clean reconnect')
-      if (inputLevelMeterRef.current) {
-        inputLevelMeterRef.current.stop()
-        inputLevelMeterRef.current = null
-      }
-      localStreamRef.current = null
-
-      // Layer A: Simple reconnect with fixed 2-second delay
+      // Attempt to reconnect signaling only (no media teardown)
       if (isInVoiceRef.current && currentRoomRef.current) {
-        console.log('[WebRTC] Attempting reconnect in 2 seconds...')
-        setTimeout(async () => {
+        console.log('[Signal] Attempting signaling reconnect in 2 seconds...')
+        console.log('[Signal] Note: Existing media connections are unaffected')
+        setTimeout(() => {
           if (isInVoiceRef.current && currentRoomRef.current) {
-            // Generate a new peer_id for the reconnect session
-            currentPeerIdRef.current = crypto.randomUUID()
-            console.log(`[WebRTC] Reconnecting with new peer_id: ${currentPeerIdRef.current}`)
-
-            // Rebuild audio stack before reconnecting (with guard)
-            if (isRebuildingAudioRef.current) {
-              console.log('[WebRTC] Audio rebuild already in progress, waiting...')
-              await new Promise<void>(resolve => {
-                const checkInterval = setInterval(() => {
-                  if (!isRebuildingAudioRef.current) {
-                    clearInterval(checkInterval)
-                    resolve()
-                  }
-                }, 50)
-              })
-            }
-
-            isRebuildingAudioRef.current = true
-            try {
-              console.log('[WebRTC] Rebuilding audio stack for reconnect...')
-              const audioSettings = await loadAudioSettings()
-              const newMeter = new InputLevelMeter()
-              await newMeter.start(
-                audioSettings.input_device_id || null,
-                () => {}
-              )
-              newMeter.setGain(audioSettings.input_volume)
-              newMeter.setThreshold(audioSettings.input_sensitivity)
-              newMeter.setInputMode(audioSettings.input_mode)
-
-              inputLevelMeterRef.current = newMeter
-              const stream = newMeter.getTransmissionStream()
-              if (stream) {
-                localStreamRef.current = stream
-                console.log('[WebRTC] Audio stack rebuilt for reconnect')
-              }
-            } catch (error) {
-              console.error('[WebRTC] Failed to rebuild audio for reconnect:', error)
-            } finally {
-              isRebuildingAudioRef.current = false
-            }
-
+            // Keep the same peer_id - we're just reconnecting signaling
+            // Only generate new peer_id if we explicitly leave and rejoin
             connectToSignaling()
           }
         }, 2000)
       }
     }
-  }, [signalingUrl, handleSignalingMessage, cleanupPeerConnection])
+  }, [signalingUrl, handleSignalingMessage, startKeepalive, stopKeepalive])
 
   const joinVoice = useCallback(async (roomId: string, houseId: string, userId: string) => {
     if (isInVoice) {
@@ -660,19 +660,19 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     if (meter) {
       const existingStream = meter.getTransmissionStream()
       if (!existingStream) {
-        console.log('[WebRTC] Existing meter has no stream, reinitializing...')
+        console.log('[Media] Existing meter has no stream, reinitializing...')
         needsInit = true
       } else {
         const tracks = existingStream.getAudioTracks()
         if (tracks.length === 0 || tracks[0].readyState === 'ended') {
-          console.log('[WebRTC] Existing meter stream is dead (readyState=ended), reinitializing...')
+          console.log('[Media] Existing meter stream is dead, reinitializing...')
           needsInit = true
         }
       }
     }
 
     if (needsInit) {
-      console.log('[WebRTC] Initializing audio on-demand...')
+      console.log('[Media] Initializing audio stack...')
       try {
         // Load saved audio settings
         const audioSettings = await loadAudioSettings()
@@ -691,9 +691,9 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
 
         inputLevelMeterRef.current = newMeter
         meter = newMeter
-        console.log('[WebRTC] Audio initialized successfully')
+        console.log('[Media] Audio stack initialized')
       } catch (error) {
-        console.error('[WebRTC] Failed to initialize audio:', error)
+        console.error('[Media] Failed to initialize audio:', error)
         throw new Error('Failed to initialize audio. Please check microphone permissions.')
       }
     }
@@ -706,20 +706,19 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     // Generate EPHEMERAL peer_id for this session
     const peerId = crypto.randomUUID()
 
-    console.log(`[WebRTC] Joining voice: room=${roomId} house=${houseId} peer=${peerId} user=${userId}`)
+    console.log(`[Voice] Joining voice: room=${roomId} peer=${peerId}`)
 
     // Get transmission stream from InputLevelMeter
     const stream = meter.getTransmissionStream()
     if (!stream) {
-      console.error('[WebRTC] Failed to get transmission stream')
+      console.error('[Media] Failed to get transmission stream')
       throw new Error('Failed to get audio stream')
     }
 
-    // Debug: check the transmission stream
+    // Verify the transmission stream is healthy
     const audioTracks = stream.getAudioTracks()
-    console.log(`[WebRTC] Transmission stream has ${audioTracks.length} audio tracks`)
     if (audioTracks.length > 0) {
-      console.log(`[WebRTC] Transmission track: label="${audioTracks[0].label}", enabled=${audioTracks[0].enabled}, muted=${audioTracks[0].muted}, readyState=${audioTracks[0].readyState}`)
+      console.log(`[Media] Transmission track ready: readyState=${audioTracks[0].readyState}`)
     }
 
     // Store refs
@@ -739,10 +738,14 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
   }, [isInVoice, signalingUrl, connectToSignaling])
 
   // Internal leave function that doesn't check isInVoice state
+  // NOTE: This is an EXPLICIT leave - tear down both signaling AND media
   const leaveVoiceInternal = useCallback(() => {
-    console.log('[WebRTC] Leaving voice - beginning cleanup')
+    console.log('[Voice] Leaving voice - tearing down signaling and media')
 
-    // 1. Notify server (best effort)
+    // 1. Stop keepalive
+    stopKeepalive()
+
+    // 2. Notify server (best effort)
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       const unregisterMessage = {
         type: 'VoiceUnregister',
@@ -750,48 +753,48 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
         room_id: currentRoomRef.current
       }
       wsRef.current.send(JSON.stringify(unregisterMessage))
-      console.log('[WebRTC] Sent VoiceUnregister')
+      console.log('[Signal] Sent VoiceUnregister')
     }
 
-    // 2. Close all peer connections
+    // 3. Close all peer connections (MEDIA teardown)
+    console.log(`[Media] Closing ${peersRef.current.size} peer connections`)
     peersRef.current.forEach((peerInfo, peerId) => {
       cleanupPeerConnection(peerId, peerInfo)
     })
     setPeers(new Map())
     peersRef.current = new Map()
 
-    // 3. Close WebSocket
+    // 4. Close WebSocket (SIGNALING teardown)
     if (wsRef.current) {
       wsRef.current.onclose = null  // Prevent reconnect handler from firing
       wsRef.current.close()
       wsRef.current = null
     }
+    signalingConnectedRef.current = false
 
-    // 4. Destroy the entire audio stack
-    // The audio pipeline (AudioContext → InputLevelMeter → MediaStreamDestination)
-    // can become "poisoned" after disconnect, producing dead tracks even after
-    // requesting new ones. Destroy everything so joinVoice creates a fresh stack.
-    console.log('[WebRTC] Destroying audio stack')
+    // 5. Destroy the entire audio stack
+    // On explicit leave, we destroy audio so next join starts fresh
+    console.log('[Media] Destroying audio stack')
     if (inputLevelMeterRef.current) {
       inputLevelMeterRef.current.stop()
       inputLevelMeterRef.current = null
     }
     localStreamRef.current = null
 
-    // 5. Clear refs
+    // 6. Clear refs
     currentPeerIdRef.current = null
     currentUserIdRef.current = null
     currentRoomRef.current = null
     currentHouseRef.current = null
 
-    // 6. Update state
+    // 7. Update state
     setIsInVoice(false)
     setCurrentRoomId(null)
     setIsLocalMuted(false)
     isInVoiceRef.current = false
 
-    console.log('[WebRTC] Cleanup complete')
-  }, [cleanupPeerConnection])
+    console.log('[Voice] Leave complete')
+  }, [cleanupPeerConnection, stopKeepalive])
 
   const leaveVoice = useCallback(() => {
     if (!isInVoice) {
