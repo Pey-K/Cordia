@@ -4,6 +4,7 @@ type VoicePresenceByHouse = Record<string, Record<string, Set<string>>> // signi
 
 interface VoicePresenceContextType {
   getVoiceParticipants: (signingPubkey: string, roomId: string) => string[]  // Returns user_ids in voice for a room
+  isUserInVoice: (signingPubkey: string, userId: string) => boolean  // Check if user is in voice in any room
   applyUpdate: (signingPubkey: string, userId: string, roomId: string, inVoice: boolean) => void
   applySnapshot: (signingPubkey: string, roomId: string, userIds: string[]) => void
 }
@@ -78,8 +79,20 @@ export function VoicePresenceProvider({ children }: { children: ReactNode }) {
     return Array.from(room)
   }
 
+  const isUserInVoice: VoicePresenceContextType['isUserInVoice'] = (signingPubkey, userId) => {
+    const house = byHouse[signingPubkey]
+    if (!house) return false
+    // Check all rooms in this house
+    for (const room of Object.values(house)) {
+      if (room.has(userId)) {
+        return true
+      }
+    }
+    return false
+  }
+
   const value = useMemo(
-    () => ({ applyUpdate, applySnapshot, getVoiceParticipants }),
+    () => ({ applyUpdate, applySnapshot, getVoiceParticipants, isUserInVoice }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [byHouse]
   )

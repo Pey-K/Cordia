@@ -414,9 +414,7 @@ function HouseViewPage() {
                                 const level = getLevel(
                                   house.signing_pubkey,
                                   userId,
-                                  isSelf
-                                    ? (webrtcIsInVoice && currentRoomId === room.id)
-                                    : Array.from(peers.values()).some(p => p.userId === userId)
+                                  voicePresence.isUserInVoice(house.signing_pubkey, userId)
                                 )
 
                                 return (
@@ -463,9 +461,7 @@ function HouseViewPage() {
                                     const level = getLevel(
                                       house.signing_pubkey,
                                       userId,
-                                      isSelf
-                                        ? (webrtcIsInVoice && currentRoomId === room.id)
-                                        : Array.from(peers.values()).some(p => p.userId === userId)
+                                      voicePresence.isUserInVoice(house.signing_pubkey, userId)
                                     )
 
                                     return (
@@ -665,9 +661,7 @@ function HouseViewPage() {
                         <PresenceSquare level={getLevel(
                           house.signing_pubkey,
                           member.user_id,
-                          member.user_id === identity?.user_id
-                            ? (webrtcIsInVoice && currentRoomId === currentRoom?.id)
-                            : Array.from(peers.values()).some(p => p.userId === member.user_id)
+                          voicePresence.isUserInVoice(house.signing_pubkey, member.user_id)
                         )} />
                       </div>
                     </div>
