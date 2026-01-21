@@ -59,6 +59,7 @@ interface WebRTCContextType {
   inputLevelMeter: InputLevelMeter | null  // Shared meter for audio settings
   ensureAudioInitialized(onLevelUpdate: (level: number) => void): Promise<void>
   reinitializeAudio(deviceId: string | null, onLevelUpdate: (level: number) => void): Promise<void>
+  hotSwapInputDevice(deviceId: string): Promise<void>
   stopAudio(): void
 }
 
@@ -175,6 +176,167 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
       setInputLevelMeter(null)  // Update state
     }
   }, [])
+
+  /**
+   * Hot-swap input device during active call.
+   * Uses RTCRtpSender.replaceTrack() to change device without disconnecting.
+   *
+   * @throws Error if swap fails - safe to retry or fallback to manual rejoin
+   */
+  const hotSwapInputDevice = useCallback(async (newDeviceId: string): Promise<void> => {
+    if (!isInVoiceRef.current) {
+      // Not in call - use normal reinitialize path
+      await reinitializeAudio(newDeviceId, () => {})
+      return
+    }
+
+    console.log('[Audio] Hot-swapping input device during call:', newDeviceId)
+
+    // Step 1: Validate preconditions
+    const oldMeter = inputLevelMeterRef.current
+    if (!oldMeter) throw new Error('No existing meter')
+
+    const oldStream = localStreamRef.current
+    if (!oldStream) throw new Error('No local stream')
+
+    const oldTrack = oldStream.getAudioTracks()[0]
+    if (!oldTrack || oldTrack.readyState !== 'live') {
+      throw new Error('Old track not live')
+    }
+
+    // Step 2: Collect all RTCRtpSenders that need track swap
+    const senders: Array<{ peerId: string; sender: RTCRtpSender }> = []
+
+    for (const [peerId, peerInfo] of peersRef.current) {
+      const pc = peerInfo.connection
+      const audioSenders = pc.getSenders().filter(s => s.track?.kind === 'audio')
+
+      if (audioSenders.length === 0) {
+        console.warn(`[Audio] Peer ${peerId} has no audio sender (may still be connecting)`)
+        continue
+      }
+
+      if (audioSenders.length > 1) {
+        console.warn(`[Audio] Peer ${peerId} has multiple audio senders - using first`)
+      }
+
+      senders.push({ peerId, sender: audioSenders[0] })
+    }
+
+    if (senders.length === 0) {
+      console.log('[Audio] No active peer connections, using normal reinit')
+      await reinitializeAudio(newDeviceId, () => {})
+      return
+    }
+
+    console.log(`[Audio] Found ${senders.length} peer(s) to update`)
+
+    // Step 3: Create new meter with new device
+    const audioSettings = await loadAudioSettings()
+    const newMeter = new InputLevelMeter()
+
+    try {
+      await newMeter.start(newDeviceId, () => {})
+
+      // Apply current settings to new meter
+      newMeter.setGain(audioSettings.input_volume)
+      newMeter.setThreshold(audioSettings.input_sensitivity)
+      newMeter.setInputMode(audioSettings.input_mode)
+
+      console.log('[Audio] New meter created with device:', newDeviceId)
+    } catch (error) {
+      console.error('[Audio] Failed to create new meter:', error)
+      newMeter.stop()
+      throw new Error(`Failed to initialize device: ${error}`)
+    }
+
+    // Step 4: Get new track and verify it's live
+    const newStream = newMeter.getTransmissionStream()
+    if (!newStream) {
+      console.error('[Audio] New meter has no transmission stream')
+      newMeter.stop()
+      throw new Error('New meter has no transmission stream')
+    }
+
+    const newTrack = newStream.getAudioTracks()[0]
+    if (!newTrack) {
+      console.error('[Audio] New stream has no audio track')
+      newMeter.stop()
+      throw new Error('New stream has no audio track')
+    }
+
+    if (newTrack.readyState !== 'live') {
+      console.error('[Audio] New track not live:', newTrack.readyState)
+      newMeter.stop()
+      throw new Error(`New track not live: ${newTrack.readyState}`)
+    }
+
+    console.log('[Audio] New track verified live:', {
+      id: newTrack.id,
+      label: newTrack.label,
+      readyState: newTrack.readyState,
+      enabled: newTrack.enabled
+    })
+
+    // Step 5: Replace track on all senders (CRITICAL SECTION)
+    const successfulPeers: string[] = []
+    const failedPeers: Array<{ peerId: string; error: any }> = []
+
+    for (const { peerId, sender } of senders) {
+      try {
+        console.log(`[Audio] Swapping track for peer ${peerId}...`)
+        await sender.replaceTrack(newTrack)
+        successfulPeers.push(peerId)
+        console.log(`[Audio] ✓ Track swapped for peer ${peerId}`)
+      } catch (error) {
+        console.error(`[Audio] ✗ Failed to swap track for peer ${peerId}:`, error)
+        failedPeers.push({ peerId, error })
+      }
+    }
+
+    // Step 6: Handle partial failures - rollback ALL if ANY failed
+    if (failedPeers.length > 0) {
+      console.error(`[Audio] Track swap failed for ${failedPeers.length}/${senders.length} peer(s)`)
+      console.log('[Audio] Rolling back successful swaps...')
+
+      // Attempt rollback
+      for (const peerId of successfulPeers) {
+        const sender = senders.find(s => s.peerId === peerId)?.sender
+        if (sender) {
+          try {
+            await sender.replaceTrack(oldTrack)
+            console.log(`[Audio] ✓ Rolled back peer ${peerId}`)
+          } catch (rollbackError) {
+            console.error(`[Audio] ✗ Rollback failed for peer ${peerId}:`, rollbackError)
+            // Can't recover - this peer is now in inconsistent state
+          }
+        }
+      }
+
+      // Clean up new meter
+      newMeter.stop()
+
+      // Throw error with details
+      const errorMsg = `Failed to swap device for ${failedPeers.length} peer(s): ${
+        failedPeers.map(f => `${f.peerId} (${f.error.message})`).join(', ')
+      }`
+      throw new Error(errorMsg)
+    }
+
+    // Step 7: Success! Update refs and stop old meter
+    console.log('[Audio] ✓ All tracks swapped successfully')
+
+    // Update context refs
+    inputLevelMeterRef.current = newMeter
+    setInputLevelMeter(newMeter)
+    localStreamRef.current = newStream
+
+    // Stop old meter LAST (only after all swaps confirmed)
+    console.log('[Audio] Stopping old meter')
+    oldMeter.stop()
+
+    console.log('[Audio] ✓ Device hot-swap complete')
+  }, [reinitializeAudio])
 
   const setOutputDevice = useCallback((deviceId: string) => {
     outputDeviceRef.current = deviceId
@@ -860,6 +1022,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
         inputLevelMeter,
         ensureAudioInitialized,
         reinitializeAudio,
+        hotSwapInputDevice,
         stopAudio
       }}
     >

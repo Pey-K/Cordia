@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Play, Square } from 'lucide-react'
+import { Play, Square, Info } from 'lucide-react'
 import { Button } from '../../components/ui/button'
 import { Select } from '../../components/ui/select'
 import { Slider } from '../../components/ui/slider'
@@ -10,7 +10,7 @@ import { useWebRTC } from '../../contexts/WebRTCContext'
 
 export function AudioSettingsPage() {
   // Get WebRTC context - we'll use ITS meter, not create our own
-  const { inputLevelMeter, ensureAudioInitialized, reinitializeAudio, isInVoice } = useWebRTC()
+  const { inputLevelMeter, ensureAudioInitialized, reinitializeAudio, hotSwapInputDevice, isInVoice } = useWebRTC()
 
   // Audio state
   const [inputDevices, setInputDevices] = useState<AudioDevice[]>([])
@@ -30,6 +30,9 @@ export function AudioSettingsPage() {
   const [isDragging, setIsDragging] = useState(false)
   const [isCapturingKey, setIsCapturingKey] = useState(false)
   const [isPttKeyPressed, setIsPttKeyPressed] = useState(false)
+  const [deviceChangeBlocked, setDeviceChangeBlocked] = useState(false)
+  const [deviceChangeInProgress, setDeviceChangeInProgress] = useState(false)
+  const deviceSwapInProgressRef = useRef(false) // Prevent concurrent swaps
 
   // Load audio devices and settings on mount
   useEffect(() => {
@@ -68,31 +71,82 @@ export function AudioSettingsPage() {
     initAudio()
   }, [ensureAudioInitialized])
 
-  // Handle device changes
+  // Rebind level update callback when meter becomes available
+  // This is needed because the meter may have been created by joinVoice
+  // with a different (or no) callback, and we need to see level updates
   useEffect(() => {
-    const wasMonitoring = isMonitoringRef.current
+    if (!inputLevelMeter) return
 
+    console.log('[AudioSettings] Rebinding level update callback to meter')
+    inputLevelMeter.setOnLevelUpdate(setInputLevel)
+  }, [inputLevelMeter])
+
+  // Handle device changes - only allowed when NOT in voice
+  // Store the previous device ID to detect changes
+  const prevDeviceIdRef = useRef<string | null>(audioSettings.input_device_id)
+  const isInitialMountRef = useRef(true)
+
+  useEffect(() => {
+    const currentDeviceId = audioSettings.input_device_id
+    const prevDeviceId = prevDeviceIdRef.current
+
+    // Update ref for next comparison
+    prevDeviceIdRef.current = currentDeviceId
+
+    // Skip on initial mount to avoid triggering change on page load
+    if (isInitialMountRef.current) {
+      isInitialMountRef.current = false
+      return
+    }
+
+    // Skip if device didn't actually change
+    if (currentDeviceId === prevDeviceId) {
+      return
+    }
+
+    // Device changed - attempt hot-swap if in call
     const handleDeviceChange = async () => {
-      if (isInVoice) {
-        // During active call - cannot change device
-        console.warn('[AudioSettings] Cannot change input device during active call')
-        // TODO: Show user notification that device change requires leaving voice
+      // Prevent concurrent device changes
+      if (deviceSwapInProgressRef.current) {
+        console.warn('[AudioSettings] Device swap already in progress, ignoring')
         return
       }
 
-      // Not in call - safe to reinitialize
-      await reinitializeAudio(audioSettings.input_device_id || null, setInputLevel)
-      console.log('[AudioSettings] Audio reinitialized with device:', audioSettings.input_device_id || 'default')
+      deviceSwapInProgressRef.current = true
+      setDeviceChangeInProgress(true)
 
-      // Restore monitoring if it was active
-      if (wasMonitoring && inputLevelMeter) {
-        const currentOutputDevice = audioSettings.output_device_id
-        await inputLevelMeter.setMonitoring(true, currentOutputDevice)
+      try {
+        const wasMonitoring = isMonitoringRef.current
+
+        if (isInVoice) {
+          // Hot-swap during call
+          console.log('[AudioSettings] Attempting hot-swap during call...')
+          await hotSwapInputDevice(currentDeviceId || 'default')
+          console.log('[AudioSettings] ✓ Hot-swap successful')
+        } else {
+          // Normal reinit when not in call
+          await reinitializeAudio(currentDeviceId, setInputLevel)
+          console.log('[AudioSettings] Audio reinitialized with device:', currentDeviceId || 'default')
+        }
+
+        // Restore monitoring if it was active
+        if (wasMonitoring && inputLevelMeter) {
+          await inputLevelMeter.setMonitoring(true, audioSettings.output_device_id)
+        }
+      } catch (error) {
+        console.error('[AudioSettings] Device change failed:', error)
+
+        // Show error notification
+        setDeviceChangeBlocked(true)
+        setTimeout(() => setDeviceChangeBlocked(false), 5000)
+      } finally {
+        deviceSwapInProgressRef.current = false
+        setDeviceChangeInProgress(false)
       }
     }
 
     handleDeviceChange()
-  }, [audioSettings.input_device_id, reinitializeAudio, isInVoice, inputLevelMeter])
+  }, [audioSettings.input_device_id, isInVoice, reinitializeAudio, hotSwapInputDevice, inputLevelMeter, audioSettings.output_device_id])
 
   // Handle monitoring on/off ONLY when button is clicked, not when other settings change
   // This is controlled by isMonitoring state which only changes via handleToggleMonitoring
@@ -268,7 +322,23 @@ export function AudioSettingsPage() {
   const currentDb = Math.round(-100 + (audioSettings.input_sensitivity * 100))
 
   return (
-    <div className="bg-card/50 backdrop-blur-sm border border-border/50 space-y-8">
+    <>
+      {/* Floating notification for failed device change */}
+      {deviceChangeBlocked && (
+        <div className="fixed top-4 right-4 z-50 bg-red-500 text-white px-4 py-3 rounded-lg shadow-lg flex items-start gap-3 max-w-md animate-in fade-in slide-in-from-top-2">
+          <Info className="h-4 w-4 mt-0.5 flex-shrink-0" />
+          <div>
+            <p className="text-sm font-medium">
+              Failed to change device
+            </p>
+            <p className="text-xs mt-1 opacity-90">
+              Device may be unavailable. Try leaving voice and changing device, or try a different device.
+            </p>
+          </div>
+        </div>
+      )}
+
+      <div className="bg-card/50 backdrop-blur-sm border border-border/50 space-y-8">
       {/* Header */}
       <div className="space-y-1">
         <div className="inline-block">
@@ -290,6 +360,7 @@ export function AudioSettingsPage() {
               id="input-device"
               value={audioSettings.input_device_id || ''}
               onChange={(e) => handleAudioSettingsChange({ input_device_id: e.target.value || null })}
+              disabled={deviceChangeInProgress}
             >
               <option value="">Default</option>
               {inputDevices.map((device) => (
@@ -478,7 +549,8 @@ export function AudioSettingsPage() {
         )}
 
       </div>
-    </div>
+      </div>
+    </>
   )
 }
 

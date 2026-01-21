@@ -240,6 +240,11 @@ export class InputLevelMeter {
     }
   }
 
+  setOnLevelUpdate(callback: (level: number) => void) {
+    this.onLevelUpdate = callback
+    console.log('[Audio] Level update callback rebound')
+  }
+
   async setMonitoring(enabled: boolean, outputDeviceId: string | null = null) {
     if (enabled && this.destination && !this.monitoringAudio) {
       // Create audio element for monitoring
