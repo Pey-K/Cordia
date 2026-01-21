@@ -9,6 +9,7 @@ import { UserProfileCard } from '../components/UserProfileCard'
 import { listHouses, createHouse, deleteHouse, type House, parseInviteUri, publishHouseHintOpaque, publishHouseHintMemberLeft, redeemTemporaryInvite } from '../lib/tauri'
 import { useIdentity } from '../contexts/IdentityContext'
 import { usePresence } from '../contexts/PresenceContext'
+import { useVoicePresence } from '../contexts/VoicePresenceContext'
 import { useAccount } from '../contexts/AccountContext'
 import { useProfile } from '../contexts/ProfileContext'
 import { useRemoteProfiles } from '../contexts/RemoteProfilesContext'
@@ -188,7 +189,7 @@ function HouseListPage() {
       >
         {visible.map((m, i) => (
           (() => {
-            const level = getLevel(house.signing_pubkey, m.user_id, Array.from(peers.values()).some(p => p.userId === m.user_id))
+            const level = getLevel(house.signing_pubkey, m.user_id, voicePresence.isUserInVoice(house.signing_pubkey, m.user_id))
             const p = resolveProfile(m.user_id, m.display_name)
             return (
           <div

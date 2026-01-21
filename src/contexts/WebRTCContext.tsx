@@ -105,9 +105,22 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
 
   // Ensure audio is initialized (safe during calls - only creates if missing)
   const ensureAudioInitialized = useCallback(async (onLevelUpdate: (level: number) => void): Promise<void> => {
+    // Check if meter exists AND its stream is still live
     if (inputLevelMeterRef.current) {
-      console.log('[Audio] Meter already exists, skipping initialization')
-      return
+      const transmissionStream = inputLevelMeterRef.current.getTransmissionStream()
+      const audioTracks = transmissionStream?.getAudioTracks() || []
+      const isStreamLive = audioTracks.length > 0 && audioTracks[0].readyState === 'live'
+      
+      if (isStreamLive) {
+        console.log('[Audio] Meter already exists with live stream, skipping initialization')
+        return
+      } else {
+        console.log('[Audio] Meter exists but stream is not live, reinitializing...')
+        // Stream is dead, stop and recreate
+        inputLevelMeterRef.current.stop()
+        inputLevelMeterRef.current = null
+        setInputLevelMeter(null)
+      }
     }
 
     console.log('[Audio] Creating new audio meter')

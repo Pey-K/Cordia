@@ -56,8 +56,8 @@ export function PresenceProvider({ children }: { children: ReactNode }) {
   const getLevel: PresenceContextType['getLevel'] = (signingPubkey, userId, isInCall = false) => {
     const u = byHouse[signingPubkey]?.[userId]
     if (!u) return 'offline'
-    // If user is in a call, show in_call status (blue)
-    if (isInCall && u.active_signing_pubkey === signingPubkey) {
+    // If user is in a call, show in_call status (blue) - this overrides all other states
+    if (isInCall) {
       return 'in_call'
     }
     return u.active_signing_pubkey === signingPubkey ? 'active' : 'online'
