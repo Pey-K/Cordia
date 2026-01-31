@@ -190,7 +190,7 @@ function IdentityRestorePage() {
                     id="file-input"
                     type="file"
                     className="hidden"
-                    accept=".roo,application/octet-stream"
+                    accept=".key,application/octet-stream"
                     onChange={handleFileSelect}
                     disabled={isImporting}
                   />

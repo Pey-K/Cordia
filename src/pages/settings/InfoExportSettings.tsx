@@ -59,12 +59,12 @@ export function InfoExportSettings() {
       document.body.removeChild(debugA)
       URL.revokeObjectURL(debugUrl)
       
-      // Also export the binary .roo file
+      // Also export the binary .key file
       const blob = new Blob([data as BlobPart], { type: 'application/octet-stream' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `${filename}.roo`
+      a.download = `${filename}.key`
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
@@ -124,7 +124,7 @@ export function InfoExportSettings() {
           </div>
         </div>
         <p className="text-sm text-muted-foreground font-light">
-          Roommate v1.0.0
+          Cordia v1.0.0
         </p>
       </div>
 

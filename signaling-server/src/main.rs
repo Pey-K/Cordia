@@ -20,7 +20,7 @@ pub mod state;
 pub mod handlers;
 
 pub type PeerId = String;
-pub type HouseId = String;
+pub type ServerId = String;
 pub type SigningPubkey = String;
 pub type WebSocketSender = mpsc::UnboundedSender<hyper_tungstenite::tungstenite::Message>;
 pub type ConnId = String;
@@ -41,9 +41,9 @@ pub(crate) fn decode_path_segment(seg: &str) -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum SignalingMessage {
-    /// Client registers with house_id (server id) and peer_id
+    /// Client registers with server_id and peer_id
     Register {
-        house_id: HouseId,
+        server_id: ServerId,
         peer_id: PeerId,
         #[serde(default)]
         signing_pubkey: Option<SigningPubkey>,
@@ -76,14 +76,14 @@ pub enum SignalingMessage {
         message: String,
     },
     /// Broadcast when a new member joins the server
-    HouseMemberJoined {
-        house_id: HouseId,
+    ServerMemberJoined {
+        server_id: ServerId,
         member_user_id: String,
         member_display_name: String,
     },
 
     /// Broadcast when a server hint (snapshot) is updated via REST API
-    HouseHintUpdated {
+    ServerHintUpdated {
         signing_pubkey: SigningPubkey,
         encrypted_state: String,
         signature: String,
@@ -124,11 +124,11 @@ pub enum SignalingMessage {
         active_signing_pubkey: Option<SigningPubkey>,
     },
 
-    /// Broadcast voice presence update (user joined/left voice in a room)
+    /// Broadcast voice presence update (user joined/left voice in a chat)
     VoicePresenceUpdate {
         signing_pubkey: SigningPubkey,
         user_id: String,
-        room_id: String,
+        chat_id: String,
         in_voice: bool,  // true = joined, false = left
     },
 
@@ -174,10 +174,10 @@ pub enum SignalingMessage {
     // Voice Chat (Room-scoped WebRTC signaling)
     // ============================
 
-    /// Client registers for voice in a specific room
+    /// Client registers for voice in a specific chat
     VoiceRegister {
-        house_id: HouseId,
-        room_id: String,
+        server_id: ServerId,
+        chat_id: String,
         peer_id: PeerId,      // Ephemeral session ID (UUID per join)
         user_id: String,      // Stable identity (public key hash)
         signing_pubkey: SigningPubkey,  // Server signing pubkey for presence broadcasting
@@ -186,53 +186,53 @@ pub enum SignalingMessage {
     /// Server response to voice registration
     VoiceRegistered {
         peer_id: PeerId,
-        room_id: String,
-        peers: Vec<VoicePeerInfo>,  // Other peers in this room only
+        chat_id: String,
+        peers: Vec<VoicePeerInfo>,  // Other peers in this chat only
     },
 
     /// Client unregisters from voice
     VoiceUnregister {
         peer_id: PeerId,
-        room_id: String,
+        chat_id: String,
     },
 
-    /// Broadcast when a peer joins voice in a room
+    /// Broadcast when a peer joins voice in a chat
     VoicePeerJoined {
         peer_id: PeerId,
         user_id: String,
-        room_id: String,
+        chat_id: String,
     },
 
-    /// Broadcast when a peer leaves voice in a room
+    /// Broadcast when a peer leaves voice in a chat
     VoicePeerLeft {
         peer_id: PeerId,
         user_id: String,
-        room_id: String,
+        chat_id: String,
     },
 
-    /// Voice SDP offer (room-scoped)
+    /// Voice SDP offer (chat-scoped)
     VoiceOffer {
         from_peer: PeerId,
         from_user: String,
         to_peer: PeerId,
-        room_id: String,
+        chat_id: String,
         sdp: String,
     },
 
-    /// Voice SDP answer (room-scoped)
+    /// Voice SDP answer (chat-scoped)
     VoiceAnswer {
         from_peer: PeerId,
         from_user: String,
         to_peer: PeerId,
-        room_id: String,
+        chat_id: String,
         sdp: String,
     },
 
-    /// Voice ICE candidate (room-scoped)
+    /// Voice ICE candidate (chat-scoped)
     VoiceIceCandidate {
         from_peer: PeerId,
         to_peer: PeerId,
-        room_id: String,
+        chat_id: String,
         candidate: String,
     },
 
@@ -278,9 +278,9 @@ pub struct VoicePeer {
 /// Trust boundary: Clients MUST treat local state as authoritative even if server state differs.
 /// The server is not the source of truth - this is just a cache/recovery aid.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EncryptedHouseHint {
+pub struct EncryptedServerHint {
     pub signing_pubkey: String,
-    pub encrypted_state: String,  // Server cannot decrypt
+    pub encrypted_state: String,  // Beacon cannot decrypt
     pub signature: String,        // Signed by member's Ed25519 key
     pub last_updated: DateTime<Utc>,
 }
@@ -306,11 +306,11 @@ pub struct InviteTokenRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HouseEvent {
+pub struct ServerEvent {
     pub event_id: String,
     pub signing_pubkey: String,
     pub event_type: String,        // "MemberJoin", "MemberLeave", "NameChange"
-    pub encrypted_payload: String, // Server cannot decrypt
+    pub encrypted_payload: String, // Beacon cannot decrypt
     pub signature: String,         // Signed by member's Ed25519 key
     pub timestamp: DateTime<Utc>,
 }
@@ -329,7 +329,7 @@ pub struct AckRequest {
 #[derive(Debug, Clone)]
 pub struct PeerConnection {
     pub peer_id: PeerId,
-    pub house_id: HouseId,
+    pub server_id: ServerId,
     pub signing_pubkey: Option<SigningPubkey>,
     pub conn_id: ConnId,
 }
@@ -466,9 +466,9 @@ async fn handle_connection(
 
     // Clean up when connection closes
     // Get signing_pubkeys BEFORE disconnecting to ensure we have them for presence updates
-    let house_signing_map = {
+    let server_signing_map = {
         let voice = state.voice.lock().await;
-        voice.house_signing_pubkeys.clone()
+        voice.server_signing_pubkeys.clone()
     };
 
     let (presence_removed, voice_removed, redis_client) = {
@@ -507,23 +507,23 @@ async fn handle_connection(
         (presence_removed, voice_removed, redis_client)
     };
 
-    // Broadcast VoicePeerLeft to remaining peers in each affected room
+    // Broadcast VoicePeerLeft to remaining peers in each affected chat
     if !voice_removed.is_empty() {
-        for (house_id, room_id, peer_id, user_id) in voice_removed.clone() {
-            info!("Voice peer {} (user {}) disconnected from room {}", peer_id, user_id, room_id);
+        for (server_id, chat_id, peer_id, user_id) in voice_removed.clone() {
+            info!("Voice peer {} (user {}) disconnected from chat {}", peer_id, user_id, chat_id);
             let msg = SignalingMessage::VoicePeerLeft {
                 peer_id,
                 user_id: user_id.clone(),
-                room_id: room_id.clone(),
+                chat_id: chat_id.clone(),
             };
-            state.broadcast_to_voice_room(&house_id, &room_id, &msg, None).await;
+            state.broadcast_to_voice_room(&server_id, &chat_id, &msg, None).await;
         }
         
         // Broadcast voice presence updates for disconnected peers
-        for (house_id, room_id, _, user_id) in voice_removed {
+        for (server_id, chat_id, _, user_id) in voice_removed {
             // Use the signing_pubkey we collected BEFORE disconnecting
-            if let Some(signing_pubkey) = house_signing_map.get(&house_id) {
-                state.broadcast_voice_presence(signing_pubkey, &user_id, &room_id, false).await;
+            if let Some(signing_pubkey) = server_signing_map.get(&server_id) {
+                state.broadcast_voice_presence(signing_pubkey, &user_id, &chat_id, false).await;
             }
         }
     }
@@ -778,7 +778,7 @@ async fn main() {
 
     info!("Beacon listening on http://{}", addr);
     info!("WebSocket endpoint: ws://{}", addr);
-    info!("REST API: http://{}/api/houses/{{signing_pubkey}}/... (server hints)", addr);
+    info!("REST API: http://{}/api/servers/{{signing_pubkey}}/... (server hints)", addr);
     info!("Health check: http://{}/health", addr);
 
     if let Err(e) = server.await {

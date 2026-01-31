@@ -3,7 +3,7 @@ use chrono::{DateTime, Duration, Utc};
 #[cfg(feature = "postgres")]
 use sqlx::{PgPool, Row};
 #[cfg(feature = "postgres")]
-use crate::{ProfileRecord, ProfileSnapshotRecord, EncryptedHouseHint, InviteTokenCreateRequest, InviteTokenRecord, HouseEvent};
+use crate::{ProfileRecord, ProfileSnapshotRecord, EncryptedServerHint, InviteTokenCreateRequest, InviteTokenRecord, ServerEvent};
 
 #[cfg(feature = "postgres")]
 pub async fn init_db(pool: &PgPool) -> Result<(), String> {
@@ -25,7 +25,7 @@ pub async fn init_db(pool: &PgPool) -> Result<(), String> {
 
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS house_hints (
+        CREATE TABLE IF NOT EXISTS server_hints (
           signing_pubkey TEXT PRIMARY KEY,
           encrypted_state TEXT NOT NULL,
           signature TEXT NOT NULL,
@@ -35,7 +35,7 @@ pub async fn init_db(pool: &PgPool) -> Result<(), String> {
     )
     .execute(pool)
     .await
-    .map_err(|e| format!("init_db house_hints: {}", e))?;
+    .map_err(|e| format!("init_db server_hints: {}", e))?;
 
     sqlx::query(
         r#"
@@ -57,7 +57,7 @@ pub async fn init_db(pool: &PgPool) -> Result<(), String> {
 
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS house_events (
+        CREATE TABLE IF NOT EXISTS server_events (
           event_id TEXT PRIMARY KEY,
           signing_pubkey TEXT NOT NULL,
           event_type TEXT NOT NULL,
@@ -69,7 +69,7 @@ pub async fn init_db(pool: &PgPool) -> Result<(), String> {
     )
     .execute(pool)
     .await
-    .map_err(|e| format!("init_db house_events: {}", e))?;
+    .map_err(|e| format!("init_db server_events: {}", e))?;
 
     sqlx::query(
         r#"
@@ -149,10 +149,10 @@ pub async fn load_profiles_db(pool: &PgPool, user_ids: &[String]) -> Result<Vec<
 }
 
 #[cfg(feature = "postgres")]
-pub async fn upsert_house_hint_db(pool: &PgPool, hint: &EncryptedHouseHint) -> Result<(), String> {
+pub async fn upsert_server_hint_db(pool: &PgPool, hint: &EncryptedServerHint) -> Result<(), String> {
     sqlx::query(
         r#"
-        INSERT INTO house_hints (signing_pubkey, encrypted_state, signature, last_updated)
+        INSERT INTO server_hints (signing_pubkey, encrypted_state, signature, last_updated)
         VALUES ($1, $2, $3, $4)
         ON CONFLICT (signing_pubkey) DO UPDATE
         SET encrypted_state = EXCLUDED.encrypted_state,
@@ -166,25 +166,25 @@ pub async fn upsert_house_hint_db(pool: &PgPool, hint: &EncryptedHouseHint) -> R
     .bind(hint.last_updated)
     .execute(pool)
     .await
-    .map_err(|e| format!("upsert_house_hint_db: {}", e))?;
+    .map_err(|e| format!("upsert_server_hint_db: {}", e))?;
     Ok(())
 }
 
 #[cfg(feature = "postgres")]
-pub async fn get_house_hint_db(pool: &PgPool, signing_pubkey: &str) -> Result<Option<EncryptedHouseHint>, String> {
+pub async fn get_server_hint_db(pool: &PgPool, signing_pubkey: &str) -> Result<Option<EncryptedServerHint>, String> {
     let row = sqlx::query(
         r#"
         SELECT signing_pubkey, encrypted_state, signature, last_updated
-        FROM house_hints
+        FROM server_hints
         WHERE signing_pubkey = $1
         "#,
     )
     .bind(signing_pubkey)
     .fetch_optional(pool)
     .await
-    .map_err(|e| format!("get_house_hint_db: {}", e))?;
+    .map_err(|e| format!("get_server_hint_db: {}", e))?;
 
-    Ok(row.map(|r| EncryptedHouseHint {
+    Ok(row.map(|r| EncryptedServerHint {
         signing_pubkey: r.try_get("signing_pubkey").unwrap_or_default(),
         encrypted_state: r.try_get("encrypted_state").unwrap_or_default(),
         signature: r.try_get("signature").unwrap_or_default(),
@@ -316,10 +316,10 @@ pub async fn revoke_invite_db(pool: &PgPool, code: &str) -> Result<bool, String>
 }
 
 #[cfg(feature = "postgres")]
-pub async fn insert_event_db(pool: &PgPool, event: &HouseEvent) -> Result<(), String> {
+pub async fn insert_event_db(pool: &PgPool, event: &ServerEvent) -> Result<(), String> {
     sqlx::query(
         r#"
-        INSERT INTO house_events (event_id, signing_pubkey, event_type, encrypted_payload, signature, timestamp)
+        INSERT INTO server_events (event_id, signing_pubkey, event_type, encrypted_payload, signature, timestamp)
         VALUES ($1, $2, $3, $4, $5, $6)
         ON CONFLICT (event_id) DO NOTHING;
         "#,
@@ -341,7 +341,7 @@ async fn get_event_timestamp_db(pool: &PgPool, signing_pubkey: &str, event_id: &
     let row = sqlx::query(
         r#"
         SELECT timestamp
-        FROM house_events
+        FROM server_events
         WHERE signing_pubkey = $1 AND event_id = $2
         "#,
     )
@@ -355,7 +355,7 @@ async fn get_event_timestamp_db(pool: &PgPool, signing_pubkey: &str, event_id: &
 }
 
 #[cfg(feature = "postgres")]
-pub async fn get_events_db(pool: &PgPool, signing_pubkey: &str, since: Option<&str>) -> Result<Vec<HouseEvent>, String> {
+pub async fn get_events_db(pool: &PgPool, signing_pubkey: &str, since: Option<&str>) -> Result<Vec<ServerEvent>, String> {
     let rows = if let Some(since_id) = since {
         let Some(since_ts) = get_event_timestamp_db(pool, signing_pubkey, since_id).await? else {
             return Ok(Vec::new());
@@ -363,7 +363,7 @@ pub async fn get_events_db(pool: &PgPool, signing_pubkey: &str, since: Option<&s
         sqlx::query(
             r#"
             SELECT event_id, signing_pubkey, event_type, encrypted_payload, signature, timestamp
-            FROM house_events
+            FROM server_events
             WHERE signing_pubkey = $1
               AND (timestamp > $2 OR (timestamp = $2 AND event_id > $3))
             ORDER BY timestamp ASC, event_id ASC
@@ -379,7 +379,7 @@ pub async fn get_events_db(pool: &PgPool, signing_pubkey: &str, since: Option<&s
         sqlx::query(
             r#"
             SELECT event_id, signing_pubkey, event_type, encrypted_payload, signature, timestamp
-            FROM house_events
+            FROM server_events
             WHERE signing_pubkey = $1
             ORDER BY timestamp ASC, event_id ASC
             "#,
@@ -392,7 +392,7 @@ pub async fn get_events_db(pool: &PgPool, signing_pubkey: &str, since: Option<&s
 
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
-        out.push(HouseEvent {
+        out.push(ServerEvent {
             event_id: row.try_get("event_id").unwrap_or_default(),
             signing_pubkey: row.try_get("signing_pubkey").unwrap_or_default(),
             event_type: row.try_get("event_type").unwrap_or_default(),
@@ -426,7 +426,7 @@ pub async fn ack_events_db(pool: &PgPool, signing_pubkey: &str, user_id: &str, l
 
 #[cfg(feature = "postgres")]
 pub async fn gc_old_events_db(pool: &PgPool, cutoff: DateTime<Utc>) -> Result<(), String> {
-    sqlx::query("DELETE FROM house_events WHERE timestamp <= $1")
+    sqlx::query("DELETE FROM server_events WHERE timestamp <= $1")
         .bind(cutoff)
         .execute(pool)
         .await

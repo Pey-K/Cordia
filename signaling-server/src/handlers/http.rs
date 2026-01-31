@@ -2,8 +2,8 @@ use chrono::Utc;
 use hyper::{Body, Method, Request, Response, StatusCode};
 use log::{info, warn};
 use crate::{
-    decode_path_segment, EncryptedHouseHint, InviteTokenCreateRequest,
-    HouseEvent, AckRequest,
+    decode_path_segment, EncryptedServerHint, InviteTokenCreateRequest,
+    ServerEvent, AckRequest,
     state::AppState,
 };
 use std::sync::Arc;
@@ -13,7 +13,7 @@ type SharedState = Arc<AppState>;
 #[cfg(feature = "postgres")]
 use crate::handlers::db::{
     gc_expired_invites_db, upsert_invite_db, get_invite_db, redeem_invite_db, revoke_invite_db,
-    upsert_house_hint_db, get_house_hint_db, insert_event_db, get_events_db, ack_events_db,
+    upsert_server_hint_db, get_server_hint_db, insert_event_db, get_events_db, ack_events_db,
 };
 
 pub async fn handle_api_request(
@@ -172,8 +172,8 @@ pub async fn handle_api_request(
                     .unwrap()),
             }
         }
-        // /api/houses/{signing_pubkey}/...
-        "houses" => {
+        // /api/servers/{signing_pubkey}/...
+        "servers" => {
             if path_parts.len() < 4 {
                 return Ok(Response::builder()
                     .status(StatusCode::NOT_FOUND)
@@ -185,10 +185,10 @@ pub async fn handle_api_request(
             let endpoint = path_parts.get(4).map(|s| *s);
 
             match (method, endpoint) {
-        // POST /api/houses/{signing_pubkey}/register - Register/update house hint
+        // POST /api/servers/{signing_pubkey}/register - Register/update server hint
         (Method::POST, Some("register")) => {
             let body_bytes = hyper::body::to_bytes(req.into_body()).await?;
-            match serde_json::from_slice::<EncryptedHouseHint>(&body_bytes) {
+            match serde_json::from_slice::<EncryptedServerHint>(&body_bytes) {
                 Ok(hint) => {
                     #[cfg(feature = "postgres")]
                     {
@@ -197,25 +197,23 @@ pub async fn handle_api_request(
                             backends.db.clone()
                         };
                         if let Some(pool) = db {
-                            if let Err(e) = upsert_house_hint_db(&pool, &hint).await {
+                            if let Err(e) = upsert_server_hint_db(&pool, &hint).await {
                                 warn!("Failed to persist server hint: {}", e);
                             }
                         } else {
                             let mut events = state.events.lock().await;
-                            // Store the hint
-                            events.register_house_hint(signing_pubkey.clone(), hint.clone());
+                            events.register_server_hint(signing_pubkey.clone(), hint.clone());
                         }
                     }
                     #[cfg(not(feature = "postgres"))]
                     {
                         let mut events = state.events.lock().await;
-                        // Store the hint
-                        events.register_house_hint(signing_pubkey.clone(), hint.clone());
+                        events.register_server_hint(signing_pubkey.clone(), hint.clone());
                     }
                     // Broadcast snapshot update to any subscribed peers
                     {
                         let signaling = state.signaling.lock().await;
-                        signaling.broadcast_house_hint_updated(&signing_pubkey, &hint);
+                        signaling.broadcast_server_hint_updated(&signing_pubkey, &hint);
                     }
                     info!("Registered server hint");
                     Ok(Response::builder()
@@ -290,7 +288,7 @@ pub async fn handle_api_request(
             }
         }
 
-        // GET /api/houses/{signing_pubkey}/hint - Get house hint
+        // GET /api/servers/{signing_pubkey}/hint - Get server hint
         (Method::GET, Some("hint")) => {
             #[cfg(feature = "postgres")]
             {
@@ -299,7 +297,7 @@ pub async fn handle_api_request(
                     backends.db.clone()
                 };
                 if let Some(pool) = db {
-                    return match get_house_hint_db(&pool, &signing_pubkey).await.unwrap_or(None) {
+                    return match get_server_hint_db(&pool, &signing_pubkey).await.unwrap_or(None) {
                         Some(hint) => {
                             let json = serde_json::to_string(&hint).unwrap();
                             Ok(Response::builder()
@@ -316,7 +314,7 @@ pub async fn handle_api_request(
                 }
             }
             let events = state.events.lock().await;
-            match events.get_house_hint(&signing_pubkey) {
+            match events.get_server_hint(&signing_pubkey) {
                 Some(hint) => {
                     let json = serde_json::to_string(hint).unwrap();
                     Ok(Response::builder()
@@ -332,7 +330,7 @@ pub async fn handle_api_request(
             }
         }
 
-        // POST /api/houses/{signing_pubkey}/events - Post new event
+        // POST /api/servers/{signing_pubkey}/events - Post new event
         // Check if it's actually /events/ack first
         (Method::POST, Some("events")) if path_parts.get(5) == Some(&"ack") => {
             let body_bytes = hyper::body::to_bytes(req.into_body()).await?;
@@ -373,10 +371,10 @@ pub async fn handle_api_request(
             }
         }
 
-        // POST /api/houses/{signing_pubkey}/events - Post new event (no ack)
+        // POST /api/servers/{signing_pubkey}/events - Post new event (no ack)
         (Method::POST, Some("events")) => {
             let body_bytes = hyper::body::to_bytes(req.into_body()).await?;
-            match serde_json::from_slice::<HouseEvent>(&body_bytes) {
+            match serde_json::from_slice::<ServerEvent>(&body_bytes) {
                 Ok(event) => {
                     let mut event = event;
                     event.signing_pubkey = signing_pubkey.clone();
@@ -421,7 +419,7 @@ pub async fn handle_api_request(
             }
         }
 
-        // GET /api/houses/{signing_pubkey}/events?since={event_id} - Poll events
+        // GET /api/servers/{signing_pubkey}/events?since={event_id} - Poll events
         (Method::GET, Some("events")) => {
             let query = req.uri().query().unwrap_or("");
             let since: Option<&str> = query
@@ -455,7 +453,7 @@ pub async fn handle_api_request(
                 .unwrap())
         }
 
-        // POST /api/houses/{signing_pubkey}/ack - Acknowledge events (alternative path)
+        // POST /api/servers/{signing_pubkey}/ack - Acknowledge events (alternative path)
         (Method::POST, Some("ack")) => {
             let body_bytes = hyper::body::to_bytes(req.into_body()).await?;
             match serde_json::from_slice::<AckRequest>(&body_bytes) {

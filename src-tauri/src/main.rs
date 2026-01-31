@@ -21,7 +21,7 @@ use chacha20poly1305::{XChaCha20Poly1305, aead::{Aead, KeyInit, AeadCore}};
 use rand::RngCore;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct EncryptedHouseHint {
+struct EncryptedServerHint {
     signing_pubkey: String,
     encrypted_state: String,
     signature: String,
@@ -277,19 +277,15 @@ fn export_full_identity_for_account(
                 "invite_uri": invite_uri,
             });
             
-            // Include signing secret if this house was created by the user
             if let Some(signing_secret) = server.get_signing_secret() {
-                house_export["signing_secret_b64"] = serde_json::Value::String(base64::encode(&signing_secret));
+                server_export["signing_secret_b64"] = serde_json::Value::String(base64::encode(&signing_secret));
             }
-            
-            // Include invite_code as fallback if invite_uri is missing
             if !invite_code.is_empty() {
                 server_export["invite_code"] = serde_json::Value::String(invite_code);
             }
-            
             server_data.push(server_export);
         } else {
-            eprintln!("Warning: House {} has no symmetric key, skipping export", server.id);
+            eprintln!("Warning: Server {} has no symmetric key, skipping export", server.id);
         }
     }
 
@@ -340,17 +336,14 @@ fn export_full_identity(profile_json: Option<serde_json::Value>) -> Result<Vec<u
             });
             
             if let Some(signing_secret) = server.get_signing_secret() {
-                house_export["signing_secret_b64"] = serde_json::Value::String(base64::encode(&signing_secret));
+                server_export["signing_secret_b64"] = serde_json::Value::String(base64::encode(&signing_secret));
             }
-            
-            // Include invite_code as fallback if invite_uri is missing
             if !invite_code.is_empty() {
                 server_export["invite_code"] = serde_json::Value::String(invite_code);
             }
-            
             server_data.push(server_export);
         } else {
-            eprintln!("Warning: House {} has no symmetric key, skipping export", server.id);
+            eprintln!("Warning: Server {} has no symmetric key, skipping export", server.id);
         }
     }
 
@@ -404,17 +397,14 @@ fn export_full_identity_debug(profile_json: Option<serde_json::Value>) -> Result
             });
             
             if let Some(signing_secret) = server.get_signing_secret() {
-                house_export["signing_secret_b64"] = serde_json::Value::String(base64::encode(&signing_secret));
+                server_export["signing_secret_b64"] = serde_json::Value::String(base64::encode(&signing_secret));
             }
-            
-            // Include invite_code as fallback if invite_uri is missing
             if !invite_code.is_empty() {
                 server_export["invite_code"] = serde_json::Value::String(invite_code);
             }
-            
             server_data.push(server_export);
         } else {
-            eprintln!("Warning: House {} has no symmetric key, skipping export", server.id);
+            eprintln!("Warning: Server {} has no symmetric key, skipping export", server.id);
         }
     }
 
@@ -469,8 +459,8 @@ fn import_identity(data: Vec<u8>) -> Result<ImportResult, String> {
     // NO GUARD: Bootstrap command - works without session for initial setup
     
     // Import .roo format
-    let (identity, profile_json, server_data, signaling_server_url) = IdentityManager::import_roo_format_static(&data)
-        .map_err(|e| format!("Failed to import .roo file: {}", e))?;
+    let (identity, profile_json, server_data, signaling_server_url) = IdentityManager::import_key_format_static(&data)
+        .map_err(|e| format!("Failed to import .key file: {}", e))?;
     
     // Create account container if it doesn't exist
     let account_manager = AccountManager::new()
@@ -578,8 +568,8 @@ fn import_identity(data: Vec<u8>) -> Result<ImportResult, String> {
                     
                     // Restore house using ServerManager method (will encrypt keys with device key)
                     // Rooms/members will be empty initially - signaling server will populate them
-                    server_manager.restore_house_from_export(&minimal_server_json, symmetric_key, signing_secret)
-                        .map_err(|e| format!("Failed to restore house {}: {}", signing_pubkey, e))?;
+                    server_manager.restore_server_from_export(&minimal_server_json, symmetric_key, signing_secret)
+                        .map_err(|e| format!("Failed to restore server {}: {}", signing_pubkey, e))?;
                 }
             }
         }
@@ -587,9 +577,9 @@ fn import_identity(data: Vec<u8>) -> Result<ImportResult, String> {
         // Verify houses were restored
         let restored_servers = server_manager.load_all_servers()
             .map_err(|e| format!("Failed to verify restored houses: {}", e))?;
-        if restored_houses.len() != server_count {
-            return Err(format!("House restoration incomplete: expected {} houses, got {}", 
-                server_count, restored_houses.len()));
+        if restored_servers.len() != server_count {
+            return Err(format!("Server restoration incomplete: expected {} servers, got {}", 
+                server_count, restored_servers.len()));
         }
     }
     
@@ -635,9 +625,9 @@ fn list_servers() -> Result<Vec<ServerInfo>, String> {
     
     let manager = ServerManager::new()
         .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
-    let houses = manager.load_all_houses()
-        .map_err(|e| format!("Failed to load houses: {}", e))?;
-    Ok(servers.into_iter().map(|h| h.to_info()).collect())
+    let servers = manager.load_all_servers()
+        .map_err(|e| format!("Failed to load servers: {}", e))?;
+    Ok(servers.into_iter().map(|s| s.to_info()).collect())
 }
 
 #[tauri::command]
@@ -647,9 +637,9 @@ fn load_server(server_id: String) -> Result<ServerInfo, String> {
     
     let manager = ServerManager::new()
         .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
-    let server = manager.load_server(&server_id)
-        .map_err(|e| format!("Failed to load house: {}", e))?;
-    Ok(server.to_info())
+    let srv = manager.load_server(&server_id)
+        .map_err(|e| format!("Failed to load server: {}", e))?;
+    Ok(srv.to_info())
 }
 
 #[tauri::command]
@@ -694,9 +684,9 @@ fn add_room(server_id: String, name: String, description: Option<String>) -> Res
     
     let manager = ServerManager::new()
         .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
-    let house = manager.add_chat_to_server(&server_id, name, description)
-        .map_err(|e| format!("Failed to add room: {}", e))?;
-    Ok(server.to_info())
+    let srv = manager.add_chat_to_server(&server_id, name, description)
+        .map_err(|e| format!("Failed to add chat: {}", e))?;
+    Ok(srv.to_info())
 }
 
 #[tauri::command]
@@ -720,18 +710,18 @@ fn import_server_hint(server: ServerInfo) -> Result<(), String> {
         .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
 
     manager
-        .import_house_hint(house)
-        .map_err(|e| format!("Failed to import house hint: {}", e))
+        .import_server_hint(server)
+        .map_err(|e| format!("Failed to import server hint: {}", e))
 }
 
 #[tauri::command]
-async fn register_server_hint(signaling_server: String, hint: EncryptedHouseHint) -> Result<(), String> {
+async fn register_server_hint(signaling_server: String, hint: EncryptedServerHint) -> Result<(), String> {
     // Usage command (publishing state) - require session
     require_session()?;
 
     let base = normalize_signaling_to_http(&signaling_server)?;
     let url = format!(
-        "{}/api/houses/{}/register",
+        "{}/api/servers/{}/register",
         base,
         urlencoding::encode(&hint.signing_pubkey)
     );
@@ -752,13 +742,13 @@ async fn register_server_hint(signaling_server: String, hint: EncryptedHouseHint
 }
 
 #[tauri::command]
-async fn get_server_hint(signaling_server: String, signing_pubkey: String) -> Result<Option<EncryptedHouseHint>, String> {
+async fn get_server_hint(signaling_server: String, signing_pubkey: String) -> Result<Option<EncryptedServerHint>, String> {
     // Usage command (joining) - require session
     require_session()?;
 
     let base = normalize_signaling_to_http(&signaling_server)?;
     let url = format!(
-        "{}/api/houses/{}/hint",
+        "{}/api/servers/{}/hint",
         base,
         urlencoding::encode(&signing_pubkey)
     );
@@ -779,7 +769,7 @@ async fn get_server_hint(signaling_server: String, signing_pubkey: String) -> Re
     }
 
     let hint = resp
-        .json::<EncryptedHouseHint>()
+        .json::<EncryptedServerHint>()
         .await
         .map_err(|e| format!("Failed to parse house hint JSON: {}", e))?;
 
@@ -802,7 +792,7 @@ async fn publish_server_hint_opaque(signaling_server: String, server_id: String)
     let server_info = server.to_info();
     let encrypted_state = encrypt_server_hint(&symmetric_key, &server_info)?;
 
-    let hint = EncryptedHouseHint {
+    let hint = EncryptedServerHint {
         signing_pubkey: server_info.signing_pubkey.clone(),
         encrypted_state,
         signature: "".to_string(),
@@ -829,7 +819,7 @@ async fn publish_server_hint_member_left(signaling_server: String, server_id: St
     server_info.members.retain(|m| m.user_id != user_id);
 
     let encrypted_state = encrypt_server_hint(&symmetric_key, &server_info)?;
-    let hint = EncryptedHouseHint {
+    let hint = EncryptedServerHint {
         signing_pubkey: server_info.signing_pubkey.clone(),
         encrypted_state,
         signature: "".to_string(),
@@ -935,7 +925,7 @@ async fn create_temporary_invite(signaling_server: String, server_id: String, ma
 
     // Include active invite fields in the payload so new joiners see the current invite state immediately.
     // We treat the invite as "active until revoked"; this timestamp is just to allow UI hiding if it's very stale.
-    let invite_uri = format!("rmmt://{}@{}", code, signaling_server.trim());
+    let invite_uri = format!("cordia://{}@{}", code, signaling_server.trim());
     let expires_at = chrono::Utc::now() + chrono::Duration::days(30);
     server_info.active_invite_uri = Some(invite_uri.clone());
     server_info.active_invite_expires_at = Some(expires_at);
@@ -949,7 +939,7 @@ async fn create_temporary_invite(signaling_server: String, server_id: String, ma
     // POST to signaling server
     let base = normalize_signaling_to_http(&signaling_server)?;
     let url = format!(
-        "{}/api/houses/{}/invites",
+        "{}/api/servers/{}/invites",
         base,
         urlencoding::encode(&server_info.signing_pubkey)
     );
@@ -998,7 +988,7 @@ async fn revoke_active_invite(signaling_server: String, server_id: String) -> Re
     let code = server
         .active_invite_uri
         .as_ref()
-        .and_then(|uri| uri.trim().strip_prefix("rmmt://"))
+        .and_then(|uri| uri.trim().strip_prefix("cordia://"))
         .and_then(|rest| rest.split('@').next())
         .map(|s| s.to_string());
 
@@ -1150,12 +1140,12 @@ async fn set_signaling_server_url(url: String) -> Result<(), String> {
 
 #[cfg(windows)]
 #[tauri::command]
-fn register_roo_file_association_command() -> Result<(), String> {
+fn register_key_file_association_command() -> Result<(), String> {
     #[cfg(all(windows, feature = "windows-registry"))]
     {
-        use file_association::register_roo_file_association;
-        register_roo_file_association()
-            .map_err(|e| format!("Failed to register .roo file association: {}", e))
+        use file_association::register_key_file_association;
+        register_key_file_association()
+            .map_err(|e| format!("Failed to register .key file association: {}", e))
     }
     #[cfg(not(all(windows, feature = "windows-registry")))]
     {
@@ -1250,7 +1240,7 @@ fn main() {
             logout_account,
             get_current_account_id,
             delete_account,
-            register_roo_file_association_command,
+            register_key_file_association_command,
             // Audio settings commands
             load_audio_settings,
             save_audio_settings,
@@ -1261,7 +1251,7 @@ fn main() {
             delete_server,
             find_server_by_invite,
             join_server,
-            add_chat,
+            add_room,
             remove_chat,
             import_server_hint,
             register_server_hint,

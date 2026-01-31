@@ -1,15 +1,15 @@
 use std::collections::{HashMap, HashSet};
-use crate::{PeerId, HouseId, SigningPubkey, WebSocketSender, ConnId, PeerConnection, EncryptedHouseHint, SignalingMessage};
+use crate::{PeerId, ServerId, SigningPubkey, WebSocketSender, ConnId, PeerConnection, EncryptedServerHint, SignalingMessage};
 use hyper_tungstenite::tungstenite::Message;
 
 /// WebSocket signaling state (peer ↔ peer)
 pub struct SignalingState {
     /// Map of peer_id -> PeerConnection
     pub peers: HashMap<PeerId, PeerConnection>,
-    /// Map of house_id -> set of peer_ids in that house
-    pub houses: HashMap<HouseId, HashSet<PeerId>>,
-    /// Map of signing_pubkey -> set of peer_ids subscribed to that house
-    pub signing_houses: HashMap<SigningPubkey, HashSet<PeerId>>,
+    /// Map of server_id -> set of peer_ids in that server
+    pub servers: HashMap<ServerId, HashSet<PeerId>>,
+    /// Map of signing_pubkey -> set of peer_ids subscribed to that server
+    pub signing_servers: HashMap<SigningPubkey, HashSet<PeerId>>,
     /// Map of peer_id -> WebSocket sender (for message forwarding)
     pub peer_senders: HashMap<PeerId, WebSocketSender>,
     /// Map of conn_id -> peer_ids registered on that websocket connection (allows correct cleanup)
@@ -20,8 +20,8 @@ impl SignalingState {
     pub fn new() -> Self {
         Self {
             peers: HashMap::new(),
-            houses: HashMap::new(),
-            signing_houses: HashMap::new(),
+            servers: HashMap::new(),
+            signing_servers: HashMap::new(),
             peer_senders: HashMap::new(),
             conn_peers: HashMap::new(),
         }
@@ -43,7 +43,7 @@ impl SignalingState {
     pub fn register_peer(
         &mut self,
         peer_id: PeerId,
-        house_id: HouseId,
+        server_id: ServerId,
         signing_pubkey: Option<SigningPubkey>,
         conn_id: ConnId,
     ) -> Vec<PeerId> {
@@ -52,7 +52,7 @@ impl SignalingState {
             peer_id.clone(),
             PeerConnection {
                 peer_id: peer_id.clone(),
-                house_id: house_id.clone(),
+                server_id: server_id.clone(),
                 signing_pubkey: signing_pubkey.clone(),
                 conn_id: conn_id.clone(),
             },
@@ -64,17 +64,17 @@ impl SignalingState {
             .or_insert_with(HashSet::new)
             .insert(peer_id.clone());
 
-        // Add peer to house
-        let peers_in_house = self.houses.entry(house_id.clone()).or_insert_with(HashSet::new);
-        peers_in_house.insert(peer_id.clone());
+        // Add peer to server
+        let peers_in_server = self.servers.entry(server_id.clone()).or_insert_with(HashSet::new);
+        peers_in_server.insert(peer_id.clone());
 
-        // If a signing_pubkey was provided, treat this peer as subscribed for house-hint broadcasts
+        // If a signing_pubkey was provided, treat this peer as subscribed for server-hint broadcasts
         if let Some(spk) = signing_pubkey {
-            self.signing_houses.entry(spk).or_insert_with(HashSet::new).insert(peer_id.clone());
+            self.signing_servers.entry(spk).or_insert_with(HashSet::new).insert(peer_id.clone());
         }
 
-        // Return other peers in the same house
-        peers_in_house
+        // Return other peers in the same server
+        peers_in_server
             .iter()
             .filter(|p| **p != peer_id)
             .cloned()
@@ -83,20 +83,20 @@ impl SignalingState {
 
     pub fn unregister_peer(&mut self, peer_id: &PeerId) {
         if let Some(conn) = self.peers.remove(peer_id) {
-            // Remove from house list
-            if let Some(peers_in_house) = self.houses.get_mut(&conn.house_id) {
-                peers_in_house.remove(peer_id);
-                if peers_in_house.is_empty() {
-                    self.houses.remove(&conn.house_id);
+            // Remove from server list
+            if let Some(peers_in_server) = self.servers.get_mut(&conn.server_id) {
+                peers_in_server.remove(peer_id);
+                if peers_in_server.is_empty() {
+                    self.servers.remove(&conn.server_id);
                 }
             }
 
-            // Remove from signing house list (if subscribed)
+            // Remove from signing server list (if subscribed)
             if let Some(spk) = conn.signing_pubkey {
-                if let Some(peers_for_signing) = self.signing_houses.get_mut(&spk) {
+                if let Some(peers_for_signing) = self.signing_servers.get_mut(&spk) {
                     peers_for_signing.remove(peer_id);
                     if peers_for_signing.is_empty() {
-                        self.signing_houses.remove(&spk);
+                        self.signing_servers.remove(&spk);
                     }
                 }
             }
@@ -105,16 +105,16 @@ impl SignalingState {
         self.peer_senders.remove(peer_id);
     }
 
-    pub fn get_house(&self, peer_id: &PeerId) -> Option<HouseId> {
-        self.peers.get(peer_id).map(|c| c.house_id.clone())
+    pub fn get_server(&self, peer_id: &PeerId) -> Option<ServerId> {
+        self.peers.get(peer_id).map(|c| c.server_id.clone())
     }
 
-    pub fn broadcast_house_hint_updated(&self, signing_pubkey: &SigningPubkey, hint: &EncryptedHouseHint) {
-        let Some(peers) = self.signing_houses.get(signing_pubkey) else {
+    pub fn broadcast_server_hint_updated(&self, signing_pubkey: &SigningPubkey, hint: &EncryptedServerHint) {
+        let Some(peers) = self.signing_servers.get(signing_pubkey) else {
             return;
         };
 
-        let msg = SignalingMessage::HouseHintUpdated {
+        let msg = SignalingMessage::ServerHintUpdated {
             signing_pubkey: signing_pubkey.clone(),
             encrypted_state: hint.encrypted_state.clone(),
             signature: hint.signature.clone(),

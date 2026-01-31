@@ -250,19 +250,19 @@ export async function deleteAccount(accountId: string): Promise<void> {
   return await invoke('delete_account', { accountId })
 }
 
-export async function registerRooFileAssociation(): Promise<void> {
-  return await invoke('register_roo_file_association_command')
+export async function registerKeyFileAssociation(): Promise<void> {
+  return await invoke('register_key_file_association_command')
 }
 
 // === Invite URI Helpers ===
 
 /**
  * Parse an invite URI into its components
- * Format: rmmt://{signing_pubkey}@{server}
+ * Format: cordia://{signing_pubkey}@{server}
  */
 export function parseInviteUri(uri: string): { signingPubkey: string; server: string } | null {
-  // Be tolerant of users pasting uppercased scheme (e.g. RMMT://...), and trim whitespace.
-  const match = uri.trim().match(/^rmmt:\/\/([^@]+)@(.+)$/i)
+  // Be tolerant of users pasting uppercased scheme (e.g. CORDIA://...), and trim whitespace.
+  const match = uri.trim().match(/^cordia:\/\/([^@]+)@(.+)$/i)
   if (!match) return null
   return {
     signingPubkey: match[1],

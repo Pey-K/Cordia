@@ -442,7 +442,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
           type: 'VoiceIceCandidate',
           from_peer: currentPeerIdRef.current,
           to_peer: remotePeerId,
-          room_id: roomId,
+          chat_id: roomId,
           candidate: JSON.stringify(event.candidate)
         }
         wsRef.current.send(JSON.stringify(message))
@@ -677,8 +677,8 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
 
     switch (msg.type) {
       case 'VoiceRegistered': {
-        const { peers: serverPeers, room_id } = msg
-        console.log(`[Signal] Registered in room ${room_id}. Existing peers:`, serverPeers.length)
+        const { peers: serverPeers, chat_id } = msg
+        console.log(`[Signal] Registered in chat ${chat_id}. Existing peers:`, serverPeers.length)
 
         // Create connections to all existing peers in the room
         for (const peerInfo of serverPeers) {
@@ -716,7 +716,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
               from_peer: currentPeerIdRef.current,
               from_user: currentUserIdRef.current,
               to_peer: remotePeerId,
-              room_id: currentRoomRef.current,
+              chat_id: currentRoomRef.current,
               sdp: offerSdp
             }
             wsRef.current?.send(JSON.stringify(offerMessage))
@@ -784,7 +784,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
             from_peer: currentPeerIdRef.current,
             from_user: currentUserIdRef.current,
             to_peer: from_peer,
-            room_id: currentRoomRef.current,
+            chat_id: currentRoomRef.current,
             sdp: answerSdp
           }
           wsRef.current?.send(JSON.stringify(answerMessage))
@@ -1048,7 +1048,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
       const unregisterMessage = {
         type: 'VoiceUnregister',
         peer_id: currentPeerIdRef.current,
-        room_id: currentRoomRef.current
+        chat_id: currentRoomRef.current
       }
       wsRef.current.send(JSON.stringify(unregisterMessage))
       console.log('[Signal] Sent VoiceUnregister')

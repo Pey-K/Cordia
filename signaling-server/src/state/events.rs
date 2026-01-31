@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use chrono::{Duration, Utc};
-use crate::{SigningPubkey, EncryptedHouseHint, InviteTokenRecord, HouseEvent, InviteTokenCreateRequest};
+use crate::{SigningPubkey, EncryptedServerHint, InviteTokenRecord, ServerEvent, InviteTokenCreateRequest};
 
 const EVENT_RETENTION_DAYS: i64 = 30;
 
@@ -8,12 +8,12 @@ const EVENT_RETENTION_DAYS: i64 = 30;
 /// Hints only - clients treat local state as authoritative
 pub struct EventState {
     /// Hints only - clients treat local state as authoritative
-    pub house_hints: HashMap<SigningPubkey, EncryptedHouseHint>,
+    pub server_hints: HashMap<SigningPubkey, EncryptedServerHint>,
     /// Temporary invite tokens (short code -> encrypted payload)
     pub invite_tokens: HashMap<String, InviteTokenRecord>,
     /// Event queue - time-limited, not consensus-based
     /// Best-effort sync - timestamp collisions possible
-    pub event_queues: HashMap<SigningPubkey, Vec<HouseEvent>>,
+    pub event_queues: HashMap<SigningPubkey, Vec<ServerEvent>>,
     /// Best-effort acks - soft tracking, not hard requirement
     pub member_acks: HashMap<(SigningPubkey, String), String>, // (signing_pubkey, user_id) -> last_event_id
 }
@@ -21,21 +21,21 @@ pub struct EventState {
 impl EventState {
     pub fn new() -> Self {
         Self {
-            house_hints: HashMap::new(),
+            server_hints: HashMap::new(),
             invite_tokens: HashMap::new(),
             event_queues: HashMap::new(),
             member_acks: HashMap::new(),
         }
     }
 
-    /// Register/update house hint (any member can call this at any time)
-    pub fn register_house_hint(&mut self, signing_pubkey: String, hint: EncryptedHouseHint) {
-        self.house_hints.insert(signing_pubkey, hint);
+    /// Register/update server hint (any member can call this at any time)
+    pub fn register_server_hint(&mut self, signing_pubkey: String, hint: EncryptedServerHint) {
+        self.server_hints.insert(signing_pubkey, hint);
     }
 
-    /// Get house hint
-    pub fn get_house_hint(&self, signing_pubkey: &str) -> Option<&EncryptedHouseHint> {
-        self.house_hints.get(signing_pubkey)
+    /// Get server hint
+    pub fn get_server_hint(&self, signing_pubkey: &str) -> Option<&EncryptedServerHint> {
+        self.server_hints.get(signing_pubkey)
     }
 
     pub fn put_invite_token(&mut self, signing_pubkey: &str, req: InviteTokenCreateRequest) -> Result<InviteTokenRecord, String> {
@@ -87,7 +87,7 @@ impl EventState {
     }
 
     /// Post event to queue
-    pub fn post_event(&mut self, signing_pubkey: String, mut event: HouseEvent) {
+    pub fn post_event(&mut self, signing_pubkey: String, mut event: ServerEvent) {
         event.timestamp = Utc::now();
         if event.event_id.is_empty() {
             event.event_id = uuid::Uuid::new_v4().to_string();
@@ -99,7 +99,7 @@ impl EventState {
     }
 
     /// Get events since a given event ID
-    pub fn get_events(&self, signing_pubkey: &str, since: Option<&str>) -> Vec<HouseEvent> {
+    pub fn get_events(&self, signing_pubkey: &str, since: Option<&str>) -> Vec<ServerEvent> {
         let events = match self.event_queues.get(signing_pubkey) {
             Some(events) => events.clone(),
             None => return Vec::new(),
