@@ -82,7 +82,6 @@ pub struct ServerStorage {
     pub id: String,
     pub name: String,
     pub created_at: DateTime<Utc>,
-    #[serde(rename = "rooms")]
     pub chats: Vec<Chat>,
     pub members: Vec<ServerMember>,
 
@@ -137,7 +136,6 @@ pub struct ServerInfo {
     pub id: String,
     pub name: String,
     pub created_at: DateTime<Utc>,
-    #[serde(rename = "rooms")]
     pub chats: Vec<Chat>,
     pub members: Vec<ServerMember>,
     pub signing_pubkey: String,
@@ -219,7 +217,7 @@ impl Server {
 
         // Generate invite URI
         let beacon = signaling_url.as_deref().unwrap_or("signal.pkcollection.net");
-        let invite_uri = format!("rmmt://{}@{}", signing_pubkey, beacon);
+        let invite_uri = format!("cordia://{}@{}", signing_pubkey, beacon);
 
         // Create default "General" chat
         let general_chat = Chat {
@@ -680,7 +678,7 @@ impl ServerManager {
         let device_id = Self::get_device_id()?;
         let mut hasher = Sha256::new();
         hasher.update(device_id.as_bytes());
-        hasher.update(b"roommate-house-encryption-v1");
+        hasher.update(b"cordia-server-encryption-v1");
         let hash = hasher.finalize();
 
         Ok(hash.into())
@@ -914,8 +912,8 @@ impl ServerManager {
             .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or_else(Utc::now);
         
-        // Chats and members (JSON key "rooms" for backward compat)
-        let chats: Vec<Chat> = server_data.get("rooms")
+        // Chats and members
+        let chats: Vec<Chat> = server_data.get("chats")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
         

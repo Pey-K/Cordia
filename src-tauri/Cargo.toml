@@ -1,5 +1,5 @@
 [package]
-name = "roommate"
+name = "cordia"
 version = "1.0.0"
 description = "Voice chat application built with Tauri"
 authors = ["you"]

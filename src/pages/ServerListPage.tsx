@@ -439,7 +439,7 @@ function ServerListPage() {
       if (/^rmmt:\/\//i.test(input)) {
         const parsed = parseInviteUri(input)
         if (!parsed) {
-          setJoinError('Invalid invite. Paste the full invite link (rmmt://...).')
+          setJoinError('Invalid invite. Paste the full invite link (cordia://...).')
           return
         }
 
@@ -447,7 +447,7 @@ function ServerListPage() {
           parsed.server.startsWith('ws://') || parsed.server.startsWith('wss://')
             ? parsed.server
             : `wss://${parsed.server}`
-        // Temporary invites use rmmt://{code}@{server}
+        // Temporary invites use cordia://{code}@{server}
         inviteCode = parsed.signingPubkey
       } else {
         if (!signalingServer) {

@@ -141,7 +141,7 @@ impl IdentityManager {
                     std::io::ErrorKind::NotFound,
                     "HOME not found"
                 )))?;
-            Ok(PathBuf::from(home).join(".config").join("roommate"))
+            Ok(PathBuf::from(home).join(".config").join("cordia"))
         }
 
         #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
@@ -428,11 +428,11 @@ impl IdentityManager {
         Ok(identity)
     }
 
-    /// Export full identity with profile and house keys in binary .roo format
+    /// Export full identity with profile and server keys in binary .key format
     pub fn export_full_identity(
         &self,
         profile_data: Option<serde_json::Value>,
-        house_keys: Vec<serde_json::Value>,
+        server_keys: Vec<serde_json::Value>,
         signaling_server_url: Option<String>,
     ) -> Result<Vec<u8>, IdentityError> {
         let identity = self.load_identity()?;
@@ -443,7 +443,7 @@ impl IdentityManager {
             version: u8,
             identity: UserIdentity,
             profile: Option<serde_json::Value>,
-            houses: Vec<serde_json::Value>,
+            servers: Vec<serde_json::Value>,
             signaling_server_url: Option<String>,
         }
 
@@ -451,7 +451,7 @@ impl IdentityManager {
             version: 1,
             identity,
             profile: profile_data,
-            houses: house_keys,
+            servers: server_keys,
             signaling_server_url,
         };
 
@@ -469,13 +469,13 @@ impl IdentityManager {
             .map_err(|_| IdentityError::Encryption("Failed to encrypt export payload".to_string()))?;
 
         // Build binary format
-        // Magic: "RMMT" (4 bytes)
+        // Magic: "CORD" (4 bytes) - Cordia key file
         // Version: u16 (2 bytes)
         // Flags: u16 (2 bytes, reserved, set to 0)
         // Payload size: u32 (4 bytes)
         // Header checksum: u32 (4 bytes, CRC32 of first 12 bytes)
         let mut header = Vec::new();
-        header.extend_from_slice(b"RMMT");
+        header.extend_from_slice(b"CORD");
         header.extend_from_slice(&1u16.to_le_bytes()); // version 1
         header.extend_from_slice(&0u16.to_le_bytes()); // flags (reserved)
         
@@ -504,9 +504,13 @@ impl IdentityManager {
         Ok(result)
     }
 
-    /// Decrypt and parse .roo format (static, doesn't save - caller must save)
-    pub fn import_roo_format_static(data: &[u8]) -> Result<(UserIdentity, Option<serde_json::Value>, Vec<serde_json::Value>, Option<String>), IdentityError> {
+    /// Decrypt and parse .key format (static, doesn't save - caller must save)
+    pub fn import_key_format_static(data: &[u8]) -> Result<(UserIdentity, Option<serde_json::Value>, Vec<serde_json::Value>, Option<String>), IdentityError> {
         if data.len() < 16 {
+            return Err(IdentityError::InvalidIdentity);
+        }
+        // Cordia .key format magic
+        if &data[0..4] != b"CORD" {
             return Err(IdentityError::InvalidIdentity);
         }
 
@@ -530,9 +534,9 @@ impl IdentityManager {
 
         // Extract salt and nonce
         let salt: [u8; 16] = payload[0..16].try_into()
-            .map_err(|_| IdentityError::Decryption("Invalid salt in .roo file".to_string()))?;
+            .map_err(|_| IdentityError::Decryption("Invalid salt in .key file".to_string()))?;
         let nonce_bytes: [u8; 24] = payload[16..40].try_into()
-            .map_err(|_| IdentityError::Decryption("Invalid nonce in .roo file".to_string()))?;
+            .map_err(|_| IdentityError::Decryption("Invalid nonce in .key file".to_string()))?;
         let ciphertext = &payload[40..];
 
         // Decrypt with device key
@@ -543,7 +547,7 @@ impl IdentityManager {
         let nonce: [u8; 24] = nonce_bytes;
         let nonce = nonce.into();
         let plaintext = cipher.decrypt(&nonce, ciphertext)
-            .map_err(|_| IdentityError::Decryption("Failed to decrypt .roo file".to_string()))?;
+            .map_err(|_| IdentityError::Decryption("Failed to decrypt .key file".to_string()))?;
 
         // Deserialize JSON payload
         #[derive(Deserialize)]
@@ -551,7 +555,8 @@ impl IdentityManager {
             version: u8,
             identity: UserIdentity,
             profile: Option<serde_json::Value>,
-            houses: Vec<serde_json::Value>,
+            #[serde(alias = "houses")]
+            servers: Vec<serde_json::Value>,
             #[serde(default)]
             signaling_server_url: Option<String>,
         }
@@ -564,7 +569,7 @@ impl IdentityManager {
         }
 
         // Don't save here - caller (import_identity_auto) will save after account setup
-        Ok((export.identity, export.profile, export.houses, export.signaling_server_url))
+        Ok((export.identity, export.profile, export.servers, export.signaling_server_url))
     }
 
 }

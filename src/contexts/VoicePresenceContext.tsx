@@ -1,91 +1,83 @@
 import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
 
-type VoicePresenceByHouse = Record<string, Record<string, Set<string>>> // signing_pubkey -> room_id -> Set of user_ids
+type VoicePresenceByServer = Record<string, Record<string, Set<string>>> // signing_pubkey -> chat_id -> Set of user_ids
 
 interface VoicePresenceContextType {
-  getVoiceParticipants: (signingPubkey: string, roomId: string) => string[]  // Returns user_ids in voice for a room
-  isUserInVoice: (signingPubkey: string, userId: string) => boolean  // Check if user is in voice in any room
-  removeUserFromAllRooms: (signingPubkey: string, userId: string) => void  // Remove user from all rooms in a house
-  applyUpdate: (signingPubkey: string, userId: string, roomId: string, inVoice: boolean) => void
-  applySnapshot: (signingPubkey: string, roomId: string, userIds: string[]) => void
+  getVoiceParticipants: (signingPubkey: string, chatId: string) => string[]  // Returns user_ids in voice for a chat
+  isUserInVoice: (signingPubkey: string, userId: string) => boolean  // Check if user is in voice in any chat
+  removeUserFromAllRooms: (signingPubkey: string, userId: string) => void  // Remove user from all chats in a server
+  applyUpdate: (signingPubkey: string, userId: string, chatId: string, inVoice: boolean) => void
+  applySnapshot: (signingPubkey: string, chatId: string, userIds: string[]) => void
 }
 
 const VoicePresenceContext = createContext<VoicePresenceContextType | null>(null)
 
 export function VoicePresenceProvider({ children }: { children: ReactNode }) {
-  const [byHouse, setByHouse] = useState<VoicePresenceByHouse>({})
+  const [byServer, setByServer] = useState<VoicePresenceByServer>({})
 
-  const applyUpdate: VoicePresenceContextType['applyUpdate'] = (signingPubkey, userId, roomId, inVoice) => {
-    setByHouse((prev) => {
-      const house = prev[signingPubkey] || {}
-      const room = house[roomId] || new Set<string>()
+  const applyUpdate: VoicePresenceContextType['applyUpdate'] = (signingPubkey, userId, chatId, inVoice) => {
+    setByServer((prev) => {
+      const server = prev[signingPubkey] || {}
+      const chat = server[chatId] || new Set<string>()
 
       if (inVoice) {
-        // Add user to voice
-        const updatedRoom = new Set(room)
-        updatedRoom.add(userId)
+        const updatedChat = new Set(chat)
+        updatedChat.add(userId)
         return {
           ...prev,
           [signingPubkey]: {
-            ...house,
-            [roomId]: updatedRoom,
+            ...server,
+            [chatId]: updatedChat,
           },
         }
       } else {
-        // Remove user from voice
-        if (!room.has(userId)) return prev
-        const updatedRoom = new Set(room)
-        updatedRoom.delete(userId)
-        
-        // Clean up empty rooms
-        const updatedHouse = { ...house }
-        if (updatedRoom.size === 0) {
-          delete updatedHouse[roomId]
+        if (!chat.has(userId)) return prev
+        const updatedChat = new Set(chat)
+        updatedChat.delete(userId)
+        const updatedServer = { ...server }
+        if (updatedChat.size === 0) {
+          delete updatedServer[chatId]
         } else {
-          updatedHouse[roomId] = updatedRoom
+          updatedServer[chatId] = updatedChat
         }
-        
-        // Clean up empty houses
-        if (Object.keys(updatedHouse).length === 0) {
+        if (Object.keys(updatedServer).length === 0) {
           const { [signingPubkey]: _, ...rest } = prev
           return rest
         }
-        
         return {
           ...prev,
-          [signingPubkey]: updatedHouse,
+          [signingPubkey]: updatedServer,
         }
       }
     })
   }
 
-  const applySnapshot: VoicePresenceContextType['applySnapshot'] = (signingPubkey, roomId, userIds) => {
-    setByHouse((prev) => {
-      const house = prev[signingPubkey] || {}
+  const applySnapshot: VoicePresenceContextType['applySnapshot'] = (signingPubkey, chatId, userIds) => {
+    setByServer((prev) => {
+      const server = prev[signingPubkey] || {}
       return {
         ...prev,
         [signingPubkey]: {
-          ...house,
-          [roomId]: new Set(userIds),
+          ...server,
+          [chatId]: new Set(userIds),
         },
       }
     })
   }
 
-  const getVoiceParticipants: VoicePresenceContextType['getVoiceParticipants'] = (signingPubkey, roomId) => {
-    const house = byHouse[signingPubkey]
-    if (!house) return []
-    const room = house[roomId]
-    if (!room) return []
-    return Array.from(room)
+  const getVoiceParticipants: VoicePresenceContextType['getVoiceParticipants'] = (signingPubkey, chatId) => {
+    const server = byServer[signingPubkey]
+    if (!server) return []
+    const chat = server[chatId]
+    if (!chat) return []
+    return Array.from(chat)
   }
 
   const isUserInVoice: VoicePresenceContextType['isUserInVoice'] = (signingPubkey, userId) => {
-    const house = byHouse[signingPubkey]
-    if (!house) return false
-    // Check all rooms in this house
-    for (const room of Object.values(house)) {
-      if (room.has(userId)) {
+    const server = byServer[signingPubkey]
+    if (!server) return false
+    for (const chat of Object.values(server)) {
+      if (chat.has(userId)) {
         return true
       }
     }
@@ -93,39 +85,32 @@ export function VoicePresenceProvider({ children }: { children: ReactNode }) {
   }
 
   const removeUserFromAllRooms: VoicePresenceContextType['removeUserFromAllRooms'] = (signingPubkey, userId) => {
-    setByHouse((prev) => {
-      const house = prev[signingPubkey]
-      if (!house) return prev
-      
-      const updatedHouse = { ...house }
+    setByServer((prev) => {
+      const server = prev[signingPubkey]
+      if (!server) return prev
+      const updatedServer = { ...server }
       let hasChanges = false
-      
-      // Remove user from all rooms in this house
-      for (const roomId of Object.keys(updatedHouse)) {
-        const room = updatedHouse[roomId]
-        if (room.has(userId)) {
-          const updatedRoom = new Set(room)
-          updatedRoom.delete(userId)
-          if (updatedRoom.size === 0) {
-            delete updatedHouse[roomId]
+      for (const chatId of Object.keys(updatedServer)) {
+        const chat = updatedServer[chatId]
+        if (chat.has(userId)) {
+          const updatedChat = new Set(chat)
+          updatedChat.delete(userId)
+          if (updatedChat.size === 0) {
+            delete updatedServer[chatId]
           } else {
-            updatedHouse[roomId] = updatedRoom
+            updatedServer[chatId] = updatedChat
           }
           hasChanges = true
         }
       }
-      
       if (!hasChanges) return prev
-      
-      // Clean up empty houses
-      if (Object.keys(updatedHouse).length === 0) {
+      if (Object.keys(updatedServer).length === 0) {
         const { [signingPubkey]: _, ...rest } = prev
         return rest
       }
-      
       return {
         ...prev,
-        [signingPubkey]: updatedHouse,
+        [signingPubkey]: updatedServer,
       }
     })
   }
@@ -133,7 +118,7 @@ export function VoicePresenceProvider({ children }: { children: ReactNode }) {
   const value = useMemo(
     () => ({ applyUpdate, applySnapshot, getVoiceParticipants, isUserInVoice, removeUserFromAllRooms }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [byHouse]
+    [byServer]
   )
 
   return <VoicePresenceContext.Provider value={value}>{children}</VoicePresenceContext.Provider>

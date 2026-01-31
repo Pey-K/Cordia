@@ -14,7 +14,7 @@ pub use backends::BackendState;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use crate::{SigningPubkey, SignalingMessage, ProfileRecord, PeerId, HouseId, WebSocketSender};
+use crate::{SigningPubkey, SignalingMessage, ProfileRecord, PeerId, ServerId, WebSocketSender};
 use hyper_tungstenite::tungstenite::Message;
 
 /// Main application state wrapping all subsystems.
@@ -41,11 +41,11 @@ impl AppState {
         }
     }
 
-    /// Broadcast a presence update to all peers subscribed to a house.
+    /// Broadcast a presence update to all peers subscribed to a server.
     /// This coordinates between PresenceState and SignalingState.
     pub async fn broadcast_presence_update(&self, signing_pubkey: &SigningPubkey, user_id: &str, online: bool, active: Option<SigningPubkey>) {
         let signaling = self.signaling.lock().await;
-        let Some(peers) = signaling.signing_houses.get(signing_pubkey) else {
+        let Some(peers) = signaling.signing_servers.get(signing_pubkey) else {
             return;
         };
 
@@ -67,11 +67,11 @@ impl AppState {
         }
     }
 
-    /// Broadcast a profile update to all peers subscribed to a house.
+    /// Broadcast a profile update to all peers subscribed to a server.
     /// This coordinates between ProfileState and SignalingState.
     pub async fn broadcast_profile_update(&self, signing_pubkey: &SigningPubkey, user_id: &str, rec: &ProfileRecord) {
         let signaling = self.signaling.lock().await;
-        let Some(peers) = signaling.signing_houses.get(signing_pubkey) else {
+        let Some(peers) = signaling.signing_servers.get(signing_pubkey) else {
             return;
         };
 
@@ -95,12 +95,12 @@ impl AppState {
         }
     }
 
-    /// Broadcast a message to all peers in a voice room.
+    /// Broadcast a message to all peers in a voice chat.
     /// This coordinates between VoiceState and SignalingState.
-    pub async fn broadcast_to_voice_room(&self, house_id: &HouseId, room_id: &str, msg: &SignalingMessage, exclude_peer: Option<&PeerId>) {
+    pub async fn broadcast_to_voice_room(&self, server_id: &ServerId, chat_id: &str, msg: &SignalingMessage, exclude_peer: Option<&PeerId>) {
         let voice = self.voice.lock().await;
-        let key = (house_id.clone(), room_id.to_string());
-        let Some(peers) = voice.voice_rooms.get(&key) else {
+        let key = (server_id.clone(), chat_id.to_string());
+        let Some(peers) = voice.voice_chats.get(&key) else {
             return;
         };
 
@@ -124,12 +124,12 @@ impl AppState {
         }
     }
 
-    /// Get the sender for a specific peer in a voice room.
+    /// Get the sender for a specific peer in a voice chat.
     /// This coordinates between VoiceState and SignalingState.
-    pub async fn get_voice_peer_sender(&self, house_id: &HouseId, room_id: &str, peer_id: &PeerId) -> Option<WebSocketSender> {
+    pub async fn get_voice_peer_sender(&self, server_id: &ServerId, chat_id: &str, peer_id: &PeerId) -> Option<WebSocketSender> {
         let voice = self.voice.lock().await;
-        let key = (house_id.clone(), room_id.to_string());
-        let peers = voice.voice_rooms.get(&key)?;
+        let key = (server_id.clone(), chat_id.to_string());
+        let peers = voice.voice_chats.get(&key)?;
 
         // Verify peer is in this room
         if !peers.iter().any(|p| &p.peer_id == peer_id) {
@@ -140,18 +140,18 @@ impl AppState {
         signaling.peer_senders.get(peer_id).cloned()
     }
 
-    /// Broadcast voice presence update to all presence connections for a house.
+    /// Broadcast voice presence update to all presence connections for a server.
     /// This coordinates between VoiceState and SignalingState.
-    pub async fn broadcast_voice_presence(&self, signing_pubkey: &SigningPubkey, user_id: &str, room_id: &str, in_voice: bool) {
+    pub async fn broadcast_voice_presence(&self, signing_pubkey: &SigningPubkey, user_id: &str, chat_id: &str, in_voice: bool) {
         let signaling = self.signaling.lock().await;
-        let Some(peers) = signaling.signing_houses.get(signing_pubkey) else {
+        let Some(peers) = signaling.signing_servers.get(signing_pubkey) else {
             return;
         };
 
         let msg = SignalingMessage::VoicePresenceUpdate {
             signing_pubkey: signing_pubkey.clone(),
             user_id: user_id.to_string(),
-            room_id: room_id.to_string(),
+            chat_id: chat_id.to_string(),
             in_voice,
         };
 

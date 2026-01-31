@@ -1,17 +1,17 @@
-// Event synchronization manager for polling house events from signaling server
+// Event synchronization manager for polling server events from beacon
 
-export interface HouseEvent {
+export interface ServerEvent {
   event_id: string
   signing_pubkey: string
   event_type: string  // "MemberJoin", "MemberLeave", "NameChange"
-  encrypted_payload: string  // Server cannot decrypt
+  encrypted_payload: string  // Beacon cannot decrypt
   signature: string  // Signed by member's Ed25519 key
   timestamp: string
 }
 
-export interface EncryptedHouseHint {
+export interface EncryptedServerHint {
   signing_pubkey: string
-  encrypted_state: string  // Server cannot decrypt
+  encrypted_state: string  // Beacon cannot decrypt
   signature: string  // Signed by member's Ed25519 key
   last_updated: string
 }
@@ -20,18 +20,18 @@ export class EventSyncManager {
   private pollingInterval: number = 5000 // 5 seconds
   private activePolls = new Map<string, ReturnType<typeof setInterval>>()
   private lastEventIds = new Map<string, string>()
-  private eventHandlers = new Map<string, (events: HouseEvent[]) => void>()
+  private eventHandlers = new Map<string, (events: ServerEvent[]) => void>()
 
   /**
-   * Start polling events for a house
+   * Start polling events for a server
    */
   async startPolling(
     signingPubkey: string,
     signalingServer: string,
-    onEvents?: (events: HouseEvent[]) => void
+    onEvents?: (events: ServerEvent[]) => void
   ) {
     if (this.activePolls.has(signingPubkey)) {
-      console.log(`Already polling for house ${signingPubkey.slice(0, 8)}...`)
+      console.log(`Already polling for server ${signingPubkey.slice(0, 8)}...`)
       return
     }
 
@@ -45,7 +45,7 @@ export class EventSyncManager {
         const events = await this.fetchEvents(signalingServer, signingPubkey, lastEventId)
 
         if (events.length > 0) {
-          console.log(`Received ${events.length} events for house ${signingPubkey.slice(0, 8)}...`)
+          console.log(`Received ${events.length} events for server ${signingPubkey.slice(0, 8)}...`)
 
           // Call event handler
           const handler = this.eventHandlers.get(signingPubkey)
@@ -65,7 +65,7 @@ export class EventSyncManager {
           ).catch(e => console.warn('Failed to ack events:', e))
         }
       } catch (error) {
-        console.error(`Failed to poll events for house ${signingPubkey.slice(0, 8)}...:`, error)
+        console.error(`Failed to poll events for server ${signingPubkey.slice(0, 8)}...:`, error)
       }
     }
 
@@ -76,11 +76,11 @@ export class EventSyncManager {
     const intervalId = setInterval(poll, this.pollingInterval)
     this.activePolls.set(signingPubkey, intervalId)
 
-    console.log(`Started polling for house ${signingPubkey.slice(0, 8)}...`)
+    console.log(`Started polling for server ${signingPubkey.slice(0, 8)}...`)
   }
 
   /**
-   * Stop polling for a house
+   * Stop polling for a server
    */
   stopPolling(signingPubkey: string) {
     const intervalId = this.activePolls.get(signingPubkey)
@@ -88,7 +88,7 @@ export class EventSyncManager {
       clearInterval(intervalId)
       this.activePolls.delete(signingPubkey)
       this.eventHandlers.delete(signingPubkey)
-      console.log(`Stopped polling for house ${signingPubkey.slice(0, 8)}...`)
+      console.log(`Stopped polling for server ${signingPubkey.slice(0, 8)}...`)
     }
   }
 
@@ -110,10 +110,10 @@ export class EventSyncManager {
     signalingServer: string,
     signingPubkey: string,
     sinceEventId?: string
-  ): Promise<HouseEvent[]> {
-    // Normalize server URL
+  ): Promise<ServerEvent[]> {
+    // Normalize beacon URL
     const baseUrl = this.normalizeServerUrl(signalingServer)
-    const url = new URL(`${baseUrl}/api/houses/${encodeURIComponent(signingPubkey)}/events`)
+    const url = new URL(`${baseUrl}/api/servers/${encodeURIComponent(signingPubkey)}/events`)
     if (sinceEventId) {
       url.searchParams.set('since', sinceEventId)
     }
@@ -135,7 +135,7 @@ export class EventSyncManager {
     lastEventId: string
   ): Promise<void> {
     const baseUrl = this.normalizeServerUrl(signalingServer)
-    const url = `${baseUrl}/api/houses/${encodeURIComponent(signingPubkey)}/events/ack`
+    const url = `${baseUrl}/api/servers/${encodeURIComponent(signingPubkey)}/events/ack`
 
     // Get current user ID from somewhere (this would need to be passed in)
     const userId = 'unknown' // TODO: Get from context
@@ -151,14 +151,14 @@ export class EventSyncManager {
   }
 
   /**
-   * Register a house hint on the signaling server
+   * Register a server hint on the beacon
    */
-  async registerHouseHint(
+  async registerServerHint(
     signalingServer: string,
-    hint: EncryptedHouseHint
+    hint: EncryptedServerHint
   ): Promise<void> {
     const baseUrl = this.normalizeServerUrl(signalingServer)
-    const url = `${baseUrl}/api/houses/${encodeURIComponent(hint.signing_pubkey)}/register`
+    const url = `${baseUrl}/api/servers/${encodeURIComponent(hint.signing_pubkey)}/register`
 
     const response = await fetch(url, {
       method: 'POST',
@@ -167,40 +167,40 @@ export class EventSyncManager {
     })
 
     if (!response.ok) {
-      throw new Error(`Failed to register house hint: ${response.status} ${response.statusText}`)
+      throw new Error(`Failed to register server hint: ${response.status} ${response.statusText}`)
     }
   }
 
   /**
-   * Get house hint from signaling server
+   * Get server hint from beacon
    */
-  async getHouseHint(
+  async getServerHint(
     signalingServer: string,
     signingPubkey: string
-  ): Promise<EncryptedHouseHint | null> {
+  ): Promise<EncryptedServerHint | null> {
     const baseUrl = this.normalizeServerUrl(signalingServer)
-    const url = `${baseUrl}/api/houses/${encodeURIComponent(signingPubkey)}/hint`
+    const url = `${baseUrl}/api/servers/${encodeURIComponent(signingPubkey)}/hint`
 
     const response = await fetch(url)
     if (response.status === 404) {
       return null
     }
     if (!response.ok) {
-      throw new Error(`Failed to get house hint: ${response.status} ${response.statusText}`)
+      throw new Error(`Failed to get server hint: ${response.status} ${response.statusText}`)
     }
 
     return response.json()
   }
 
   /**
-   * Post an event to the signaling server
+   * Post an event to the beacon
    */
   async postEvent(
     signalingServer: string,
-    event: Omit<HouseEvent, 'event_id' | 'timestamp'>
+    event: Omit<ServerEvent, 'event_id' | 'timestamp'>
   ): Promise<void> {
     const baseUrl = this.normalizeServerUrl(signalingServer)
-    const url = `${baseUrl}/api/houses/${encodeURIComponent(event.signing_pubkey)}/events`
+    const url = `${baseUrl}/api/servers/${encodeURIComponent(event.signing_pubkey)}/events`
 
     const response = await fetch(url, {
       method: 'POST',

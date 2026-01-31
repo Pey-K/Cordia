@@ -173,7 +173,7 @@ export function ServerSyncBootstrap() {
             ws.send(
               JSON.stringify({
                 type: 'Register',
-                house_id: s.id,
+                server_id: s.id,
                 peer_id: `server-sync:${currentAccountId}:${s.id}`,
                 signing_pubkey: s.signing_pubkey,
               })
@@ -195,11 +195,11 @@ export function ServerSyncBootstrap() {
           const nextSet = new Set<string>()
           for (const s of servers) {
             nextSet.add(s.signing_pubkey)
-            // Register subscription for this signing_pubkey (beacon uses it for HouseHintUpdated broadcasts)
+            // Register subscription for this signing_pubkey (beacon uses it for ServerHintUpdated broadcasts)
             ws.send(
               JSON.stringify({
                 type: 'Register',
-                house_id: s.id,
+                server_id: s.id,
                 peer_id: `server-sync:${currentAccountId}:${s.id}`,
                 signing_pubkey: s.signing_pubkey,
               })
@@ -218,7 +218,7 @@ export function ServerSyncBootstrap() {
       ws.onmessage = async (event) => {
         try {
           const msg = JSON.parse(event.data)
-          if (msg.type === 'HouseHintUpdated') {
+          if (msg.type === 'ServerHintUpdated') {
             const signingPubkey: string = msg.signing_pubkey
 
             // Try to import the hint - this will only succeed if we have the server locally
@@ -238,7 +238,7 @@ export function ServerSyncBootstrap() {
                     ws.send(
                       JSON.stringify({
                         type: 'Register',
-                        house_id: server.id,
+                        server_id: server.id,
                         peer_id: `server-sync:${currentAccountId}:${server.id}`,
                         signing_pubkey: signingPubkey,
                       })
@@ -280,9 +280,9 @@ export function ServerSyncBootstrap() {
           if (msg.type === 'VoicePresenceUpdate') {
             const spk: string = msg.signing_pubkey
             const userId: string = msg.user_id
-            const roomId: string = msg.room_id
+            const chatId: string = msg.chat_id
             const inVoice: boolean = msg.in_voice
-            voicePresence.applyUpdate(spk, userId, roomId, inVoice)
+            voicePresence.applyUpdate(spk, userId, chatId, inVoice)
             return
           }
 

@@ -9,7 +9,7 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev --features windows-registry",
     "tauri:build": "tauri build --features windows-registry",
-    "generate-roo-icon": "node generate-roo-icon.js"
+    "generate-key-icon": "node generate-key-icon.js"
   },
   "dependencies": {
     "@radix-ui/react-label": "^2.1.8",

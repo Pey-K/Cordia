@@ -92,7 +92,7 @@ impl AudioSettingsManager {
                     std::io::ErrorKind::NotFound,
                     "HOME not found"
                 )))?;
-            Ok(PathBuf::from(home).join(".config").join("roommate"))
+            Ok(PathBuf::from(home).join(".config").join("cordia"))
         }
 
         #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
-use crate::{HouseId, SigningPubkey, VoicePeer, PeerId, ConnId};
+use crate::{ServerId, SigningPubkey, VoicePeer, PeerId, ConnId};
 
 /// Info about a voice peer (returned to clients)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -9,35 +9,34 @@ pub struct VoicePeerInfo {
     pub user_id: String,
 }
 
-/// Voice chat state (room-scoped)
+/// Voice chat state (chat-scoped)
 pub struct VoiceState {
-    /// Map of (house_id, room_id) -> list of VoicePeers in that room
-    /// Room peer list may need indexing (HashMap<PeerId, VoicePeer>) if churn increases.
-    pub voice_rooms: HashMap<(HouseId, String), Vec<VoicePeer>>,
-    /// Map of house_id -> signing_pubkey (for voice presence broadcasting)
-    pub house_signing_pubkeys: HashMap<HouseId, SigningPubkey>,
+    /// Map of (server_id, chat_id) -> list of VoicePeers in that chat
+    pub voice_chats: HashMap<(ServerId, String), Vec<VoicePeer>>,
+    /// Map of server_id -> signing_pubkey (for voice presence broadcasting)
+    pub server_signing_pubkeys: HashMap<ServerId, SigningPubkey>,
 }
 
 impl VoiceState {
     pub fn new() -> Self {
         Self {
-            voice_rooms: HashMap::new(),
-            house_signing_pubkeys: HashMap::new(),
+            voice_chats: HashMap::new(),
+            server_signing_pubkeys: HashMap::new(),
         }
     }
 
-    /// Register a peer for voice in a specific room.
-    /// Returns list of other peers in the room.
+    /// Register a peer for voice in a specific chat.
+    /// Returns list of other peers in the chat.
     pub fn register_voice_peer(
         &mut self,
         peer_id: PeerId,
         user_id: String,
-        house_id: HouseId,
-        room_id: String,
+        server_id: ServerId,
+        chat_id: String,
         conn_id: ConnId,
     ) -> Vec<VoicePeerInfo> {
-        let key = (house_id, room_id);
-        let peers = self.voice_rooms.entry(key.clone()).or_insert_with(Vec::new);
+        let key = (server_id, chat_id);
+        let peers = self.voice_chats.entry(key.clone()).or_insert_with(Vec::new);
 
         // Remove any existing entry for this user_id (handles reconnect with new peer_id)
         peers.retain(|p| p.user_id != user_id);
@@ -61,42 +60,42 @@ impl VoiceState {
 
     /// Unregister a peer from voice.
     /// Returns the user_id if found (for broadcasting PeerLeft).
-    pub fn unregister_voice_peer(&mut self, peer_id: &PeerId, house_id: &HouseId, room_id: &str) -> Option<String> {
-        let key = (house_id.clone(), room_id.to_string());
-        let peers = self.voice_rooms.get_mut(&key)?;
+    pub fn unregister_voice_peer(&mut self, peer_id: &PeerId, server_id: &ServerId, chat_id: &str) -> Option<String> {
+        let key = (server_id.clone(), chat_id.to_string());
+        let peers = self.voice_chats.get_mut(&key)?;
 
         // Find and remove the peer
         let pos = peers.iter().position(|p| &p.peer_id == peer_id)?;
         let removed = peers.remove(pos);
 
-        // Clean up empty room
+        // Clean up empty chat
         if peers.is_empty() {
-            self.voice_rooms.remove(&key);
+            self.voice_chats.remove(&key);
         }
 
         Some(removed.user_id)
     }
 
     /// Handle voice disconnect for a WebSocket connection.
-    /// Returns list of (house_id, room_id, peer_id, user_id) for broadcasting PeerLeft.
-    pub fn handle_voice_disconnect(&mut self, conn_id: &ConnId) -> Vec<(HouseId, String, PeerId, String)> {
-        let mut removed: Vec<(HouseId, String, PeerId, String)> = Vec::new();
+    /// Returns list of (server_id, chat_id, peer_id, user_id) for broadcasting PeerLeft.
+    pub fn handle_voice_disconnect(&mut self, conn_id: &ConnId) -> Vec<(ServerId, String, PeerId, String)> {
+        let mut removed: Vec<(ServerId, String, PeerId, String)> = Vec::new();
 
         // Find and remove all voice peers for this connection
-        for ((house_id, room_id), peers) in self.voice_rooms.iter_mut() {
+        for ((server_id, chat_id), peers) in self.voice_chats.iter_mut() {
             let to_remove: Vec<_> = peers.iter()
                 .filter(|p| &p.conn_id == conn_id)
                 .map(|p| (p.peer_id.clone(), p.user_id.clone()))
                 .collect();
 
             for (peer_id, user_id) in to_remove {
-                removed.push((house_id.clone(), room_id.clone(), peer_id.clone(), user_id));
+                removed.push((server_id.clone(), chat_id.clone(), peer_id.clone(), user_id));
                 peers.retain(|p| p.peer_id != peer_id);
             }
         }
 
-        // Clean up empty rooms
-        self.voice_rooms.retain(|_, peers| !peers.is_empty());
+        // Clean up empty chats
+        self.voice_chats.retain(|_, peers| !peers.is_empty());
 
         removed
     }

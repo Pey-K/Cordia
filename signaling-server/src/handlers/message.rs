@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use log::{info, warn};
 use crate::{
-    SignalingMessage, ConnId, HouseId, SigningPubkey, WebSocketSender,
+    SignalingMessage, ConnId, ServerId, SigningPubkey, WebSocketSender,
     ProfileRecord, ProfileSnapshotRecord,
     state::AppState,
     state::presence::PresenceUserStatus,
@@ -21,15 +21,15 @@ pub async fn handle_message(
     sender: &WebSocketSender,
 ) -> Result<(), String> {
     match msg {
-        SignalingMessage::Register { house_id, peer_id, signing_pubkey } => {
+        SignalingMessage::Register { server_id, peer_id, signing_pubkey } => {
             let mut signaling = state.signaling.lock().await;
-            let peers = signaling.register_peer(peer_id.clone(), house_id.clone(), signing_pubkey, conn_id.clone());
+            let peers = signaling.register_peer(peer_id.clone(), server_id.clone(), signing_pubkey, conn_id.clone());
 
             // Store the sender for this peer
             signaling.peer_senders.insert(peer_id.clone(), sender.clone());
             drop(signaling);
 
-            info!("Registered peer {} in server {}", peer_id, house_id);
+            info!("Registered peer {} in server {}", peer_id, server_id);
 
             let response = SignalingMessage::Registered {
                 peer_id: peer_id.clone(),
@@ -358,49 +358,43 @@ pub async fn handle_message(
 
         // === Voice Chat Messages ===
 
-        SignalingMessage::VoiceRegister { house_id, room_id, peer_id, user_id, signing_pubkey } => {
-            info!("Voice register: peer={} user={} server={} chat={}", peer_id, user_id, house_id, room_id);
+        SignalingMessage::VoiceRegister { server_id, chat_id, peer_id, user_id, signing_pubkey } => {
+            info!("Voice register: peer={} user={} server={} chat={}", peer_id, user_id, server_id, chat_id);
 
             let peers = {
                 let mut signaling = state.signaling.lock().await;
 
                 // Register peer if not already registered (allows voice-first registration)
-                // If peer exists, validate it belongs to this connection
                 if !signaling.peers.contains_key(&peer_id) {
-                    signaling.register_peer(peer_id.clone(), house_id.clone(), Some(signing_pubkey.clone()), conn_id.clone());
+                    signaling.register_peer(peer_id.clone(), server_id.clone(), Some(signing_pubkey.clone()), conn_id.clone());
                 } else {
-                    // Validate peer_id belongs to this connection if already registered
                     if !signaling.validate_peer_connection(&peer_id, conn_id) {
                         return Err(format!("Invalid peer_id {} for connection {}", peer_id, conn_id));
                     }
                 }
 
-                // Store the sender for this peer (voice peers need this for Offer/Answer/ICE forwarding)
                 signaling.peer_senders.insert(peer_id.clone(), sender.clone());
             };
 
-            // Store house_id -> signing_pubkey mapping for voice presence broadcasting
             {
                 let mut voice = state.voice.lock().await;
-                voice.house_signing_pubkeys.insert(house_id.clone(), signing_pubkey.clone());
+                voice.server_signing_pubkeys.insert(server_id.clone(), signing_pubkey.clone());
             }
 
-            // Register the voice peer
             let peers = {
                 let mut voice = state.voice.lock().await;
                 voice.register_voice_peer(
                     peer_id.clone(),
                     user_id.clone(),
-                    house_id.clone(),
-                    room_id.clone(),
+                    server_id.clone(),
+                    chat_id.clone(),
                     conn_id.clone(),
                 )
             };
 
-            // Send VoiceRegistered response
             let response = SignalingMessage::VoiceRegistered {
                 peer_id: peer_id.clone(),
-                room_id: room_id.clone(),
+                chat_id: chat_id.clone(),
                 peers: peers.clone(),
             };
             let json = serde_json::to_string(&response)
@@ -409,24 +403,21 @@ pub async fn handle_message(
                 .send(hyper_tungstenite::tungstenite::Message::Text(json))
                 .map_err(|e| format!("Failed to send VoiceRegistered: {}", e))?;
 
-            // Broadcast VoicePeerJoined to other peers in the room
             let join_msg = SignalingMessage::VoicePeerJoined {
                 peer_id: peer_id.clone(),
                 user_id: user_id.clone(),
-                room_id: room_id.clone(),
+                chat_id: chat_id.clone(),
             };
-            state.broadcast_to_voice_room(&house_id, &room_id, &join_msg, Some(&peer_id)).await;
+            state.broadcast_to_voice_room(&server_id, &chat_id, &join_msg, Some(&peer_id)).await;
 
-            // Broadcast voice presence update to all house members
-            state.broadcast_voice_presence(&signing_pubkey, &user_id, &room_id, true).await;
+            state.broadcast_voice_presence(&signing_pubkey, &user_id, &chat_id, true).await;
 
             Ok(())
         }
 
-        SignalingMessage::VoiceUnregister { peer_id, room_id } => {
-            info!("Voice unregister: peer={} room={}", peer_id, room_id);
+        SignalingMessage::VoiceUnregister { peer_id, chat_id } => {
+            info!("Voice unregister: peer={} chat={}", peer_id, chat_id);
 
-            // Validate peer_id belongs to this connection
             {
                 let signaling = state.signaling.lock().await;
                 if !signaling.validate_peer_connection(&peer_id, conn_id) {
@@ -434,29 +425,22 @@ pub async fn handle_message(
                 }
             }
 
-            // Find the house_id and signing_pubkey for this peer BEFORE unregistering
             let removed = {
                 let voice = state.voice.lock().await;
-
-                // We need to find which house this room is in
-                // Look through voice_rooms to find a match
-                let mut found_house: Option<HouseId> = None;
-                for ((h, r), peers) in voice.voice_rooms.iter() {
-                    if r == &room_id && peers.iter().any(|p| p.peer_id == peer_id) {
-                        found_house = Some(h.clone());
+                let mut found_server: Option<ServerId> = None;
+                for ((s, c), peers) in voice.voice_chats.iter() {
+                    if c == &chat_id && peers.iter().any(|p| p.peer_id == peer_id) {
+                        found_server = Some(s.clone());
                         break;
                     }
                 }
 
-                // Get signing_pubkey BEFORE unregistering (while we still have the lock)
-                if let Some(house_id) = found_house.clone() {
-                    let signing_pubkey = voice.house_signing_pubkeys.get(&house_id).cloned();
+                if let Some(server_id) = found_server.clone() {
+                    let signing_pubkey = voice.server_signing_pubkeys.get(&server_id).cloned();
                     drop(voice);
-                    
-                    // Now unregister the peer
                     let mut voice = state.voice.lock().await;
-                    if let Some(user_id) = voice.unregister_voice_peer(&peer_id, &house_id, &room_id) {
-                        Some((house_id, user_id, signing_pubkey))
+                    if let Some(user_id) = voice.unregister_voice_peer(&peer_id, &server_id, &chat_id) {
+                        Some((server_id, user_id, signing_pubkey))
                     } else {
                         None
                     }
@@ -465,29 +449,24 @@ pub async fn handle_message(
                 }
             };
 
-            // Broadcast VoicePeerLeft and voice presence update if peer was found
-            if let Some((house_id, user_id, signing_pubkey_opt)) = removed {
+            if let Some((server_id, user_id, signing_pubkey_opt)) = removed {
                 let leave_msg = SignalingMessage::VoicePeerLeft {
                     peer_id,
                     user_id: user_id.clone(),
-                    room_id: room_id.clone(),
+                    chat_id: chat_id.clone(),
                 };
-                
-                state.broadcast_to_voice_room(&house_id, &room_id, &leave_msg, None).await;
-                
-                // Broadcast voice presence update to all house members
+                state.broadcast_to_voice_room(&server_id, &chat_id, &leave_msg, None).await;
                 if let Some(signing_pubkey) = signing_pubkey_opt {
-                    state.broadcast_voice_presence(&signing_pubkey, &user_id, &room_id, false).await;
+                    state.broadcast_voice_presence(&signing_pubkey, &user_id, &chat_id, false).await;
                 }
             }
 
             Ok(())
         }
 
-        SignalingMessage::VoiceOffer { from_peer, from_user, to_peer, room_id, sdp } => {
-            info!("Voice offer from {} to {} in room {}", from_peer, to_peer, room_id);
+        SignalingMessage::VoiceOffer { from_peer, from_user, to_peer, chat_id, sdp } => {
+            info!("Voice offer from {} to {} in chat {}", from_peer, to_peer, chat_id);
 
-            // Validate from_peer belongs to this connection
             {
                 let signaling = state.signaling.lock().await;
                 if !signaling.validate_peer_connection(&from_peer, conn_id) {
@@ -495,21 +474,18 @@ pub async fn handle_message(
                 }
             }
 
-            // Find the target peer's sender (they must be in the same room)
-            // First find which house this room is in
             let target_sender = {
                 let voice = state.voice.lock().await;
-                let mut found_house: Option<HouseId> = None;
-                for ((house_id, r), _) in voice.voice_rooms.iter() {
-                    if r == &room_id {
-                        found_house = Some(house_id.clone());
+                let mut found_server: Option<ServerId> = None;
+                for ((server_id, c), _) in voice.voice_chats.iter() {
+                    if c == &chat_id {
+                        found_server = Some(server_id.clone());
                         break;
                     }
                 }
                 drop(voice);
-                
-                if let Some(house_id) = found_house {
-                    state.get_voice_peer_sender(&house_id, &room_id, &to_peer).await
+                if let Some(server_id) = found_server {
+                    state.get_voice_peer_sender(&server_id, &chat_id, &to_peer).await
                 } else {
                     None
                 }
@@ -520,7 +496,7 @@ pub async fn handle_message(
                     from_peer,
                     from_user,
                     to_peer,
-                    room_id,
+                    chat_id,
                     sdp,
                 };
                 let json = serde_json::to_string(&forward_msg)
@@ -529,16 +505,15 @@ pub async fn handle_message(
                     .send(hyper_tungstenite::tungstenite::Message::Text(json))
                     .map_err(|e| format!("Failed to forward VoiceOffer: {}", e))?;
             } else {
-                warn!("Target peer {} not found in room {} for VoiceOffer", to_peer, room_id);
+                warn!("Target peer {} not found in chat {} for VoiceOffer", to_peer, chat_id);
             }
 
             Ok(())
         }
 
-        SignalingMessage::VoiceAnswer { from_peer, from_user, to_peer, room_id, sdp } => {
-            info!("Voice answer from {} to {} in room {}", from_peer, to_peer, room_id);
+        SignalingMessage::VoiceAnswer { from_peer, from_user, to_peer, chat_id, sdp } => {
+            info!("Voice answer from {} to {} in chat {}", from_peer, to_peer, chat_id);
 
-            // Validate from_peer belongs to this connection
             {
                 let signaling = state.signaling.lock().await;
                 if !signaling.validate_peer_connection(&from_peer, conn_id) {
@@ -546,20 +521,18 @@ pub async fn handle_message(
                 }
             }
 
-            // Find the target peer's sender
             let target_sender = {
                 let voice = state.voice.lock().await;
-                let mut found_house: Option<HouseId> = None;
-                for ((house_id, r), _) in voice.voice_rooms.iter() {
-                    if r == &room_id {
-                        found_house = Some(house_id.clone());
+                let mut found_server: Option<ServerId> = None;
+                for ((server_id, c), _) in voice.voice_chats.iter() {
+                    if c == &chat_id {
+                        found_server = Some(server_id.clone());
                         break;
                     }
                 }
                 drop(voice);
-                
-                if let Some(house_id) = found_house {
-                    state.get_voice_peer_sender(&house_id, &room_id, &to_peer).await
+                if let Some(server_id) = found_server {
+                    state.get_voice_peer_sender(&server_id, &chat_id, &to_peer).await
                 } else {
                     None
                 }
@@ -570,7 +543,7 @@ pub async fn handle_message(
                     from_peer,
                     from_user,
                     to_peer,
-                    room_id,
+                    chat_id,
                     sdp,
                 };
                 let json = serde_json::to_string(&forward_msg)
@@ -579,15 +552,13 @@ pub async fn handle_message(
                     .send(hyper_tungstenite::tungstenite::Message::Text(json))
                     .map_err(|e| format!("Failed to forward VoiceAnswer: {}", e))?;
             } else {
-                warn!("Target peer {} not found in room {} for VoiceAnswer", to_peer, room_id);
+                warn!("Target peer {} not found in chat {} for VoiceAnswer", to_peer, chat_id);
             }
 
             Ok(())
         }
 
-        SignalingMessage::VoiceIceCandidate { from_peer, to_peer, room_id, candidate } => {
-            // Don't log every ICE candidate - too noisy
-            // Validate from_peer belongs to this connection
+        SignalingMessage::VoiceIceCandidate { from_peer, to_peer, chat_id, candidate } => {
             {
                 let signaling = state.signaling.lock().await;
                 if !signaling.validate_peer_connection(&from_peer, conn_id) {
@@ -595,20 +566,18 @@ pub async fn handle_message(
                 }
             }
 
-            // Find the target peer's sender
             let target_sender = {
                 let voice = state.voice.lock().await;
-                let mut found_house: Option<HouseId> = None;
-                for ((house_id, r), _) in voice.voice_rooms.iter() {
-                    if r == &room_id {
-                        found_house = Some(house_id.clone());
+                let mut found_server: Option<ServerId> = None;
+                for ((server_id, c), _) in voice.voice_chats.iter() {
+                    if c == &chat_id {
+                        found_server = Some(server_id.clone());
                         break;
                     }
                 }
                 drop(voice);
-                
-                if let Some(house_id) = found_house {
-                    state.get_voice_peer_sender(&house_id, &room_id, &to_peer).await
+                if let Some(server_id) = found_server {
+                    state.get_voice_peer_sender(&server_id, &chat_id, &to_peer).await
                 } else {
                     None
                 }
@@ -618,7 +587,7 @@ pub async fn handle_message(
                 let forward_msg = SignalingMessage::VoiceIceCandidate {
                     from_peer,
                     to_peer,
-                    room_id,
+                    chat_id,
                     candidate,
                 };
                 let json = serde_json::to_string(&forward_msg)
