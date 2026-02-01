@@ -297,7 +297,7 @@ pub async fn get_events(
 
     let events = state.events.lock().await;
     let events_list = events.get_events(&signing_pubkey, since);
-    (StatusCode::OK, Json(serde_json::to_value(&events_list).unwrap()))
+    (StatusCode::OK, Json(serde_json::to_value(&events_list).unwrap())).into_response()
 }
 
 pub async fn post_event(
