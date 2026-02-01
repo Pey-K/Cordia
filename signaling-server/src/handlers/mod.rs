@@ -1,5 +1,6 @@
 pub mod message;
 pub mod http;
+pub mod ws;
 
 #[cfg(feature = "postgres")]
 pub mod db;
@@ -7,4 +8,3 @@ pub mod db;
 pub mod redis;
 
 pub use message::handle_message;
-pub use http::handle_api_request;

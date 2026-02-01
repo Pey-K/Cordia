@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use crate::{PeerId, ServerId, SigningPubkey, WebSocketSender, ConnId, PeerConnection, EncryptedServerHint, SignalingMessage};
-use hyper_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::Message;
 
 /// WebSocket signaling state (peer ↔ peer)
 pub struct SignalingState {

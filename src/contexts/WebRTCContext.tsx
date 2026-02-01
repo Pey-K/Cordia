@@ -888,7 +888,9 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     }
 
     console.log('[Signal] Connecting to signaling server...')
-    const ws = new WebSocket(signalingUrl)
+    const base = signalingUrl.replace(/\/$/, '')
+    const wsUrl = base.endsWith('/ws') ? base : base + '/ws'
+    const ws = new WebSocket(wsUrl)
     wsRef.current = ws
 
     ws.onopen = () => {

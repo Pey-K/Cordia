@@ -83,7 +83,9 @@ export function ServerSyncBootstrap() {
         wsRef.current = null
       }
 
-      const ws = new WebSocket(signalingUrl)
+      const base = signalingUrl.replace(/\/$/, '')
+      const wsUrl = base.endsWith('/ws') ? base : base + '/ws'
+      const ws = new WebSocket(wsUrl)
       wsRef.current = ws
 
       const sendProfileAnnounce = async (override?: {

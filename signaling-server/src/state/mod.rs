@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
 use crate::{SigningPubkey, SignalingMessage, ProfileRecord, PeerId, ServerId, WebSocketSender};
-use hyper_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::Message;
 
 /// Main application state wrapping all subsystems.
 /// Each subsystem has its own Mutex to reduce contention.

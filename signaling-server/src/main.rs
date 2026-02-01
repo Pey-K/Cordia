@@ -8,13 +8,18 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use axum::{
+    http::StatusCode,
+    response::Html,
+    routing::get,
+    Router,
+};
 use chrono::{DateTime, Duration, Utc};
-use futures_util::{SinkExt, StreamExt};
-use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Method, Request, Response, Server, StatusCode};
-use log::{error, info, warn};
+use log::{error, info};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
+use tower_http::cors::CorsLayer;
+use tower_http::trace::TraceLayer;
 
 #[cfg(feature = "postgres")]
 use sqlx::postgres::PgPoolOptions;
@@ -25,7 +30,7 @@ pub mod handlers;
 pub type PeerId = String;
 pub type ServerId = String;
 pub type SigningPubkey = String;
-pub type WebSocketSender = mpsc::UnboundedSender<hyper_tungstenite::tungstenite::Message>;
+pub type WebSocketSender = mpsc::UnboundedSender<tokio_tungstenite::tungstenite::Message>;
 pub type ConnId = String;
 
 pub(crate) fn decode_path_segment(seg: &str) -> String {
@@ -320,8 +325,8 @@ pub struct ServerEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AckRequest {
-    user_id: String,
-    last_event_id: String,
+    pub user_id: String,
+    pub last_event_id: String,
 }
 
 // ============================================
@@ -377,7 +382,6 @@ pub const DEFAULT_REDIS_PRESENCE_TTL_SECS: u64 = 120;
 use state::AppState;
 use state::presence::PresenceUserStatus;
 use state::voice::VoicePeerInfo;
-use handlers::{handle_message, handle_api_request};
 
 #[cfg(feature = "postgres")]
 use handlers::db::init_db;
@@ -389,229 +393,10 @@ use handlers::redis::{redis_presence_disconnect, redis_presence_refresh};
 type SharedState = Arc<AppState>;
 
 // ============================================
-// WebSocket Connection Handler
+// Status page HTML
 // ============================================
 
-async fn handle_connection(
-    ws: hyper_tungstenite::WebSocketStream<hyper::upgrade::Upgraded>,
-    addr: SocketAddr,
-    state: SharedState,
-) {
-    info!("WebSocket connection established from {}", addr);
-
-    let (mut ws_sender, mut ws_receiver) = ws.split();
-    let conn_id: ConnId = uuid::Uuid::new_v4().to_string();
-
-    // Create channel for sending messages to this WebSocket
-    let (tx, mut rx) = mpsc::unbounded_channel();
-
-    // Spawn task to forward messages from channel to WebSocket
-    let mut send_task = tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            if ws_sender.send(msg).await.is_err() {
-                break;
-            }
-        }
-    });
-
-    // Handle incoming messages
-    loop {
-        tokio::select! {
-            msg_result = ws_receiver.next() => {
-                match msg_result {
-                    Some(Ok(hyper_tungstenite::tungstenite::Message::Text(text))) => {
-                        match serde_json::from_str::<SignalingMessage>(&text) {
-                            Ok(msg) => {
-                                match handle_message(msg, &conn_id, &state, &tx).await {
-                                    Ok(_) => {}
-                                    Err(e) => {
-                                        warn!("Error handling message: {}", e);
-                                        let error_msg = SignalingMessage::Error {
-                                            message: e.to_string(),
-                                        };
-                                        if let Ok(json) = serde_json::to_string(&error_msg) {
-                                            let _ = tx.send(hyper_tungstenite::tungstenite::Message::Text(json));
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                warn!("Failed to parse message: {}", e);
-                                let error_msg = SignalingMessage::Error {
-                                    message: format!("Invalid message format: {}", e),
-                                };
-                                if let Ok(json) = serde_json::to_string(&error_msg) {
-                                    let _ = tx.send(hyper_tungstenite::tungstenite::Message::Text(json));
-                                }
-                            }
-                        }
-                    }
-                    Some(Ok(hyper_tungstenite::tungstenite::Message::Close(_))) => {
-                        info!("Client {} closed connection", addr);
-                        break;
-                    }
-                    Some(Ok(hyper_tungstenite::tungstenite::Message::Ping(data))) => {
-                        let _ = tx.send(hyper_tungstenite::tungstenite::Message::Pong(data));
-                    }
-                    Some(Ok(_)) => {}
-                    Some(Err(e)) => {
-                        error!("WebSocket error from {}: {}", addr, e);
-                        break;
-                    }
-                    None => break,
-                }
-            }
-            _ = &mut send_task => {
-                break;
-            }
-        }
-    }
-
-    // Clean up when connection closes
-    // Get signing_pubkeys BEFORE disconnecting to ensure we have them for presence updates
-    let server_signing_map = {
-        let voice = state.voice.lock().await;
-        voice.server_signing_pubkeys.clone()
-    };
-
-    let (presence_removed, voice_removed, redis_client) = {
-        let mut signaling = state.signaling.lock().await;
-
-        let peer_ids = if let Some(peer_ids) = signaling.conn_peers.remove(&conn_id) {
-            let ids: Vec<_> = peer_ids.iter().cloned().collect();
-            for peer_id in &ids {
-                signaling.unregister_peer(peer_id);
-            }
-            ids
-        } else {
-            Vec::new()
-        };
-
-        drop(signaling);
-
-        // Handle voice disconnect
-        let mut voice = state.voice.lock().await;
-        let voice_removed = voice.handle_voice_disconnect(&conn_id);
-        drop(voice);
-
-        // Handle presence disconnect
-        let mut presence = state.presence.lock().await;
-        let presence_removed = presence.remove_presence_conn(&conn_id);
-        drop(presence);
-
-        #[cfg(feature = "redis-backend")]
-        let redis_client = {
-            let backends = state.backends.lock().await;
-            backends.redis.clone()
-        };
-        #[cfg(not(feature = "redis-backend"))]
-        let redis_client: Option<()> = None;
-
-        (presence_removed, voice_removed, redis_client)
-    };
-
-    // Broadcast VoicePeerLeft to remaining peers in each affected chat
-    if !voice_removed.is_empty() {
-        for (server_id, chat_id, peer_id, user_id) in voice_removed.clone() {
-            info!("Voice peer {} (user {}) disconnected from chat {}", peer_id, user_id, chat_id);
-            let msg = SignalingMessage::VoicePeerLeft {
-                peer_id,
-                user_id: user_id.clone(),
-                chat_id: chat_id.clone(),
-            };
-            state.broadcast_to_voice_room(&server_id, &chat_id, &msg, None).await;
-        }
-        
-        // Broadcast voice presence updates for disconnected peers
-        for (server_id, chat_id, _, user_id) in voice_removed {
-            // Use the signing_pubkey we collected BEFORE disconnecting
-            if let Some(signing_pubkey) = server_signing_map.get(&server_id) {
-                state.broadcast_voice_presence(signing_pubkey, &user_id, &chat_id, false).await;
-            }
-        }
-    }
-
-    if let Some((user_id, spks)) = presence_removed {
-        #[cfg(feature = "redis-backend")]
-        if let Some(client) = redis_client.as_ref() {
-            if let Err(e) = redis_presence_disconnect(client, &user_id, &spks).await {
-                warn!("Redis presence disconnect failed: {}", e);
-            }
-        }
-
-        for spk in spks {
-            state.broadcast_presence_update(&spk, &user_id, false, None).await;
-        }
-    }
-
-    send_task.abort();
-}
-
-
-// ============================================
-// HTTP REST API Handlers (Event Queue)
-// ============================================
-// Moved to handlers/http.rs
-
-// ============================================
-// Main Request Handler
-// ============================================
-
-async fn handle_request(
-    mut req: Request<Body>,
-    state: SharedState,
-) -> Result<Response<Body>, hyper::Error> {
-    let path = req.uri().path();
-    let method = req.method().clone();
-
-    // CORS preflight (needed for browser fetch from the Tauri/React frontend)
-    if method == Method::OPTIONS {
-        return Ok(Response::builder()
-            .status(StatusCode::NO_CONTENT)
-            .header("Access-Control-Allow-Origin", "*")
-            .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            .header("Access-Control-Allow-Headers", "Content-Type")
-            .header("Access-Control-Max-Age", "86400")
-            .body(Body::empty())
-            .unwrap());
-    }
-
-    // Health check endpoint
-    if path == "/health" {
-        return Ok(Response::builder()
-            .status(StatusCode::OK)
-            .header("Access-Control-Allow-Origin", "*")
-            .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            .header("Access-Control-Allow-Headers", "Content-Type")
-            .body(Body::from("ok"))
-            .unwrap());
-    }
-
-    // WebSocket upgrade MUST be checked before GET / so app connections to wss://host/ get 101, not 200 HTML
-    if hyper_tungstenite::is_upgrade_request(&req) {
-        match hyper_tungstenite::upgrade(&mut req, None) {
-            Ok((response, websocket)) => {
-                tokio::spawn(async move {
-                    if let Ok(ws) = websocket.await {
-                        let addr = "0.0.0.0:9001".parse().unwrap();
-                        handle_connection(ws, addr, state).await;
-                    }
-                });
-                return Ok(response);
-            }
-            Err(e) => {
-                error!("WebSocket upgrade error: {}", e);
-                return Ok(Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
-                    .body(Body::from("Invalid WebSocket upgrade request"))
-                    .unwrap());
-            }
-        }
-    }
-
-    // Live status page (GET / or GET /status) - shows concurrent connections, auto-refreshes
-    if path == "/" || path == "/status" {
-        const STATUS_HTML: &str = r#"<!DOCTYPE html>
+const STATUS_HTML: &str = r#"<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -710,28 +495,9 @@ async fn handle_request(
   </script>
 </body>
 </html>"#;
-        return Ok(Response::builder()
-            .status(StatusCode::OK)
-            .header("Content-Type", "text/html; charset=utf-8")
-            .body(Body::from(STATUS_HTML))
-            .unwrap());
-    }
 
-    // API endpoints (REST)
-    if path.starts_with("/api/") {
-        let mut resp = handle_api_request(req, state).await?;
-        let headers = resp.headers_mut();
-        headers.insert("Access-Control-Allow-Origin", "*".parse().unwrap());
-        headers.insert("Access-Control-Allow-Methods", "GET, POST, OPTIONS".parse().unwrap());
-        headers.insert("Access-Control-Allow-Headers", "Content-Type".parse().unwrap());
-        return Ok(resp);
-    }
-
-    // Default response for other requests
-    Ok(Response::builder()
-        .status(StatusCode::NOT_FOUND)
-        .body(Body::from("Not found. Use / or /status for live connection count, /health for health check, /api/* for REST API, or upgrade to WebSocket."))
-        .unwrap())
+async fn status_page_handler() -> Html<&'static str> {
+    Html(STATUS_HTML)
 }
 
 // ============================================
@@ -797,14 +563,14 @@ async fn main() {
             match PgPoolOptions::new().max_connections(8).connect(&db_url).await {
                 Ok(pool) => {
                     if let Err(e) = init_db(&pool).await {
-                        warn!("DB init failed; continuing without DB: {}", e);
+                        log::warn!("DB init failed; continuing without DB: {}", e);
                     } else {
                         let mut backends = state.backends.lock().await;
                         backends.db = Some(pool);
                         info!("Postgres enabled (SIGNALING_DB_URL set).");
                     }
                 }
-                Err(e) => warn!("Failed to connect to Postgres; continuing without DB: {}", e),
+                Err(e) => log::warn!("Failed to connect to Postgres; continuing without DB: {}", e),
             }
         } else {
             info!("Postgres disabled (SIGNALING_DB_URL not set).");
@@ -832,13 +598,13 @@ async fn main() {
                                     backends.redis_presence_ttl_secs = ttl_secs;
                                     info!("Redis presence enabled (SIGNALING_REDIS_URL set).");
                                 }
-                                Err(e) => warn!("Redis PING failed; continuing without Redis: {}", e),
+                                Err(e) => log::warn!("Redis PING failed; continuing without Redis: {}", e),
                             }
                         }
-                        Err(e) => warn!("Failed to connect to Redis; continuing without Redis: {}", e),
+                        Err(e) => log::warn!("Failed to connect to Redis; continuing without Redis: {}", e),
                     }
                 }
-                Err(e) => warn!("Invalid Redis URL; continuing without Redis: {}", e),
+                Err(e) => log::warn!("Invalid Redis URL; continuing without Redis: {}", e),
             }
         } else {
             info!("Redis presence disabled (SIGNALING_REDIS_URL not set).");
@@ -903,31 +669,43 @@ async fn main() {
 
                 if let Some(client) = client {
                     if let Err(e) = redis_presence_refresh(&client, ttl, &users).await {
-                        warn!("Redis presence refresh failed: {}", e);
+                        log::warn!("Redis presence refresh failed: {}", e);
                     }
                 }
             }
         });
     }
 
-    let make_svc = make_service_fn(move |_conn| {
-        let state = state.clone();
-        async move {
-            Ok::<_, hyper::Error>(service_fn(move |req| {
-                let state = state.clone();
-                handle_request(req, state)
-            }))
-        }
-    });
+    let server_routes = Router::new()
+        .route("/register", axum::routing::post(handlers::http::register_server_hint))
+        .route("/hint", get(handlers::http::get_server_hint))
+        .route("/invites", axum::routing::post(handlers::http::create_house_invite))
+        .route("/events", get(handlers::http::get_events).post(handlers::http::post_event))
+        .route("/events/ack", axum::routing::post(handlers::http::ack_events))
+        .route("/ack", axum::routing::post(handlers::http::ack_events));
 
-    let server = Server::bind(&addr).serve(make_svc);
+    let app = Router::new()
+        .route("/api/status", get(handlers::http::get_status))
+        .route("/api/invites/:code", get(handlers::http::get_invite))
+        .route("/api/invites/:code/redeem", axum::routing::post(handlers::http::redeem_invite))
+        .route("/api/invites/:code/revoke", axum::routing::post(handlers::http::revoke_invite))
+        .nest("/api/servers/:signing_pubkey", server_routes)
+        .route("/health", get(|| async { "ok" }))
+        .route("/", get(status_page_handler))
+        .route("/status", get(status_page_handler))
+        .route("/ws", get(handlers::ws::ws_handler))
+        .fallback(|| async { (StatusCode::NOT_FOUND, "Not found. Use / or /status, /health, /api/*, or /ws for WebSocket.") })
+        .layer(CorsLayer::permissive())
+        .layer(TraceLayer::new_for_http())
+        .with_state(state);
 
+    let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");
     info!("Beacon listening on http://{}", addr);
-    info!("WebSocket endpoint: ws://{}", addr);
+    info!("WebSocket endpoint: ws://{}/ws", addr);
     info!("REST API: http://{}/api/servers/{{signing_pubkey}}/... (server hints)", addr);
     info!("Health check: http://{}/health", addr);
 
-    let graceful = server.with_graceful_shutdown(async {
+    let graceful = axum::serve(listener, app).with_graceful_shutdown(async {
         tokio::signal::ctrl_c().await.ok();
         write_last_stop_file();
     });
