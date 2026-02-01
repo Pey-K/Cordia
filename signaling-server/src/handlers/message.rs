@@ -22,7 +22,7 @@ pub async fn handle_message(
 ) -> Result<(), String> {
     match msg {
         SignalingMessage::Register { server_id, peer_id, signing_pubkey } => {
-            let mut signaling = state.signaling.lock().await;
+            let mut signaling = state.signaling.write().await;
             let peers = signaling.register_peer(peer_id.clone(), server_id.clone(), signing_pubkey, conn_id.clone());
 
             // Store the sender for this peer
@@ -47,7 +47,7 @@ pub async fn handle_message(
         }
         SignalingMessage::PresenceHello { user_id, signing_pubkeys, active_signing_pubkey } => {
             let (affected_spks, redis_client, redis_ttl, local_snaps) = {
-                let mut presence = state.presence.lock().await;
+                let mut presence = state.presence.write().await;
                 // Upsert presence
                 let affected_spks = presence.upsert_presence_hello(conn_id, user_id.clone(), signing_pubkeys.clone(), active_signing_pubkey.clone());
                 drop(presence);
@@ -55,21 +55,21 @@ pub async fn handle_message(
                 // LOCK BOUNDARY: Extract data here, unlock before IO
                 #[cfg(feature = "redis-backend")]
                 let redis_client = {
-                    let backends = state.backends.lock().await;
+                    let backends = state.backends.read().await;
                     backends.redis.clone()
                 };
                 #[cfg(not(feature = "redis-backend"))]
                 let redis_client: Option<()> = None;
                 #[cfg(feature = "redis-backend")]
                 let redis_ttl = {
-                    let backends = state.backends.lock().await;
+                    let backends = state.backends.read().await;
                     backends.redis_presence_ttl_secs
                 };
                 #[cfg(not(feature = "redis-backend"))]
                 let redis_ttl: u64 = 0;
 
                 let local_snaps: Vec<(SigningPubkey, Vec<PresenceUserStatus>)> = if redis_client.is_none() {
-                    let presence = state.presence.lock().await;
+                    let presence = state.presence.read().await;
                     let snaps: Vec<_> = signing_pubkeys
                         .iter()
                         .map(|spk| (spk.clone(), presence.presence_snapshot_for(spk)))
@@ -132,20 +132,20 @@ pub async fn handle_message(
         }
         SignalingMessage::PresenceActive { user_id, active_signing_pubkey } => {
             let (spks, redis_client, redis_ttl) = {
-                let mut presence = state.presence.lock().await;
+                let mut presence = state.presence.write().await;
                 let spks = presence.update_presence_active(&user_id, active_signing_pubkey.clone());
                 drop(presence);
                 
                 #[cfg(feature = "redis-backend")]
                 let redis_client = {
-                    let backends = state.backends.lock().await;
+                    let backends = state.backends.read().await;
                     backends.redis.clone()
                 };
                 #[cfg(not(feature = "redis-backend"))]
                 let redis_client: Option<()> = None;
                 #[cfg(feature = "redis-backend")]
                 let redis_ttl = {
-                    let backends = state.backends.lock().await;
+                    let backends = state.backends.read().await;
                     backends.redis_presence_ttl_secs
                 };
                 #[cfg(not(feature = "redis-backend"))]
@@ -169,7 +169,7 @@ pub async fn handle_message(
         }
         SignalingMessage::ProfileAnnounce { user_id, display_name, real_name, show_real_name, rev, signing_pubkeys } => {
             let (rec_opt, db_opt) = {
-                let mut profiles = state.profiles.lock().await;
+                let mut profiles = state.profiles.write().await;
                 let update = match profiles.profiles.get(&user_id) {
                     Some(existing) => rev > existing.rev,
                     None => true,
@@ -200,7 +200,7 @@ pub async fn handle_message(
                 // LOCK BOUNDARY: Extract data here, unlock before IO
                 #[cfg(feature = "postgres")]
                 let db = {
-                    let backends = state.backends.lock().await;
+                    let backends = state.backends.read().await;
                     backends.db.clone()
                 };
                 #[cfg(not(feature = "postgres"))]
@@ -223,7 +223,7 @@ pub async fn handle_message(
             // LOCK BOUNDARY: Extract data here, unlock before IO
             #[cfg(feature = "postgres")]
             let db = {
-                let backends = state.backends.lock().await;
+                let backends = state.backends.read().await;
                 backends.db.clone()
             };
 
@@ -231,7 +231,7 @@ pub async fn handle_message(
             let out: Vec<ProfileSnapshotRecord> = if let Some(pool) = db {
                 load_profiles_db(&pool, &user_ids).await.unwrap_or_default()
             } else {
-                let profiles = state.profiles.lock().await;
+                let profiles = state.profiles.read().await;
                 user_ids
                     .iter()
                     .filter_map(|uid| profiles.profiles.get(uid).map(|rec| ProfileSnapshotRecord {
@@ -246,7 +246,7 @@ pub async fn handle_message(
 
             #[cfg(not(feature = "postgres"))]
             let out: Vec<ProfileSnapshotRecord> = {
-                let profiles = state.profiles.lock().await;
+                let profiles = state.profiles.read().await;
                 user_ids
                     .iter()
                     .filter_map(|uid| profiles.profiles.get(uid).map(|rec| ProfileSnapshotRecord {
@@ -268,91 +268,46 @@ pub async fn handle_message(
         SignalingMessage::Offer { from_peer, to_peer, sdp } => {
             info!("Forwarding offer from {} to {}", from_peer, to_peer);
 
-            // Validate from_peer belongs to this connection
-            {
-                let signaling = state.signaling.lock().await;
-                if !signaling.validate_peer_connection(&from_peer, conn_id) {
-                    return Err(format!("Invalid peer_id {} for connection {}", from_peer, conn_id));
+            let target_sender = state.signaling.read().await.validate_and_get_target_sender(&from_peer, conn_id, &to_peer);
+            match target_sender {
+                Ok(Some(sender)) => {
+                    let forward_msg = SignalingMessage::Offer { from_peer, to_peer, sdp };
+                    let json = serde_json::to_string(&forward_msg).map_err(|e| format!("Failed to serialize offer: {}", e))?;
+                    sender.send(tokio_tungstenite::tungstenite::Message::Text(json)).map_err(|e| format!("Failed to forward offer: {}", e))?;
                 }
+                Ok(None) => warn!("Target peer {} not found for offer", to_peer),
+                Err(()) => return Err(format!("Invalid peer_id {} for connection {}", from_peer, conn_id)),
             }
-
-            let signaling = state.signaling.lock().await;
-            if let Some(target_sender) = signaling.peer_senders.get(&to_peer) {
-                let forward_msg = SignalingMessage::Offer {
-                    from_peer,
-                    to_peer,
-                    sdp,
-                };
-                let json = serde_json::to_string(&forward_msg)
-                    .map_err(|e| format!("Failed to serialize offer: {}", e))?;
-
-                target_sender
-                    .send(tokio_tungstenite::tungstenite::Message::Text(json))
-                    .map_err(|e| format!("Failed to forward offer: {}", e))?;
-            } else {
-                warn!("Target peer {} not found for offer", to_peer);
-            }
-
             Ok(())
         }
         SignalingMessage::Answer { from_peer, to_peer, sdp } => {
             info!("Forwarding answer from {} to {}", from_peer, to_peer);
 
-            // Validate from_peer belongs to this connection
-            {
-                let signaling = state.signaling.lock().await;
-                if !signaling.validate_peer_connection(&from_peer, conn_id) {
-                    return Err(format!("Invalid peer_id {} for connection {}", from_peer, conn_id));
+            let target_sender = state.signaling.read().await.validate_and_get_target_sender(&from_peer, conn_id, &to_peer);
+            match target_sender {
+                Ok(Some(sender)) => {
+                    let forward_msg = SignalingMessage::Answer { from_peer, to_peer, sdp };
+                    let json = serde_json::to_string(&forward_msg).map_err(|e| format!("Failed to serialize answer: {}", e))?;
+                    sender.send(tokio_tungstenite::tungstenite::Message::Text(json)).map_err(|e| format!("Failed to forward answer: {}", e))?;
                 }
+                Ok(None) => warn!("Target peer {} not found for answer", to_peer),
+                Err(()) => return Err(format!("Invalid peer_id {} for connection {}", from_peer, conn_id)),
             }
-
-            let signaling = state.signaling.lock().await;
-            if let Some(target_sender) = signaling.peer_senders.get(&to_peer) {
-                let forward_msg = SignalingMessage::Answer {
-                    from_peer,
-                    to_peer,
-                    sdp,
-                };
-                let json = serde_json::to_string(&forward_msg)
-                    .map_err(|e| format!("Failed to serialize answer: {}", e))?;
-
-                target_sender
-                    .send(tokio_tungstenite::tungstenite::Message::Text(json))
-                    .map_err(|e| format!("Failed to forward answer: {}", e))?;
-            } else {
-                warn!("Target peer {} not found for answer", to_peer);
-            }
-
             Ok(())
         }
         SignalingMessage::IceCandidate { from_peer, to_peer, candidate } => {
             info!("Forwarding ICE candidate from {} to {}", from_peer, to_peer);
 
-            // Validate from_peer belongs to this connection
-            {
-                let signaling = state.signaling.lock().await;
-                if !signaling.validate_peer_connection(&from_peer, conn_id) {
-                    return Err(format!("Invalid peer_id {} for connection {}", from_peer, conn_id));
+            let target_sender = state.signaling.read().await.validate_and_get_target_sender(&from_peer, conn_id, &to_peer);
+            match target_sender {
+                Ok(Some(sender)) => {
+                    let forward_msg = SignalingMessage::IceCandidate { from_peer, to_peer, candidate };
+                    let json = serde_json::to_string(&forward_msg).map_err(|e| format!("Failed to serialize ICE candidate: {}", e))?;
+                    sender.send(tokio_tungstenite::tungstenite::Message::Text(json)).map_err(|e| format!("Failed to forward ICE candidate: {}", e))?;
                 }
+                Ok(None) => warn!("Target peer {} not found for ICE candidate", to_peer),
+                Err(()) => return Err(format!("Invalid peer_id {} for connection {}", from_peer, conn_id)),
             }
-
-            let signaling = state.signaling.lock().await;
-            if let Some(target_sender) = signaling.peer_senders.get(&to_peer) {
-                let forward_msg = SignalingMessage::IceCandidate {
-                    from_peer,
-                    to_peer,
-                    candidate,
-                };
-                let json = serde_json::to_string(&forward_msg)
-                    .map_err(|e| format!("Failed to serialize ICE candidate: {}", e))?;
-
-                target_sender
-                    .send(tokio_tungstenite::tungstenite::Message::Text(json))
-                    .map_err(|e| format!("Failed to forward ICE candidate: {}", e))?;
-            } else {
-                warn!("Target peer {} not found for ICE candidate", to_peer);
-            }
-
             Ok(())
         }
 
@@ -362,7 +317,7 @@ pub async fn handle_message(
             info!("Voice register: peer={} user={} server={} chat={}", peer_id, user_id, server_id, chat_id);
 
             let peers = {
-                let mut signaling = state.signaling.lock().await;
+                let mut signaling = state.signaling.write().await;
 
                 // Register peer if not already registered (allows voice-first registration)
                 if !signaling.peers.contains_key(&peer_id) {
@@ -377,12 +332,12 @@ pub async fn handle_message(
             };
 
             {
-                let mut voice = state.voice.lock().await;
+                let mut voice = state.voice.write().await;
                 voice.server_signing_pubkeys.insert(server_id.clone(), signing_pubkey.clone());
             }
 
             let peers = {
-                let mut voice = state.voice.lock().await;
+                let mut voice = state.voice.write().await;
                 voice.register_voice_peer(
                     peer_id.clone(),
                     user_id.clone(),
@@ -419,14 +374,14 @@ pub async fn handle_message(
             info!("Voice unregister: peer={} chat={}", peer_id, chat_id);
 
             {
-                let signaling = state.signaling.lock().await;
+                let signaling = state.signaling.read().await;
                 if !signaling.validate_peer_connection(&peer_id, conn_id) {
                     return Err(format!("Invalid peer_id {} for connection {}", peer_id, conn_id));
                 }
             }
 
             let removed = {
-                let voice = state.voice.lock().await;
+                let voice = state.voice.read().await;
                 let mut found_server: Option<ServerId> = None;
                 for ((s, c), peers) in voice.voice_chats.iter() {
                     if c == &chat_id && peers.iter().any(|p| p.peer_id == peer_id) {
@@ -438,7 +393,7 @@ pub async fn handle_message(
                 if let Some(server_id) = found_server.clone() {
                     let signing_pubkey = voice.server_signing_pubkeys.get(&server_id).cloned();
                     drop(voice);
-                    let mut voice = state.voice.lock().await;
+                    let mut voice = state.voice.write().await;
                     if let Some(user_id) = voice.unregister_voice_peer(&peer_id, &server_id, &chat_id) {
                         Some((server_id, user_id, signing_pubkey))
                     } else {
@@ -468,14 +423,14 @@ pub async fn handle_message(
             info!("Voice offer from {} to {} in chat {}", from_peer, to_peer, chat_id);
 
             {
-                let signaling = state.signaling.lock().await;
+                let signaling = state.signaling.read().await;
                 if !signaling.validate_peer_connection(&from_peer, conn_id) {
                     return Err(format!("Invalid peer_id {} for connection {}", from_peer, conn_id));
                 }
             }
 
             let target_sender = {
-                let voice = state.voice.lock().await;
+                let voice = state.voice.read().await;
                 let mut found_server: Option<ServerId> = None;
                 for ((server_id, c), _) in voice.voice_chats.iter() {
                     if c == &chat_id {
@@ -515,14 +470,14 @@ pub async fn handle_message(
             info!("Voice answer from {} to {} in chat {}", from_peer, to_peer, chat_id);
 
             {
-                let signaling = state.signaling.lock().await;
+                let signaling = state.signaling.read().await;
                 if !signaling.validate_peer_connection(&from_peer, conn_id) {
                     return Err(format!("Invalid peer_id {} for connection {}", from_peer, conn_id));
                 }
             }
 
             let target_sender = {
-                let voice = state.voice.lock().await;
+                let voice = state.voice.read().await;
                 let mut found_server: Option<ServerId> = None;
                 for ((server_id, c), _) in voice.voice_chats.iter() {
                     if c == &chat_id {
@@ -560,14 +515,14 @@ pub async fn handle_message(
 
         SignalingMessage::VoiceIceCandidate { from_peer, to_peer, chat_id, candidate } => {
             {
-                let signaling = state.signaling.lock().await;
+                let signaling = state.signaling.read().await;
                 if !signaling.validate_peer_connection(&from_peer, conn_id) {
                     return Err(format!("Invalid peer_id {} for connection {}", from_peer, conn_id));
                 }
             }
 
             let target_sender = {
-                let voice = state.voice.lock().await;
+                let voice = state.voice.read().await;
                 let mut found_server: Option<ServerId> = None;
                 for ((server_id, c), _) in voice.voice_chats.iter() {
                     if c == &chat_id {

@@ -596,7 +596,7 @@ async fn main() {
                     if let Err(e) = init_db(&pool).await {
                         log::warn!("DB init failed; continuing without DB: {}", e);
                     } else {
-                        let mut backends = state.backends.lock().await;
+                        let mut backends = state.backends.write().await;
                         backends.db = Some(pool);
                         info!("Postgres enabled (SIGNALING_DB_URL set).");
                     }
@@ -624,7 +624,7 @@ async fn main() {
                             let pong: Result<String, _> = redis::cmd("PING").query_async(&mut conn).await;
                             match pong {
                                 Ok(_) => {
-                                    let mut backends = state.backends.lock().await;
+                                    let mut backends = state.backends.write().await;
                                     backends.redis = Some(client);
                                     backends.redis_presence_ttl_secs = ttl_secs;
                                     info!("Redis presence enabled (SIGNALING_REDIS_URL set).");
@@ -648,12 +648,12 @@ async fn main() {
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await; // Every hour
             let (db, cutoff) = {
-                let mut events = gc_state.events.lock().await;
+                let mut events = gc_state.events.write().await;
                 events.gc_old_events();
                 drop(events);
                 #[cfg(feature = "postgres")]
                 let db = {
-                    let backends = gc_state.backends.lock().await;
+                    let backends = gc_state.backends.read().await;
                     backends.db.clone()
                 };
                 #[cfg(not(feature = "postgres"))]
@@ -673,9 +673,11 @@ async fn main() {
         }
     });
 
-    // Background CPU sampling (sysinfo needs two refreshes with delay for non-zero process CPU)
+    // Background CPU sampling (sysinfo needs two refreshes with delay for non-zero process CPU).
+    // Smooth over last 5 samples so the status page doesn't flicker 0 ↔ small %.
     let cpu_state = state.clone();
     tokio::spawn(async move {
+        let mut samples: std::collections::VecDeque<f32> = std::collections::VecDeque::with_capacity(5);
         loop {
             let cpu = tokio::task::spawn_blocking(|| {
                 use sysinfo::{System, MINIMUM_CPU_UPDATE_INTERVAL};
@@ -692,7 +694,12 @@ async fn main() {
             .ok()
             .flatten();
             if let Some(c) = cpu {
-                *cpu_state.cpu_percent_cache.lock().await = Some(c);
+                if samples.len() >= 5 {
+                    samples.pop_front();
+                }
+                samples.push_back(c);
+                let avg = samples.iter().sum::<f32>() / samples.len() as f32;
+                *cpu_state.cpu_percent_cache.lock().await = Some(avg);
             }
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         }
@@ -705,8 +712,8 @@ async fn main() {
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
                 let (client, ttl, users) = {
-                    let backends = refresh_state.backends.lock().await;
-                    let presence = refresh_state.presence.lock().await;
+                    let backends = refresh_state.backends.read().await;
+                    let presence = refresh_state.presence.read().await;
                     let client = backends.redis.clone();
                     let ttl = backends.redis_presence_ttl_secs;
                     let users = presence
