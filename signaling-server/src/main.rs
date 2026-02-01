@@ -388,7 +388,7 @@ use handlers::db::init_db;
 #[cfg(feature = "postgres")]
 use handlers::db::gc_old_events_db;
 #[cfg(feature = "redis-backend")]
-use handlers::redis::{redis_presence_disconnect, redis_presence_refresh};
+use handlers::redis::redis_presence_refresh;
 
 type SharedState = Arc<AppState>;
 
@@ -634,7 +634,7 @@ async fn main() {
             #[cfg(feature = "postgres")]
             if let Some(pool) = db {
                 if let Err(e) = gc_old_events_db(&pool, cutoff).await {
-                    warn!("DB GC failed: {}", e);
+                    log::warn!("DB GC failed: {}", e);
                 }
             }
 
