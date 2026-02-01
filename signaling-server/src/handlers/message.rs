@@ -40,7 +40,7 @@ pub async fn handle_message(
                 .map_err(|e| format!("Failed to serialize response: {}", e))?;
 
             sender
-                .send(hyper_tungstenite::tungstenite::Message::Text(json))
+                .send(tokio_tungstenite::tungstenite::Message::Text(json))
                 .map_err(|e| format!("Failed to send response: {}", e))?;
 
             Ok(())
@@ -95,7 +95,7 @@ pub async fn handle_message(
                         users,
                     };
                     if let Ok(json) = serde_json::to_string(&snap) {
-                        let _ = sender.send(hyper_tungstenite::tungstenite::Message::Text(json));
+                        let _ = sender.send(tokio_tungstenite::tungstenite::Message::Text(json));
                     }
                 }
             } else {
@@ -105,7 +105,7 @@ pub async fn handle_message(
                         users,
                     };
                     if let Ok(json) = serde_json::to_string(&snap) {
-                        let _ = sender.send(hyper_tungstenite::tungstenite::Message::Text(json));
+                        let _ = sender.send(tokio_tungstenite::tungstenite::Message::Text(json));
                     }
                 }
             }
@@ -118,7 +118,7 @@ pub async fn handle_message(
                         users,
                     };
                     if let Ok(json) = serde_json::to_string(&snap) {
-                        let _ = sender.send(hyper_tungstenite::tungstenite::Message::Text(json));
+                        let _ = sender.send(tokio_tungstenite::tungstenite::Message::Text(json));
                     }
                 }
             }
@@ -261,7 +261,7 @@ pub async fn handle_message(
 
             let snap = SignalingMessage::ProfileSnapshot { signing_pubkey, profiles: out };
             if let Ok(json) = serde_json::to_string(&snap) {
-                let _ = sender.send(hyper_tungstenite::tungstenite::Message::Text(json));
+                let _ = sender.send(tokio_tungstenite::tungstenite::Message::Text(json));
             }
             Ok(())
         }
@@ -287,7 +287,7 @@ pub async fn handle_message(
                     .map_err(|e| format!("Failed to serialize offer: {}", e))?;
 
                 target_sender
-                    .send(hyper_tungstenite::tungstenite::Message::Text(json))
+                    .send(tokio_tungstenite::tungstenite::Message::Text(json))
                     .map_err(|e| format!("Failed to forward offer: {}", e))?;
             } else {
                 warn!("Target peer {} not found for offer", to_peer);
@@ -317,7 +317,7 @@ pub async fn handle_message(
                     .map_err(|e| format!("Failed to serialize answer: {}", e))?;
 
                 target_sender
-                    .send(hyper_tungstenite::tungstenite::Message::Text(json))
+                    .send(tokio_tungstenite::tungstenite::Message::Text(json))
                     .map_err(|e| format!("Failed to forward answer: {}", e))?;
             } else {
                 warn!("Target peer {} not found for answer", to_peer);
@@ -347,7 +347,7 @@ pub async fn handle_message(
                     .map_err(|e| format!("Failed to serialize ICE candidate: {}", e))?;
 
                 target_sender
-                    .send(hyper_tungstenite::tungstenite::Message::Text(json))
+                    .send(tokio_tungstenite::tungstenite::Message::Text(json))
                     .map_err(|e| format!("Failed to forward ICE candidate: {}", e))?;
             } else {
                 warn!("Target peer {} not found for ICE candidate", to_peer);
@@ -400,7 +400,7 @@ pub async fn handle_message(
             let json = serde_json::to_string(&response)
                 .map_err(|e| format!("Failed to serialize VoiceRegistered: {}", e))?;
             sender
-                .send(hyper_tungstenite::tungstenite::Message::Text(json))
+                .send(tokio_tungstenite::tungstenite::Message::Text(json))
                 .map_err(|e| format!("Failed to send VoiceRegistered: {}", e))?;
 
             let join_msg = SignalingMessage::VoicePeerJoined {
@@ -502,7 +502,7 @@ pub async fn handle_message(
                 let json = serde_json::to_string(&forward_msg)
                     .map_err(|e| format!("Failed to serialize VoiceOffer: {}", e))?;
                 target
-                    .send(hyper_tungstenite::tungstenite::Message::Text(json))
+                    .send(tokio_tungstenite::tungstenite::Message::Text(json))
                     .map_err(|e| format!("Failed to forward VoiceOffer: {}", e))?;
             } else {
                 warn!("Target peer {} not found in chat {} for VoiceOffer", to_peer, chat_id);
@@ -549,7 +549,7 @@ pub async fn handle_message(
                 let json = serde_json::to_string(&forward_msg)
                     .map_err(|e| format!("Failed to serialize VoiceAnswer: {}", e))?;
                 target
-                    .send(hyper_tungstenite::tungstenite::Message::Text(json))
+                    .send(tokio_tungstenite::tungstenite::Message::Text(json))
                     .map_err(|e| format!("Failed to forward VoiceAnswer: {}", e))?;
             } else {
                 warn!("Target peer {} not found in chat {} for VoiceAnswer", to_peer, chat_id);
@@ -593,7 +593,7 @@ pub async fn handle_message(
                 let json = serde_json::to_string(&forward_msg)
                     .map_err(|e| format!("Failed to serialize VoiceIceCandidate: {}", e))?;
                 target
-                    .send(hyper_tungstenite::tungstenite::Message::Text(json))
+                    .send(tokio_tungstenite::tungstenite::Message::Text(json))
                     .map_err(|e| format!("Failed to forward VoiceIceCandidate: {}", e))?;
             }
             // Don't warn on missing peer for ICE candidates - they may have left
@@ -606,7 +606,7 @@ pub async fn handle_message(
             let pong = SignalingMessage::Pong;
             let json = serde_json::to_string(&pong)
                 .map_err(|e| format!("Failed to serialize Pong: {}", e))?;
-            sender.send(hyper_tungstenite::tungstenite::Message::Text(json))
+            sender.send(tokio_tungstenite::tungstenite::Message::Text(json))
                 .map_err(|e| format!("Failed to send Pong: {}", e))?;
             Ok(())
         }
