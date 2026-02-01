@@ -622,20 +622,34 @@ async fn handle_request(
     h1 { font-weight: 300; font-size: 1.5rem; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 0.5rem; }
     #count { font-size: 3rem; font-variant-numeric: tabular-nums; }
     .muted { font-size: 0.875rem; color: #888; margin-top: 1rem; }
-    .time-block { font-size: 0.875rem; margin-top: 0.5rem; display: flex; gap: 1.5rem; align-items: baseline; flex-wrap: wrap; justify-content: center; }
-    .uptime { color: #22c55e; }
-    .downtime { color: #ef4444; }
-    .time-val { display: inline-block; min-width: 5em; font-variant-numeric: tabular-nums; }
-    .network-block { font-size: 0.875rem; color: #888; margin-top: 0.35rem; display: flex; gap: 1.5rem; align-items: baseline; justify-content: center; }
-    .network-val { display: inline-block; min-width: 6em; font-variant-numeric: tabular-nums; }
+    .time-block { font-size: 0.875rem; margin-top: 0.5rem; display: flex; gap: 2rem; justify-content: center; flex-wrap: wrap; }
+    .time-col { display: flex; flex-direction: column; align-items: center; }
+    .time-label { color: #888; margin-bottom: 0.15rem; }
+    .time-val { font-variant-numeric: tabular-nums; min-width: 4em; text-align: center; }
+    .time-val.uptime { color: #22c55e; }
+    .time-val.downtime { color: #ef4444; }
+    .separator { width: 80%; max-width: 16rem; margin: 0.75rem auto; border: none; border-top: 1px solid #444; }
+    .network-block { font-size: 0.875rem; display: flex; flex-direction: column; align-items: center; gap: 0.25rem; }
+    .network-row { display: flex; gap: 2rem; justify-content: center; }
+    .network-label { color: #888; }
+    .network-val { font-variant-numeric: tabular-nums; min-width: 6em; text-align: center; }
+    .network-val.upload { color: #22c55e; }
+    .network-val.download { color: #ef4444; }
   </style>
 </head>
 <body>
   <h1>Cordia Beacon</h1>
   <p class="muted">Connections</p>
   <p id="count">—</p>
-  <p class="time-block"><span class="uptime">Uptime: <span id="uptime" class="time-val">—</span></span><span class="downtime">Downtime: <span id="downtime" class="time-val">—</span></span></p>
-  <p class="network-block"><span>↑ <span id="tx" class="network-val">—</span></span><span>↓ <span id="rx" class="network-val">—</span></span></p>
+  <div class="time-block">
+    <div class="time-col"><span class="time-label">Uptime</span><span id="uptime" class="time-val uptime">—</span></div>
+    <div class="time-col"><span class="time-label">Downtime</span><span id="downtime" class="time-val downtime">—</span></div>
+  </div>
+  <hr class="separator" />
+  <div class="network-block">
+    <div class="network-row"><span class="network-label">Upload</span><span class="network-label">Download</span></div>
+    <div class="network-row"><span id="tx" class="network-val upload">—</span><span id="rx" class="network-val download">—</span></div>
+  </div>
   <p id="sysinfo" class="muted">—</p>
   <script>
     function formatUptime(secs) {
@@ -661,8 +675,8 @@ async fn handle_request(
         document.getElementById('count').style.color = '';
         document.getElementById('uptime').textContent = formatUptime(d.uptime_secs || 0);
         document.getElementById('downtime').textContent = d.downtime_secs != null ? formatUptime(d.downtime_secs) : '—';
-        document.getElementById('tx').textContent = formatBps(d.tx_bps);
-        document.getElementById('rx').textContent = formatBps(d.rx_bps);
+        document.getElementById('tx').textContent = '↑ ' + formatBps(d.tx_bps);
+        document.getElementById('rx').textContent = '↓ ' + formatBps(d.rx_bps);
         document.getElementById('sysinfo').textContent = 'RAM: ' + (d.memory_mb ?? '—') + ' MB  |  CPU: ' + (d.cpu_percent != null ? d.cpu_percent.toFixed(1) + '%' : '—');
       }).catch(() => {
         document.getElementById('count').textContent = '?';
