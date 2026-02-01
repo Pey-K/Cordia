@@ -28,7 +28,7 @@ use crate::handlers::db::{
 
 pub async fn get_status(State(state): State<SharedState>) -> impl IntoResponse {
     let connections = {
-        let presence = state.presence.lock().await;
+        let presence = state.presence.read().await;
         presence.presence_users.len()
     };
     let uptime_secs = state.started_at.elapsed().as_secs();
@@ -85,7 +85,7 @@ pub async fn get_invite(
     #[cfg(feature = "postgres")]
     {
         let db = {
-            let backends = state.backends.lock().await;
+            let backends = state.backends.read().await;
             backends.db.clone()
         };
         if let Some(pool) = db {
@@ -97,7 +97,7 @@ pub async fn get_invite(
         }
     }
 
-    let events = state.events.lock().await;
+    let events = state.events.read().await;
     match events.get_invite_token(&code) {
         Some(rec) => (StatusCode::OK, Json(serde_json::to_value(rec).unwrap())).into_response(),
         None => (StatusCode::NOT_FOUND, "Invite not found").into_response(),
@@ -113,7 +113,7 @@ pub async fn redeem_invite(
     #[cfg(feature = "postgres")]
     {
         let db = {
-            let backends = state.backends.lock().await;
+            let backends = state.backends.read().await;
             backends.db.clone()
         };
         if let Some(pool) = db {
@@ -129,7 +129,7 @@ pub async fn redeem_invite(
         }
     }
 
-    let mut events = state.events.lock().await;
+    let mut events = state.events.write().await;
     events.gc_expired_invites();
     match events.redeem_invite_token(&code) {
         Some(rec) => (StatusCode::OK, Json(serde_json::to_value(&rec).unwrap())).into_response(),
@@ -146,7 +146,7 @@ pub async fn revoke_invite(
     #[cfg(feature = "postgres")]
     {
         let db = {
-            let backends = state.backends.lock().await;
+            let backends = state.backends.read().await;
             backends.db.clone()
         };
         if let Some(pool) = db {
@@ -163,7 +163,7 @@ pub async fn revoke_invite(
         }
     }
 
-    let mut events = state.events.lock().await;
+    let mut events = state.events.write().await;
     events.gc_expired_invites();
     let existed = events.invite_tokens.remove(&code).is_some();
     if existed {
@@ -185,7 +185,7 @@ pub async fn register_server_hint(
     #[cfg(feature = "postgres")]
     {
         let db = {
-            let backends = state.backends.lock().await;
+            let backends = state.backends.read().await;
             backends.db.clone()
         };
         if let Some(pool) = db {
@@ -193,17 +193,17 @@ pub async fn register_server_hint(
                 log::warn!("Failed to persist server hint: {}", e);
             }
         } else {
-            let mut events = state.events.lock().await;
+            let mut events = state.events.write().await;
             events.register_server_hint(signing_pubkey.to_string(), hint.clone());
         }
     }
     #[cfg(not(feature = "postgres"))]
     {
-        let mut events = state.events.lock().await;
+        let mut events = state.events.write().await;
         events.register_server_hint(signing_pubkey.to_string(), hint.clone());
     }
     {
-        let signaling = state.signaling.lock().await;
+        let signaling = state.signaling.read().await;
         signaling.broadcast_server_hint_updated(&signing_pubkey, &hint);
     }
     info!("Registered server hint");
@@ -219,7 +219,7 @@ pub async fn get_server_hint(
     #[cfg(feature = "postgres")]
     {
         let db = {
-            let backends = state.backends.lock().await;
+            let backends = state.backends.read().await;
             backends.db.clone()
         };
         if let Some(pool) = db {
@@ -230,7 +230,7 @@ pub async fn get_server_hint(
         }
     }
 
-    let events = state.events.lock().await;
+    let events = state.events.read().await;
     match events.get_server_hint(&signing_pubkey) {
         Some(hint) => (StatusCode::OK, Json(serde_json::to_value(hint).unwrap())).into_response(),
         None => (StatusCode::NOT_FOUND, "Server hint not found").into_response(),
@@ -247,7 +247,7 @@ pub async fn create_house_invite(
     #[cfg(feature = "postgres")]
     {
         let db = {
-            let backends = state.backends.lock().await;
+            let backends = state.backends.read().await;
             backends.db.clone()
         };
         if let Some(pool) = db {
@@ -261,7 +261,7 @@ pub async fn create_house_invite(
         }
     }
 
-    let mut events = state.events.lock().await;
+    let mut events = state.events.write().await;
     events.gc_expired_invites();
     match events.put_invite_token(&signing_pubkey, inv) {
         Ok(record) => (StatusCode::OK, Json(serde_json::to_value(&record).unwrap())).into_response(),
@@ -285,7 +285,7 @@ pub async fn get_events(
     #[cfg(feature = "postgres")]
     {
         let db = {
-            let backends = state.backends.lock().await;
+            let backends = state.backends.read().await;
             backends.db.clone()
         };
         if let Some(pool) = db {
@@ -296,7 +296,7 @@ pub async fn get_events(
         }
     }
 
-    let events = state.events.lock().await;
+    let events = state.events.read().await;
     let events_list = events.get_events(&signing_pubkey, since);
     (StatusCode::OK, Json(serde_json::to_value(&events_list).unwrap())).into_response()
 }
@@ -316,7 +316,7 @@ pub async fn post_event(
     #[cfg(feature = "postgres")]
     {
         let db = {
-            let backends = state.backends.lock().await;
+            let backends = state.backends.read().await;
             backends.db.clone()
         };
         if let Some(pool) = db {
@@ -326,7 +326,7 @@ pub async fn post_event(
         }
     }
 
-    let mut events = state.events.lock().await;
+    let mut events = state.events.write().await;
     events.post_event(signing_pubkey.clone(), event);
     info!("Posted server event");
     (StatusCode::CREATED, Json(serde_json::json!({"status": "created"})))
@@ -342,7 +342,7 @@ pub async fn ack_events(
     #[cfg(feature = "postgres")]
     {
         let db = {
-            let backends = state.backends.lock().await;
+            let backends = state.backends.read().await;
             backends.db.clone()
         };
         if let Some(pool) = db {
@@ -352,7 +352,7 @@ pub async fn ack_events(
         }
     }
 
-    let mut events = state.events.lock().await;
+    let mut events = state.events.write().await;
     events.ack_events(signing_pubkey.clone(), ack.user_id, ack.last_event_id);
     info!("Acknowledged events");
     (StatusCode::OK, Json(serde_json::json!({"status": "ok"})))

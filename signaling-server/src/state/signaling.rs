@@ -30,14 +30,26 @@ impl SignalingState {
     /// Validates that a peer_id belongs to the connection sending the message.
     /// This enforces connection identity consistency, not authorization.
     /// Returns true if the peer_id is registered and belongs to the given conn_id.
-    /// 
-    /// Future optimization: Consider returning the validated PeerConnection to avoid
-    /// double-locking (lock → validate → unlock, then lock again for work).
     pub fn validate_peer_connection(&self, peer_id: &PeerId, conn_id: &ConnId) -> bool {
         match self.peers.get(peer_id) {
             Some(peer) => peer.conn_id == *conn_id,
             None => false,
         }
+    }
+
+    /// Validates from_peer belongs to conn_id and returns the sender for to_peer.
+    /// Single lock instead of validate-then-unlock-then-lock-again for forwarding.
+    /// Returns Err(()) if from_peer is invalid; Ok(None) if valid but to_peer not found; Ok(Some(sender)) if found.
+    pub fn validate_and_get_target_sender(
+        &self,
+        from_peer: &PeerId,
+        conn_id: &ConnId,
+        to_peer: &PeerId,
+    ) -> Result<Option<WebSocketSender>, ()> {
+        if !self.validate_peer_connection(from_peer, conn_id) {
+            return Err(());
+        }
+        Ok(self.peer_senders.get(to_peer).cloned())
     }
 
     pub fn register_peer(

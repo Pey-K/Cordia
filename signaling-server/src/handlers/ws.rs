@@ -98,12 +98,12 @@ async fn handle_connection_axum(socket: WebSocket, state: SharedState) {
     }
 
     let server_signing_map = {
-        let voice = state.voice.lock().await;
+        let voice = state.voice.read().await;
         voice.server_signing_pubkeys.clone()
     };
 
     let (presence_removed, voice_removed, redis_client) = {
-        let mut signaling = state.signaling.lock().await;
+        let mut signaling = state.signaling.write().await;
 
         let peer_ids = if let Some(peer_ids) = signaling.conn_peers.remove(&conn_id) {
             let ids: Vec<_> = peer_ids.iter().cloned().collect();
@@ -117,17 +117,17 @@ async fn handle_connection_axum(socket: WebSocket, state: SharedState) {
 
         drop(signaling);
 
-        let mut voice = state.voice.lock().await;
+        let mut voice = state.voice.write().await;
         let voice_removed = voice.handle_voice_disconnect(&conn_id);
         drop(voice);
 
-        let mut presence = state.presence.lock().await;
+        let mut presence = state.presence.write().await;
         let presence_removed = presence.remove_presence_conn(&conn_id);
         drop(presence);
 
         #[cfg(feature = "redis-backend")]
         let redis_client = {
-            let backends = state.backends.lock().await;
+            let backends = state.backends.read().await;
             backends.redis.clone()
         };
         #[cfg(not(feature = "redis-backend"))]

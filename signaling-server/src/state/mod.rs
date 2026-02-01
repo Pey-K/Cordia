@@ -14,20 +14,19 @@ pub use backends::BackendState;
 
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use crate::{SigningPubkey, SignalingMessage, ProfileRecord, PeerId, ServerId, WebSocketSender};
 use tokio_tungstenite::tungstenite::Message;
 
 /// Main application state wrapping all subsystems.
-/// Each subsystem has its own Mutex to reduce contention.
-/// Start with Mutex everywhere. Only consider upgrading to RwLock after Phase 3 if profiling shows read-heavy contention.
+/// Read-heavy state uses RwLock so multiple readers don't block each other; caches use Mutex.
 pub struct AppState {
-    pub signaling: Arc<Mutex<SignalingState>>,
-    pub voice: Arc<Mutex<VoiceState>>,
-    pub presence: Arc<Mutex<PresenceState>>,
-    pub profiles: Arc<Mutex<ProfileState>>,
-    pub events: Arc<Mutex<EventState>>,
-    pub backends: Arc<Mutex<BackendState>>,
+    pub signaling: Arc<RwLock<SignalingState>>,
+    pub voice: Arc<RwLock<VoiceState>>,
+    pub presence: Arc<RwLock<PresenceState>>,
+    pub profiles: Arc<RwLock<ProfileState>>,
+    pub events: Arc<RwLock<EventState>>,
+    pub backends: Arc<RwLock<BackendState>>,
     /// When the beacon process started (for uptime / status page).
     pub started_at: Instant,
     /// ISO8601 timestamp when the beacon started (for status).
@@ -44,12 +43,12 @@ impl AppState {
     pub fn new(downtime_secs: Option<u64>) -> Self {
         let now_utc = chrono::Utc::now();
         Self {
-            signaling: Arc::new(Mutex::new(SignalingState::new())),
-            voice: Arc::new(Mutex::new(VoiceState::new())),
-            presence: Arc::new(Mutex::new(PresenceState::new())),
-            profiles: Arc::new(Mutex::new(ProfileState::new())),
-            events: Arc::new(Mutex::new(EventState::new())),
-            backends: Arc::new(Mutex::new(BackendState::new())),
+            signaling: Arc::new(RwLock::new(SignalingState::new())),
+            voice: Arc::new(RwLock::new(VoiceState::new())),
+            presence: Arc::new(RwLock::new(PresenceState::new())),
+            profiles: Arc::new(RwLock::new(ProfileState::new())),
+            events: Arc::new(RwLock::new(EventState::new())),
+            backends: Arc::new(RwLock::new(BackendState::new())),
             started_at: Instant::now(),
             started_at_utc: now_utc.to_rfc3339(),
             downtime_secs,
@@ -61,7 +60,7 @@ impl AppState {
     /// Broadcast a presence update to all peers subscribed to a server.
     /// This coordinates between PresenceState and SignalingState.
     pub async fn broadcast_presence_update(&self, signing_pubkey: &SigningPubkey, user_id: &str, online: bool, active: Option<SigningPubkey>) {
-        let signaling = self.signaling.lock().await;
+        let signaling = self.signaling.read().await;
         let Some(peers) = signaling.signing_servers.get(signing_pubkey) else {
             return;
         };
@@ -87,7 +86,7 @@ impl AppState {
     /// Broadcast a profile update to all peers subscribed to a server.
     /// This coordinates between ProfileState and SignalingState.
     pub async fn broadcast_profile_update(&self, signing_pubkey: &SigningPubkey, user_id: &str, rec: &ProfileRecord) {
-        let signaling = self.signaling.lock().await;
+        let signaling = self.signaling.read().await;
         let Some(peers) = signaling.signing_servers.get(signing_pubkey) else {
             return;
         };
@@ -115,7 +114,7 @@ impl AppState {
     /// Broadcast a message to all peers in a voice chat.
     /// This coordinates between VoiceState and SignalingState.
     pub async fn broadcast_to_voice_room(&self, server_id: &ServerId, chat_id: &str, msg: &SignalingMessage, exclude_peer: Option<&PeerId>) {
-        let voice = self.voice.lock().await;
+        let voice = self.voice.read().await;
         let key = (server_id.clone(), chat_id.to_string());
         let Some(peers) = voice.voice_chats.get(&key) else {
             return;
@@ -126,7 +125,7 @@ impl AppState {
         };
 
         // Need to get peer_senders from signaling
-        let signaling = self.signaling.lock().await;
+        let signaling = self.signaling.read().await;
         for peer in peers {
             // Skip excluded peer
             if let Some(excluded) = exclude_peer {
@@ -144,7 +143,7 @@ impl AppState {
     /// Get the sender for a specific peer in a voice chat.
     /// This coordinates between VoiceState and SignalingState.
     pub async fn get_voice_peer_sender(&self, server_id: &ServerId, chat_id: &str, peer_id: &PeerId) -> Option<WebSocketSender> {
-        let voice = self.voice.lock().await;
+        let voice = self.voice.read().await;
         let key = (server_id.clone(), chat_id.to_string());
         let peers = voice.voice_chats.get(&key)?;
 
@@ -153,14 +152,14 @@ impl AppState {
             return None;
         }
 
-        let signaling = self.signaling.lock().await;
+        let signaling = self.signaling.read().await;
         signaling.peer_senders.get(peer_id).cloned()
     }
 
     /// Broadcast voice presence update to all presence connections for a server.
     /// This coordinates between VoiceState and SignalingState.
     pub async fn broadcast_voice_presence(&self, signing_pubkey: &SigningPubkey, user_id: &str, chat_id: &str, in_voice: bool) {
-        let signaling = self.signaling.lock().await;
+        let signaling = self.signaling.read().await;
         let Some(peers) = signaling.signing_servers.get(signing_pubkey) else {
             return;
         };
