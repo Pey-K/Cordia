@@ -599,9 +599,19 @@ async fn main() {
         );
     }
 
+    let rest_rate_limiter = security::build_rest_rate_limiter(security_config.rate_limit_rest_per_min);
+    let rest_rate_limiter_for_layer = Arc::new(rest_rate_limiter);
+    let ws_rate_limiter = security::build_ws_rate_limiter(security_config.rate_limit_ws_per_min);
+    if rest_rate_limiter_for_layer.is_some() {
+        info!("REST rate limit: {} requests/min per IP", security_config.rate_limit_rest_per_min);
+    }
+    if ws_rate_limiter.is_some() {
+        info!("WebSocket rate limit: {} messages/min per IP", security_config.rate_limit_ws_per_min);
+    }
+
     let downtime_secs = read_downtime_secs();
     let addr: SocketAddr = "0.0.0.0:9001".parse().expect("Invalid address");
-    let state = Arc::new(AppState::new(downtime_secs, connection_tracker));
+    let state = Arc::new(AppState::new(downtime_secs, connection_tracker, ws_rate_limiter));
 
     // Optional Postgres durability (profiles first; others later)
     #[cfg(feature = "postgres")]
@@ -775,6 +785,12 @@ async fn main() {
         .route("/ws", get(handlers::ws::ws_handler))
         .fallback(|| async { (StatusCode::NOT_FOUND, "Not found. Use / or /status, /health, /api/*, or /ws for WebSocket.") })
         .layer(middleware::from_fn(security::client_ip_middleware))
+        .layer(middleware::from_fn(move |req: axum::extract::Request, next: axum::middleware::Next| {
+            let limiter = Arc::clone(&rest_rate_limiter_for_layer);
+            async move {
+                security::rest_rate_limit_middleware_optional(req, next, (*limiter).clone()).await
+            }
+        }))
         .layer(security::build_cors_layer(&security_config))
         .layer(SetResponseHeaderLayer::if_not_present(
             axum::http::header::X_CONTENT_TYPE_OPTIONS,

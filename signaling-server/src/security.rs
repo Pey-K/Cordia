@@ -7,12 +7,14 @@
 
 use axum::{
     extract::Request,
-    http::HeaderValue,
+    http::{HeaderValue, StatusCode},
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Response},
 };
+use governor::Quota;
 use std::collections::HashMap;
 use std::env;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -34,6 +36,10 @@ pub struct SecurityConfig {
     pub max_ws_connections: u32,
     /// Max WebSocket connections per client IP; 0 = unlimited.
     pub max_ws_per_ip: u32,
+    /// REST requests per minute per IP; 0 = no limit.
+    pub rate_limit_rest_per_min: u32,
+    /// WebSocket messages per minute per IP; 0 = no limit.
+    pub rate_limit_ws_per_min: u32,
 }
 
 impl SecurityConfig {
@@ -55,11 +61,23 @@ impl SecurityConfig {
 
         let cors_origins = env::var("BEACON_CORS_ORIGINS").ok();
 
+        let rate_limit_rest_per_min = env::var("BEACON_RATE_LIMIT_REST_PER_MIN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60);
+
+        let rate_limit_ws_per_min = env::var("BEACON_RATE_LIMIT_WS_PER_MIN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(250);
+
         Self {
             cors_origins,
             max_body_bytes,
             max_ws_connections,
             max_ws_per_ip,
+            rate_limit_rest_per_min,
+            rate_limit_ws_per_min,
         }
     }
 }
@@ -105,6 +123,70 @@ pub async fn client_ip_middleware(request: Request, next: Next) -> Response {
     let mut request = request;
     request.extensions_mut().insert(ClientIp(ip));
     next.run(request).await
+}
+
+/// Opaque per-IP rate limiter (REST and WS use the same type).
+pub struct KeyedRateLimiter(governor::RateLimiter<
+    String,
+    governor::state::keyed::DashMapStateStore<String>,
+    governor::clock::QuantaClock,
+    governor::middleware::NoOpMiddleware<governor::clock::QuantaInstant>,
+>);
+
+impl KeyedRateLimiter {
+    /// Build limiter: N units per minute per IP. Returns None if n == 0 (disabled).
+    pub fn per_minute(n: u32) -> Option<Arc<Self>> {
+        let nz = NonZeroU32::new(n)?;
+        let quota = Quota::per_minute(nz);
+        let limiter = governor::RateLimiter::keyed(quota);
+        Some(Arc::new(KeyedRateLimiter(limiter)))
+    }
+
+    /// Returns true if the key is under the rate limit (one unit consumed). False if over limit.
+    pub fn check_key(&self, key: &str) -> bool {
+        self.0.check_key(&key.to_string()).is_ok()
+    }
+}
+
+/// Build REST rate limiter: N requests per minute per IP. None if n == 0 (disabled).
+pub fn build_rest_rate_limiter(requests_per_minute: u32) -> Option<Arc<KeyedRateLimiter>> {
+    KeyedRateLimiter::per_minute(requests_per_minute)
+}
+
+/// Build WebSocket message rate limiter: N messages per minute per IP. None if n == 0 (disabled).
+pub fn build_ws_rate_limiter(messages_per_minute: u32) -> Option<Arc<KeyedRateLimiter>> {
+    KeyedRateLimiter::per_minute(messages_per_minute)
+}
+
+/// Middleware: reject REST request with 429 if client IP is over rate limit.
+/// Run after client_ip_middleware so ClientIp is in extensions.
+pub async fn rest_rate_limit_middleware(
+    request: Request,
+    next: Next,
+    limiter: Arc<KeyedRateLimiter>,
+) -> Response {
+    let ip = request
+        .extensions()
+        .get::<ClientIp>()
+        .map(|c| c.0.as_str())
+        .unwrap_or("unknown");
+    if !limiter.check_key(ip) {
+        return (StatusCode::TOO_MANY_REQUESTS, "Rate limit exceeded").into_response();
+    }
+    next.run(request).await
+}
+
+/// Optional REST rate limit: when limiter is None, passes through; when Some, enforces limit.
+pub async fn rest_rate_limit_middleware_optional(
+    request: Request,
+    next: Next,
+    limiter: Option<Arc<KeyedRateLimiter>>,
+) -> Response {
+    if let Some(l) = limiter {
+        rest_rate_limit_middleware(request, next, l).await
+    } else {
+        next.run(request).await
+    }
 }
 
 /// Tracks WebSocket connection counts for global and per-IP limits.
