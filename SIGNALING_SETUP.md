@@ -161,6 +161,8 @@ When the beacon is reachable from the internet (e.g. behind Cloudflare Zero Trus
 | `BEACON_MAX_BODY_BYTES` | 1000000 | Max request body size in bytes for REST (1 MiB). |
 | `BEACON_MAX_WS_CONNECTIONS` | 0 (unlimited) | Max total WebSocket connections. |
 | `BEACON_MAX_WS_PER_IP` | 0 (unlimited) | Max WebSocket connections per client IP. |
+| `BEACON_RATE_LIMIT_REST_PER_MIN` | 60 | REST requests per minute per IP; 0 = no limit. |
+| `BEACON_RATE_LIMIT_WS_PER_MIN` | 250 | WebSocket messages per minute per IP; 0 = no limit. |
 
 Client IP is taken from **CF-Connecting-IP** (Cloudflare) or **X-Forwarded-For** when behind a proxy; otherwise the direct peer is used. The beacon also sets **X-Content-Type-Options: nosniff** and **X-Frame-Options: DENY** on responses.
 
@@ -170,7 +172,9 @@ Example (Docker):
 environment:
   - BEACON_CORS_ORIGINS=https://your-app.example.com
   - BEACON_MAX_WS_CONNECTIONS=5000
-  - BEACON_MAX_WS_PER_IP=100
+  - BEACON_MAX_WS_PER_IP=7
+  - BEACON_RATE_LIMIT_REST_PER_MIN=60
+  - BEACON_RATE_LIMIT_WS_PER_MIN=250
 ```
 
 ### Cloudflare Tunnel / Reverse proxy

@@ -69,6 +69,17 @@ async fn handle_connection_axum(socket: WebSocket, state: SharedState, client_ip
             msg_opt = ws_receiver.next() => {
                 match msg_opt {
                     Some(Ok(AxumMessage::Text(text))) => {
+                        if let Some(ref limiter) = state.ws_rate_limiter {
+                            if !limiter.check_key(&client_ip) {
+                                let error_msg = SignalingMessage::Error {
+                                    message: "Rate limit exceeded".to_string(),
+                                };
+                                if let Ok(json) = serde_json::to_string(&error_msg) {
+                                    let _ = tx.send(tokio_tungstenite::tungstenite::Message::Text(json));
+                                }
+                                continue;
+                            }
+                        }
                         match serde_json::from_str::<SignalingMessage>(&text) {
                             Ok(msg) => {
                                 if let Err(e) = handle_message(msg, &conn_id, &state, &tx).await {

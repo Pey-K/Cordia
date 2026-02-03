@@ -39,10 +39,16 @@ pub struct AppState {
     pub cpu_percent_cache: Arc<Mutex<Option<f32>>>,
     /// WebSocket connection limits (global and per-IP). Always present; limits 0 = no cap.
     pub connection_tracker: crate::security::SharedConnectionTracker,
+    /// Per-IP WebSocket message rate limiter; None = no limit.
+    pub ws_rate_limiter: Option<Arc<crate::security::KeyedRateLimiter>>,
 }
 
 impl AppState {
-    pub fn new(downtime_secs: Option<u64>, connection_tracker: crate::security::SharedConnectionTracker) -> Self {
+    pub fn new(
+        downtime_secs: Option<u64>,
+        connection_tracker: crate::security::SharedConnectionTracker,
+        ws_rate_limiter: Option<Arc<crate::security::KeyedRateLimiter>>,
+    ) -> Self {
         let now_utc = chrono::Utc::now();
         Self {
             signaling: Arc::new(RwLock::new(SignalingState::new())),
@@ -57,6 +63,7 @@ impl AppState {
             network_prev: Arc::new(Mutex::new(None)),
             cpu_percent_cache: Arc::new(Mutex::new(None)),
             connection_tracker,
+            ws_rate_limiter,
         }
     }
 
