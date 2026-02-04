@@ -378,6 +378,14 @@ export function ServerSyncBootstrap() {
             )
             return
           }
+          if (msg.type === 'FriendRemoved') {
+            window.dispatchEvent(
+              new CustomEvent('cordia:friend-removed', {
+                detail: { from_user_id: msg.from_user_id },
+              })
+            )
+            return
+          }
         } catch (e) {
           // Ignore malformed/unrelated messages
         }

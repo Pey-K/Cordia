@@ -132,6 +132,11 @@ pub struct AcceptDeclineRedemptionBody {
     pub redeemer_user_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RemoveFriendBody {
+    pub friend_user_id: String,
+}
+
 // ---------- Handlers ----------
 
 /// POST /api/friends/requests — send a friend request. Mutual auto-accept: if B already sent to A, accept both.
@@ -158,19 +163,22 @@ pub async fn send_friend_request(
         friends.friend_requests.remove(&key_ba);
         drop(friends);
 
-        let msg_accepted = SignalingMessage::FriendRequestAccepted {
-            from_user_id: to_user_id.clone(),
-            to_user_id: from_user_id.clone(),
-        };
-        let msg_accepted_json = serde_json::to_string(&msg_accepted).unwrap_or_default();
-        let msg_for_requester = SignalingMessage::FriendRequestAccepted {
+        // To B: "A accepted you" (B is to_user_id, A is from_user_id in this request)
+        let msg_to_b = SignalingMessage::FriendRequestAccepted {
             from_user_id: from_user_id.clone(),
             to_user_id: to_user_id.clone(),
         };
-        let msg_for_requester_json = serde_json::to_string(&msg_for_requester).unwrap_or_default();
-
-        state.friends.read().await.send_to_user(&from_user_id, &msg_for_requester_json);
-        state.friends.read().await.send_to_user(&to_user_id, &msg_accepted_json);
+        // To A: "B accepted you" so A adds B
+        let msg_to_a = SignalingMessage::FriendRequestAccepted {
+            from_user_id: to_user_id.clone(),
+            to_user_id: from_user_id.clone(),
+        };
+        if let Ok(jb) = serde_json::to_string(&msg_to_b) {
+            state.friends.read().await.send_to_user(&to_user_id, &jb);
+        }
+        if let Ok(ja) = serde_json::to_string(&msg_to_a) {
+            state.friends.read().await.send_to_user(&from_user_id, &ja);
+        }
         return (StatusCode::OK, Json(serde_json::json!({ "accepted": true, "mutual": true }))).into_response();
     }
 
@@ -218,11 +226,12 @@ pub async fn accept_friend_request(
     };
     drop(friends);
 
-    let msg = SignalingMessage::FriendRequestAccepted {
-        from_user_id: from_user_id.clone(),
-        to_user_id: to_user_id.clone(),
+    // Tell the requester (from_user_id): "to_user_id accepted you" so they add to_user_id to their friends list.
+    let msg_to_requester = SignalingMessage::FriendRequestAccepted {
+        from_user_id: to_user_id.clone(),
+        to_user_id: from_user_id.clone(),
     };
-    if let Ok(json) = serde_json::to_string(&msg) {
+    if let Ok(json) = serde_json::to_string(&msg_to_requester) {
         state.friends.read().await.send_to_user(&from_user_id, &json);
     }
     (StatusCode::OK, Json(serde_json::json!({ "accepted": true }))).into_response()
@@ -254,6 +263,30 @@ pub async fn decline_friend_request(
         state.friends.read().await.send_to_user(&from_user_id, &json);
     }
     (StatusCode::OK, Json(serde_json::json!({ "declined": true }))).into_response()
+}
+
+/// POST /api/friends/remove — remove a friend; notifies the other user so they remove you too (mutual unfriend).
+pub async fn remove_friend(
+    State(state): State<SharedState>,
+    Extension(VerifiedFriendUserId(from_user_id)): Extension<VerifiedFriendUserId>,
+    body: Result<Json<RemoveFriendBody>, JsonRejection>,
+) -> impl IntoResponse {
+    let body = match body {
+        Ok(Json(b)) => b,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid JSON").into_response(),
+    };
+    let friend_user_id = body.friend_user_id.trim().to_string();
+    if friend_user_id.is_empty() || from_user_id == friend_user_id {
+        return (StatusCode::BAD_REQUEST, "Invalid friend_user_id").into_response();
+    }
+
+    let msg = SignalingMessage::FriendRemoved {
+        from_user_id: from_user_id.clone(),
+    };
+    if let Ok(json) = serde_json::to_string(&msg) {
+        state.friends.read().await.send_to_user(&friend_user_id, &json);
+    }
+    (StatusCode::OK, Json(serde_json::json!({ "removed": true }))).into_response()
 }
 
 /// POST /api/friends/codes — create (or get existing) friend code.

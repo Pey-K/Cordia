@@ -337,6 +337,11 @@ pub enum SignalingMessage {
         code_owner_id: String,
         redeemer_user_id: String,
     },
+
+    /// Someone removed you as a friend (remove from_user_id from your local list).
+    FriendRemoved {
+        from_user_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -880,6 +885,7 @@ async fn main() {
         .route("/api/friends/codes/redeem", axum::routing::post(handlers::friends::redeem_friend_code))
         .route("/api/friends/codes/redemptions/accept", axum::routing::post(handlers::friends::accept_code_redemption))
         .route("/api/friends/codes/redemptions/decline", axum::routing::post(handlers::friends::decline_code_redemption))
+        .route("/api/friends/remove", axum::routing::post(handlers::friends::remove_friend))
         .layer(middleware::from_fn(friend_auth_middleware));
 
     let app = Router::new()
