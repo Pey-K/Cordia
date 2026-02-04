@@ -722,7 +722,11 @@ function ServerViewPage() {
             <h2 className="text-xs font-light tracking-wider uppercase text-muted-foreground px-2 mb-3">
               Invite
             </h2>
-            {!getActiveInviteUri() ? (
+            {!server?.has_symmetric_key ? (
+              <p className="text-xs text-muted-foreground px-2">
+                This server cannot create invites (missing key). You can still leave it from Home.
+              </p>
+            ) : !getActiveInviteUri() ? (
               <Button
                 onClick={handleCreateInvite}
                 size="sm"

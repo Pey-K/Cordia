@@ -558,13 +558,16 @@ function ServerListPage() {
         new CustomEvent('cordia:server-removed', { detail: { signing_pubkey: deleteTarget.signing_pubkey } })
       )
 
-      // Best-effort: advertise leave to other members.
+      // Best-effort: advertise leave to other members (requires symmetric key to encrypt hint).
+      // If this fails (e.g. server missing key), we still delete locally so the user can always leave.
       if (identity && signalingStatus === 'connected' && signalingUrl) {
-        // IMPORTANT: publish BEFORE deleting locally (encryption needs the local symmetric key)
-        await publishServerHintMemberLeft(signalingUrl, serverId, identity.user_id)
+        try {
+          await publishServerHintMemberLeft(signalingUrl, serverId, identity.user_id)
+        } catch (_) {
+          // Ignore: allow delete even when we can't notify the beacon (e.g. missing symmetric key).
+        }
       }
 
-      // Delete locally last (so the leave broadcast can be encrypted)
       await deleteServer(serverId)
       await refreshServers()
       setDeleteTarget(null)
