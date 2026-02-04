@@ -1,15 +1,15 @@
-//! Friend API: requests, codes, redemptions. Auth via X-User-Id + X-Timestamp + HMAC(X-Signature).
+//! Friend API: requests, codes, redemptions. Auth via Ed25519-signed envelope (no shared secret).
 
 use axum::{
-    extract::{State, rejection::JsonRejection},
-    http::{HeaderMap, StatusCode},
+    extract::{State, Extension, rejection::JsonRejection},
+    http::{Method, StatusCode},
     response::IntoResponse,
     Json,
 };
 use chrono::Utc;
-use hmac::{Hmac, Mac};
+use ed25519_dalek::Verifier;
 use serde::Deserialize;
-use sha2::Sha256;
+use sha2::{Sha256, Digest};
 use std::sync::Arc;
 
 use crate::state::AppState;
@@ -18,31 +18,34 @@ use crate::SignalingMessage;
 
 type SharedState = Arc<AppState>;
 
-/// Constant-time equality to avoid timing leaks.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
+/// Verified friend API user id (set by middleware). Use as `Extension(uid): Extension<String>` in handlers.
+pub type VerifiedFriendUserId = Extension<String>;
 
-/// Verify X-User-Id, X-Timestamp, X-Signature (HMAC-SHA256 of user_id+timestamp with shared secret).
-/// Returns (user_id,) or Err status + body.
-fn verify_friend_auth(
-    headers: &HeaderMap,
-    secret: &str,
+/// Verify Ed25519-signed friend API request. Envelope: method + "\n" + path + "\n" + timestamp + "\n" + sha256(body).hex().
+/// Returns verified user_id or error. No shared secret; mailbox-style.
+pub fn verify_friend_sig_ed25519(
+    method: &Method,
+    path: &str,
+    headers: &axum::http::HeaderMap,
+    body_bytes: &[u8],
 ) -> Result<String, (StatusCode, &'static str)> {
     let user_id = headers
         .get("x-user-id")
         .and_then(|v| v.to_str().ok())
         .ok_or((StatusCode::UNAUTHORIZED, "Missing X-User-Id"))?
-        .trim();
+        .trim()
+        .to_string();
     let timestamp = headers
         .get("x-timestamp")
         .and_then(|v| v.to_str().ok())
         .ok_or((StatusCode::UNAUTHORIZED, "Missing X-Timestamp"))?
         .trim();
-    let signature = headers
+    let public_key_hex = headers
+        .get("x-public-key")
+        .and_then(|v| v.to_str().ok())
+        .ok_or((StatusCode::UNAUTHORIZED, "Missing X-Public-Key"))?
+        .trim();
+    let signature_b64 = headers
         .get("x-signature")
         .and_then(|v| v.to_str().ok())
         .ok_or((StatusCode::UNAUTHORIZED, "Missing X-Signature"))?
@@ -56,31 +59,43 @@ fn verify_friend_auth(
         return Err((StatusCode::UNAUTHORIZED, "X-Timestamp expired"));
     }
 
-    let payload = format!("{}{}", user_id, timestamp);
-    type HmacSha256 = Hmac<Sha256>;
-    let mut mac =
-        HmacSha256::new_from_slice(secret.as_bytes()).map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "HMAC init"))?;
-    mac.update(payload.as_bytes());
-    let result = mac.finalize();
-    let expected = hex::encode(result.into_bytes());
-    let sig_bytes = hex::decode(signature).map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid X-Signature hex"))?;
-    let expected_bytes = hex::decode(&expected).map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "hex"))?;
-    if !constant_time_eq(&sig_bytes, &expected_bytes) {
-        return Err((StatusCode::UNAUTHORIZED, "Invalid X-Signature"));
-    }
-    Ok(user_id.to_string())
-}
+    let body_hash = if body_bytes.is_empty() {
+        String::new()
+    } else {
+        let mut hasher = Sha256::new();
+        hasher.update(body_bytes);
+        hex::encode(hasher.finalize())
+    };
+    let envelope = format!(
+        "{}\n{}\n{}\n{}",
+        method.as_str().to_uppercase(),
+        path.trim(),
+        ts,
+        body_hash,
+    );
 
-/// Extract authenticated user for friend API. Use in handlers that need State + HeaderMap.
-async fn auth_user(
-    State(state): State<SharedState>,
-    headers: HeaderMap,
-) -> Result<String, (StatusCode, &'static str)> {
-    let secret = state
-        .friend_api_secret
-        .as_deref()
-        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Friend API not configured"))?;
-    verify_friend_auth(&headers, secret)
+    let pubkey_bytes = hex::decode(public_key_hex)
+        .map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid X-Public-Key hex"))?;
+    let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(
+        pubkey_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid X-Public-Key length"))?,
+    ).map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid X-Public-Key"))?;
+    let sig_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, signature_b64)
+        .map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid X-Signature base64"))?;
+    let signature = ed25519_dalek::Signature::from_bytes(
+        sig_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid X-Signature length"))?,
+    );
+
+    verifying_key
+        .verify(envelope.as_bytes(), &signature)
+        .map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid X-Signature"))?;
+
+    Ok(user_id)
 }
 
 // ---------- Request bodies ----------
@@ -114,16 +129,12 @@ pub struct AcceptDeclineRedemptionBody {
 /// POST /api/friends/requests — send a friend request. Mutual auto-accept: if B already sent to A, accept both.
 pub async fn send_friend_request(
     State(state): State<SharedState>,
-    headers: HeaderMap,
+    Extension(from_user_id): Extension<String>,
     body: Result<Json<SendFriendRequestBody>, JsonRejection>,
 ) -> impl IntoResponse {
     let body = match body {
         Ok(Json(b)) => b,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid JSON").into_response(),
-    };
-    let from_user_id = match auth_user(State(state.clone()), headers).await {
-        Ok(u) => u,
-        Err((code, msg)) => return (code, msg).into_response(),
     };
     let to_user_id = body.to_user_id.trim().to_string();
     if to_user_id.is_empty() || from_user_id == to_user_id {
@@ -184,16 +195,12 @@ pub async fn send_friend_request(
 /// POST /api/friends/requests/accept
 pub async fn accept_friend_request(
     State(state): State<SharedState>,
-    headers: HeaderMap,
+    Extension(to_user_id): Extension<String>,
     body: Result<Json<AcceptDeclineBody>, JsonRejection>,
 ) -> impl IntoResponse {
     let body = match body {
         Ok(Json(b)) => b,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid JSON").into_response(),
-    };
-    let to_user_id = match auth_user(State(state.clone()), headers).await {
-        Ok(u) => u,
-        Err((code, msg)) => return (code, msg).into_response(),
     };
     let from_user_id = body.from_user_id.trim().to_string();
     let key = (from_user_id.clone(), to_user_id.clone());
@@ -216,16 +223,12 @@ pub async fn accept_friend_request(
 /// POST /api/friends/requests/decline
 pub async fn decline_friend_request(
     State(state): State<SharedState>,
-    headers: HeaderMap,
+    Extension(to_user_id): Extension<String>,
     body: Result<Json<AcceptDeclineBody>, JsonRejection>,
 ) -> impl IntoResponse {
     let body = match body {
         Ok(Json(b)) => b,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid JSON").into_response(),
-    };
-    let to_user_id = match auth_user(State(state.clone()), headers).await {
-        Ok(u) => u,
-        Err((code, msg)) => return (code, msg).into_response(),
     };
     let from_user_id = body.from_user_id.trim().to_string();
     let key = (from_user_id.clone(), to_user_id.clone());
@@ -248,12 +251,8 @@ pub async fn decline_friend_request(
 /// POST /api/friends/codes — create (or get existing) friend code.
 pub async fn create_friend_code(
     State(state): State<SharedState>,
-    headers: HeaderMap,
+    Extension(owner_user_id): Extension<String>,
 ) -> impl IntoResponse {
-    let owner_user_id = match auth_user(State(state.clone()), headers).await {
-        Ok(u) => u,
-        Err((code, msg)) => return (code, msg).into_response(),
-    };
     const CODE_LEN: usize = 8;
     let code: String = (0..CODE_LEN)
         .map(|_| {
@@ -284,12 +283,8 @@ pub async fn create_friend_code(
 /// POST /api/friends/codes/revoke
 pub async fn revoke_friend_code(
     State(state): State<SharedState>,
-    headers: HeaderMap,
+    Extension(owner_user_id): Extension<String>,
 ) -> impl IntoResponse {
-    let owner_user_id = match auth_user(State(state.clone()), headers).await {
-        Ok(u) => u,
-        Err((code, msg)) => return (code, msg).into_response(),
-    };
     let mut friends = state.friends.write().await;
     let mut revoked = false;
     for v in friends.friend_codes.values_mut() {
@@ -305,20 +300,19 @@ pub async fn revoke_friend_code(
 /// POST /api/friends/codes/redeem — use someone's code; they get a pending redemption.
 pub async fn redeem_friend_code(
     State(state): State<SharedState>,
-    headers: HeaderMap,
+    Extension(_redeemer_user_id): Extension<String>,
     body: Result<Json<RedeemCodeBody>, JsonRejection>,
 ) -> impl IntoResponse {
     let body = match body {
         Ok(Json(b)) => b,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid JSON").into_response(),
     };
-    let _redeemer = match auth_user(State(state.clone()), headers).await {
-        Ok(u) => u,
-        Err((code, msg)) => return (code, msg).into_response(),
-    };
     let code = body.code.trim().to_uppercase();
     let redeemer_user_id = body.redeemer_user_id.trim().to_string();
     let redeemer_display_name = body.redeemer_display_name.trim().to_string();
+    if redeemer_user_id != _redeemer_user_id {
+        return (StatusCode::BAD_REQUEST, "redeemer_user_id must match authenticated user").into_response();
+    }
 
     let mut friends = state.friends.write().await;
     let Some(fc) = friends.friend_codes.get(&code) else {
@@ -360,16 +354,12 @@ pub async fn redeem_friend_code(
 /// POST /api/friends/codes/redemptions/accept
 pub async fn accept_code_redemption(
     State(state): State<SharedState>,
-    headers: HeaderMap,
+    Extension(code_owner_id): Extension<String>,
     body: Result<Json<AcceptDeclineRedemptionBody>, JsonRejection>,
 ) -> impl IntoResponse {
     let body = match body {
         Ok(Json(b)) => b,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid JSON").into_response(),
-    };
-    let code_owner_id = match auth_user(State(state.clone()), headers).await {
-        Ok(u) => u,
-        Err((code, msg)) => return (code, msg).into_response(),
     };
     let redeemer_user_id = body.redeemer_user_id.trim().to_string();
     let mut friends = state.friends.write().await;
@@ -398,16 +388,12 @@ pub async fn accept_code_redemption(
 /// POST /api/friends/codes/redemptions/decline
 pub async fn decline_code_redemption(
     State(state): State<SharedState>,
-    headers: HeaderMap,
+    Extension(code_owner_id): Extension<String>,
     body: Result<Json<AcceptDeclineRedemptionBody>, JsonRejection>,
 ) -> impl IntoResponse {
     let body = match body {
         Ok(Json(b)) => b,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid JSON").into_response(),
-    };
-    let code_owner_id = match auth_user(State(state.clone()), headers).await {
-        Ok(u) => u,
-        Err((code, msg)) => return (code, msg).into_response(),
     };
     let redeemer_user_id = body.redeemer_user_id.trim().to_string();
     let mut friends = state.friends.write().await;

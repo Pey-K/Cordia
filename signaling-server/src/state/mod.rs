@@ -44,8 +44,6 @@ pub struct AppState {
     pub connection_tracker: crate::security::SharedConnectionTracker,
     /// Per-IP WebSocket message rate limiter; None = no limit.
     pub ws_rate_limiter: Option<Arc<crate::security::KeyedRateLimiter>>,
-    /// Shared secret for friend API HMAC auth (env SIGNALING_FRIEND_API_SECRET). None = friend API disabled.
-    pub friend_api_secret: Option<String>,
 }
 
 impl AppState {
@@ -53,7 +51,6 @@ impl AppState {
         downtime_secs: Option<u64>,
         connection_tracker: crate::security::SharedConnectionTracker,
         ws_rate_limiter: Option<Arc<crate::security::KeyedRateLimiter>>,
-        friend_api_secret: Option<String>,
     ) -> Self {
         let now_utc = chrono::Utc::now();
         Self {
@@ -71,7 +68,6 @@ impl AppState {
             cpu_percent_cache: Arc::new(Mutex::new(None)),
             connection_tracker,
             ws_rate_limiter,
-            friend_api_secret,
         }
     }
 
