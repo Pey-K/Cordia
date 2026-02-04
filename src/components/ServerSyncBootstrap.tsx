@@ -338,7 +338,11 @@ export function ServerSyncBootstrap() {
           if (msg.type === 'FriendRequestAccepted') {
             window.dispatchEvent(
               new CustomEvent('cordia:friend-request-accepted', {
-                detail: { from_user_id: msg.from_user_id, to_user_id: msg.to_user_id },
+                detail: {
+                  from_user_id: msg.from_user_id,
+                  to_user_id: msg.to_user_id,
+                  from_display_name: msg.from_display_name ?? null,
+                },
               })
             )
             return
@@ -365,7 +369,11 @@ export function ServerSyncBootstrap() {
           if (msg.type === 'FriendCodeRedemptionAccepted') {
             window.dispatchEvent(
               new CustomEvent('cordia:friend-code-redemption-accepted', {
-                detail: { code_owner_id: msg.code_owner_id, redeemer_user_id: msg.redeemer_user_id },
+                detail: {
+                  code_owner_id: msg.code_owner_id,
+                  redeemer_user_id: msg.redeemer_user_id,
+                  code_owner_display_name: msg.code_owner_display_name ?? null,
+                },
               })
             )
             return

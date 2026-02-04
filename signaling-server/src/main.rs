@@ -306,10 +306,13 @@ pub enum SignalingMessage {
         created_at: String,
     },
 
-    /// Your friend request was accepted (add to_user_id to local friends).
+    /// Your friend request was accepted (add from_user_id to local friends).
+    /// from_display_name is the accepter's name so the requester can show it if not in a shared server.
     FriendRequestAccepted {
         from_user_id: String,
         to_user_id: String,
+        #[serde(default)]
+        from_display_name: Option<String>,
     },
 
     /// Your friend request was declined.
@@ -327,9 +330,12 @@ pub enum SignalingMessage {
     },
 
     /// Code owner accepted you (add code_owner_id to local friends).
+    /// code_owner_display_name so the redeemer can show it if not in a shared server.
     FriendCodeRedemptionAccepted {
         code_owner_id: String,
         redeemer_user_id: String,
+        #[serde(default)]
+        code_owner_display_name: Option<String>,
     },
 
     /// Code owner declined you.
