@@ -126,3 +126,13 @@ export async function declineCodeRedemption(
     body: { redeemer_user_id: redeemerUserId },
   }) as Promise<{ declined: boolean }>
 }
+
+export async function removeFriend(
+  signalingUrl: string,
+  friendUserId: string
+): Promise<{ removed: boolean }> {
+  return friendFetch(signalingUrl, '/remove', {
+    method: 'POST',
+    body: { friend_user_id: friendUserId },
+  }) as Promise<{ removed: boolean }>
+}

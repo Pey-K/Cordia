@@ -427,6 +427,37 @@ function ServerListPage() {
     return Array.from(set)
   }, [friends, pendingOutgoing])
 
+  // Merge incoming requests and code redemptions by user_id so the same user doesn't appear twice
+  const mergedIncoming = useMemo(() => {
+    const byId = new Map<
+      string,
+      { userId: string; displayName: string; fromRequest: boolean; fromRedemption: boolean }
+    >()
+    for (const r of pendingIncoming) {
+      byId.set(r.from_user_id, {
+        userId: r.from_user_id,
+        displayName:
+          remoteProfiles.getProfile(r.from_user_id)?.display_name ?? r.from_display_name ?? 'Unknown',
+        fromRequest: true,
+        fromRedemption: false,
+      })
+    }
+    for (const r of redemptions) {
+      const existing = byId.get(r.redeemer_user_id)
+      byId.set(r.redeemer_user_id, {
+        userId: r.redeemer_user_id,
+        displayName:
+          existing?.displayName ??
+          remoteProfiles.getProfile(r.redeemer_user_id)?.display_name ??
+          r.redeemer_display_name ??
+          'Unknown',
+        fromRequest: existing?.fromRequest ?? false,
+        fromRedemption: true,
+      })
+    }
+    return Array.from(byId.values())
+  }, [pendingIncoming, redemptions, remoteProfiles])
+
   const sortedFriendsWithPresence = useMemo(() => {
     return friendAndPendingIds
       .map(userId => {
@@ -947,37 +978,38 @@ function ServerListPage() {
                   </div>
                 </div>
                 <div className="mt-3 flex-1 min-h-0 overflow-y-auto space-y-3 pr-1">
-                  {pendingIncoming.length > 0 && (
+                  {mergedIncoming.length > 0 && (
                     <div>
                       <p className="text-[11px] font-light tracking-wider uppercase text-muted-foreground mb-1">
                         Incoming
                       </p>
                       <div className="space-y-1">
-                        {pendingIncoming.map((r) => (
+                        {mergedIncoming.map((entry) => (
                           <div
-                            key={r.from_user_id}
+                            key={entry.userId}
                             className="flex items-center gap-2 py-2 px-2 rounded-md bg-accent/20 min-w-0"
                           >
                             <div
                               className="h-8 w-8 shrink-0 grid place-items-center rounded-none ring-2 ring-background"
-                              style={avatarStyleForUser(r.from_user_id)}
+                              style={avatarStyleForUser(entry.userId)}
                             >
                               <span className="text-[10px] font-mono tracking-wider">
-                                {getInitials(remoteProfiles.getProfile(r.from_user_id)?.display_name ?? r.from_display_name ?? '?')}
+                                {getInitials(entry.displayName)}
                               </span>
                             </div>
                             <div className="min-w-0 flex-1">
-                              <p className="text-sm font-light truncate">
-                                {remoteProfiles.getProfile(r.from_user_id)?.display_name ?? r.from_display_name ?? 'Unknown'}
-                              </p>
+                              <p className="text-sm font-light truncate">{entry.displayName}</p>
                             </div>
                             <div className="flex gap-1 shrink-0">
                               <Button
                                 variant="ghost"
                                 size="icon"
                                 className="h-8 w-8 text-green-600"
-                                onClick={() => acceptFriendRequest(r.from_user_id)}
                                 title="Accept"
+                                onClick={async () => {
+                                  if (entry.fromRequest) await acceptFriendRequest(entry.userId).catch(() => {})
+                                  if (entry.fromRedemption) await acceptCodeRedemption(entry.userId).catch(() => {})
+                                }}
                               >
                                 <Check className="h-3.5 w-3.5" />
                               </Button>
@@ -985,8 +1017,11 @@ function ServerListPage() {
                                 variant="ghost"
                                 size="icon"
                                 className="h-8 w-8 text-destructive"
-                                onClick={() => declineFriendRequest(r.from_user_id)}
                                 title="Decline"
+                                onClick={async () => {
+                                  if (entry.fromRequest) await declineFriendRequest(entry.userId).catch(() => {})
+                                  if (entry.fromRedemption) await declineCodeRedemption(entry.userId).catch(() => {})
+                                }}
                               >
                                 <XCircle className="h-3.5 w-3.5" />
                               </Button>
@@ -996,54 +1031,7 @@ function ServerListPage() {
                       </div>
                     </div>
                   )}
-                  {redemptions.length > 0 && (
-                    <div>
-                      <p className="text-[11px] font-light tracking-wider uppercase text-muted-foreground mb-1">
-                        Code used
-                      </p>
-                      <div className="space-y-1">
-                        {redemptions.map((r) => (
-                          <div
-                            key={r.redeemer_user_id}
-                            className="flex items-center gap-2 py-2 px-2 rounded-md bg-accent/20 min-w-0"
-                          >
-                            <div
-                              className="h-8 w-8 shrink-0 grid place-items-center rounded-none ring-2 ring-background"
-                              style={avatarStyleForUser(r.redeemer_user_id)}
-                            >
-                              <span className="text-[10px] font-mono tracking-wider">
-                                {getInitials(r.redeemer_display_name)}
-                              </span>
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <p className="text-sm font-light truncate">{r.redeemer_display_name}</p>
-                            </div>
-                            <div className="flex gap-1 shrink-0">
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 text-green-600"
-                                onClick={() => acceptCodeRedemption(r.redeemer_user_id)}
-                                title="Accept"
-                              >
-                                <Check className="h-3.5 w-3.5" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 text-destructive"
-                                onClick={() => declineCodeRedemption(r.redeemer_user_id)}
-                                title="Decline"
-                              >
-                                <XCircle className="h-3.5 w-3.5" />
-                              </Button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {friends.length === 0 && pendingIncoming.length === 0 && redemptions.length === 0 ? (
+                  {friends.length === 0 && mergedIncoming.length === 0 ? (
                     <p className="text-sm font-light leading-relaxed text-muted-foreground">
                       Add friends from server members: open their profile and choose Send friend request. Or create a
                       friend code to share.
@@ -1063,11 +1051,11 @@ function ServerListPage() {
                         return (
                           <div
                             key={userId}
-                            className="flex items-center gap-2 py-2 px-2 rounded-md hover:bg-accent/30 min-w-0"
+                            className={`flex items-center gap-2 py-2 px-2 rounded-md hover:bg-accent/30 min-w-0 ${pending ? 'opacity-75' : ''}`}
                           >
                             <button
                               type="button"
-                              className="relative h-8 w-8 shrink-0 grid place-items-center rounded-none ring-2 ring-background focus:outline-none"
+                              className={`relative h-8 w-8 shrink-0 grid place-items-center rounded-none ring-2 ring-background focus:outline-none ${pending ? 'grayscale' : ''}`}
                               style={avatarStyleForUser(userId)}
                               onClick={(e) => {
                                 e.stopPropagation()
@@ -1116,7 +1104,7 @@ function ServerListPage() {
                     </div>
                   )}
                 </div>
-                {(friends.length > 0 || pendingIncoming.length > 0) && (
+                {(friends.length > 0 || mergedIncoming.length > 0) && (
                   <p className="mt-2 text-xs font-mono text-muted-foreground shrink-0">
                     {sortedFriendsWithPresence.filter((f) => f.bestLevel !== 'offline').length} online
                   </p>

@@ -81,10 +81,20 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
     await refreshFriends()
   }, [refreshFriends])
 
-  const removeFriend = useCallback(async (userId: string) => {
-    await removeFriendTauri(userId)
-    await refreshFriends()
-  }, [refreshFriends])
+  const removeFriend = useCallback(
+    async (userId: string) => {
+      if (signalingUrl) {
+        try {
+          await friendApi.removeFriend(signalingUrl, userId)
+        } catch (e) {
+          console.warn('Beacon remove-friend notify failed:', e)
+        }
+      }
+      await removeFriendTauri(userId)
+      await refreshFriends()
+    },
+    [refreshFriends, signalingUrl]
+  )
 
   const isFriend = useCallback((userId: string) => friends.includes(userId), [friends])
   const hasPendingOutgoing = useCallback((userId: string) => pendingOutgoing.includes(userId), [pendingOutgoing])
@@ -241,6 +251,13 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
         setPendingOutgoing((prev) => prev.filter((id) => id !== d.code_owner_id))
       }
     }
+    const onFriendRemoved = (e: Event) => {
+      const ev = e as CustomEvent<{ from_user_id: string }>
+      const d = ev.detail
+      if (d?.from_user_id) {
+        removeFriendTauri(d.from_user_id).then(() => refreshFriends()).catch(console.error)
+      }
+    }
 
     window.addEventListener('cordia:friend-pending-snapshot', onPendingSnapshot)
     window.addEventListener('cordia:friend-request-incoming', onRequestIncoming)
@@ -249,6 +266,7 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
     window.addEventListener('cordia:friend-code-redemption-incoming', onRedemptionIncoming)
     window.addEventListener('cordia:friend-code-redemption-accepted', onRedemptionAccepted)
     window.addEventListener('cordia:friend-code-redemption-declined', onRedemptionDeclined)
+    window.addEventListener('cordia:friend-removed', onFriendRemoved)
     return () => {
       window.removeEventListener('cordia:friend-pending-snapshot', onPendingSnapshot)
       window.removeEventListener('cordia:friend-request-incoming', onRequestIncoming)
@@ -257,8 +275,9 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
       window.removeEventListener('cordia:friend-code-redemption-incoming', onRedemptionIncoming)
       window.removeEventListener('cordia:friend-code-redemption-accepted', onRedemptionAccepted)
       window.removeEventListener('cordia:friend-code-redemption-declined', onRedemptionDeclined)
+      window.removeEventListener('cordia:friend-removed', onFriendRemoved)
     }
-  }, [addFriend])
+  }, [addFriend, refreshFriends])
 
   const value: FriendsContextType = {
     friends,
