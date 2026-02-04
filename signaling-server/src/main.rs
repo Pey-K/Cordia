@@ -48,6 +48,7 @@ pub(crate) fn decode_path_segment(seg: &str) -> String {
 }
 
 /// Middleware for /api/friends/*: verify Ed25519-signed request, then insert Extension(verified_user_id).
+/// Request path is stripped by Nest, so use full path for verification (client signs /api/friends/...).
 async fn friend_auth_middleware(request: Request, next: Next) -> Response {
     let (mut parts, body) = request.into_parts();
     let body_bytes = match body.collect().await {
@@ -56,7 +57,7 @@ async fn friend_auth_middleware(request: Request, next: Next) -> Response {
             return (StatusCode::INTERNAL_SERVER_ERROR, "Body read failed").into_response();
         }
     };
-    let path = parts.uri.path().to_string();
+    let path = format!("/api/friends{}", parts.uri.path());
     let method = parts.method.clone();
     let verified_user_id = match handlers::friends::verify_friend_sig_ed25519(
         &method,

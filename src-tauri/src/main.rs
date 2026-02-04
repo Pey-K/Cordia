@@ -859,8 +859,10 @@ async fn fetch_and_import_server_hint_opaque(signaling_server: String, signing_p
     let local_server = manager.load_server(&server_id)
         .map_err(|e| format!("Failed to load local house: {}", e))?;
 
-    let symmetric_key = local_server.get_symmetric_key()
-        .ok_or_else(|| "Cannot decrypt hint: missing symmetric key (join via invite first)".to_string())?;
+    let Some(symmetric_key) = local_server.get_symmetric_key() else {
+        // Server exists but has no key (e.g. created in a bad state). Can't decrypt hint; skip without error.
+        return Ok(false);
+    };
 
     let decrypted = decrypt_server_hint(&symmetric_key, &hint.encrypted_state)?;
 
