@@ -1,6 +1,6 @@
 /**
- * Friend API: calls to signaling server /api/friends/* with HMAC auth.
- * Uses getFriendAuthHeaders() and getHttpUrl(signalingUrl) for base URL.
+ * Friend API: calls to signaling server /api/friends/* with Ed25519-signed auth.
+ * Each request is signed with identity key (method + path + timestamp + body hash).
  */
 
 import { getFriendAuthHeaders } from './tauri'
@@ -12,8 +12,10 @@ async function friendFetch(
   options: { method: string; body?: object }
 ): Promise<unknown> {
   const base = getHttpUrl(signalingUrl)
-  const url = `${base.replace(/\/$/, '')}/api/friends${path}`
-  const headers = await getFriendAuthHeaders()
+  const fullPath = `/api/friends${path}`
+  const url = `${base.replace(/\/$/, '')}${fullPath}`
+  const bodyStr = options.body != null ? JSON.stringify(options.body) : undefined
+  const headers = await getFriendAuthHeaders(options.method, fullPath, bodyStr ?? null)
   const reqHeaders: Record<string, string> = {
     'Content-Type': 'application/json',
     ...headers,
@@ -21,7 +23,7 @@ async function friendFetch(
   const res = await fetch(url, {
     method: options.method,
     headers: reqHeaders,
-    body: options.body ? JSON.stringify(options.body) : undefined,
+    body: bodyStr,
   })
   if (!res.ok) {
     const text = await res.text()

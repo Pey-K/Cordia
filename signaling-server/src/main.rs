@@ -9,19 +9,23 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
+    body::Body,
+    extract::Request,
     http::{HeaderValue, StatusCode},
-    response::Html,
+    middleware::Next,
+    response::{Html, IntoResponse, Response},
     routing::get,
     Router,
 };
+use axum::middleware;
 use chrono::{DateTime, Duration, Utc};
+use http_body_util::BodyExt;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
-use axum::middleware;
 
 #[cfg(feature = "postgres")]
 use sqlx::postgres::PgPoolOptions;
@@ -41,6 +45,31 @@ pub(crate) fn decode_path_segment(seg: &str) -> String {
         Ok(s) => s.into_owned(),
         Err(_) => seg.to_string(),
     }
+}
+
+/// Middleware for /api/friends/*: verify Ed25519-signed request, then insert Extension(verified_user_id).
+async fn friend_auth_middleware(request: Request, next: Next) -> Response {
+    let (mut parts, body) = request.into_parts();
+    let body_bytes = match body.collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Body read failed").into_response();
+        }
+    };
+    let path = parts.uri.path().to_string();
+    let method = parts.method.clone();
+    let verified_user_id = match handlers::friends::verify_friend_sig_ed25519(
+        &method,
+        &path,
+        &parts.headers,
+        &body_bytes,
+    ) {
+        Ok(uid) => uid,
+        Err((code, msg)) => return (code, msg).into_response(),
+    };
+    parts.extensions.insert(axum::extract::Extension(verified_user_id));
+    let request = Request::from_parts(parts, Body::from(body_bytes));
+    next.run(request).await
 }
 
 // Invite tokens are temporary and opaque to the server. Clients encrypt payloads; the server only stores/forwards.
@@ -675,9 +704,8 @@ async fn main() {
     }
 
     let downtime_secs = read_downtime_secs();
-    let friend_api_secret = std::env::var("SIGNALING_FRIEND_API_SECRET").ok();
     let addr: SocketAddr = "0.0.0.0:9001".parse().expect("Invalid address");
-    let state = Arc::new(AppState::new(downtime_secs, connection_tracker, ws_rate_limiter, friend_api_secret));
+    let state = Arc::new(AppState::new(downtime_secs, connection_tracker, ws_rate_limiter));
 
     // Optional Postgres durability (profiles first; others later)
     #[cfg(feature = "postgres")]
@@ -839,19 +867,23 @@ async fn main() {
         .route("/events/ack", axum::routing::post(handlers::http::ack_events))
         .route("/ack", axum::routing::post(handlers::http::ack_events));
 
+    let friend_routes = Router::new()
+        .route("/requests", axum::routing::post(handlers::friends::send_friend_request))
+        .route("/requests/accept", axum::routing::post(handlers::friends::accept_friend_request))
+        .route("/requests/decline", axum::routing::post(handlers::friends::decline_friend_request))
+        .route("/codes", axum::routing::post(handlers::friends::create_friend_code))
+        .route("/codes/revoke", axum::routing::post(handlers::friends::revoke_friend_code))
+        .route("/codes/redeem", axum::routing::post(handlers::friends::redeem_friend_code))
+        .route("/codes/redemptions/accept", axum::routing::post(handlers::friends::accept_code_redemption))
+        .route("/codes/redemptions/decline", axum::routing::post(handlers::friends::decline_code_redemption))
+        .layer(middleware::from_fn(friend_auth_middleware));
+
     let app = Router::new()
         .route("/api/status", get(handlers::http::get_status))
         .route("/api/invites/:code", get(handlers::http::get_invite))
         .route("/api/invites/:code/redeem", axum::routing::post(handlers::http::redeem_invite))
         .route("/api/invites/:code/revoke", axum::routing::post(handlers::http::revoke_invite))
-        .route("/api/friends/requests", axum::routing::post(handlers::friends::send_friend_request))
-        .route("/api/friends/requests/accept", axum::routing::post(handlers::friends::accept_friend_request))
-        .route("/api/friends/requests/decline", axum::routing::post(handlers::friends::decline_friend_request))
-        .route("/api/friends/codes", axum::routing::post(handlers::friends::create_friend_code))
-        .route("/api/friends/codes/revoke", axum::routing::post(handlers::friends::revoke_friend_code))
-        .route("/api/friends/codes/redeem", axum::routing::post(handlers::friends::redeem_friend_code))
-        .route("/api/friends/codes/redemptions/accept", axum::routing::post(handlers::friends::accept_code_redemption))
-        .route("/api/friends/codes/redemptions/decline", axum::routing::post(handlers::friends::decline_code_redemption))
+        .nest("/api/friends", friend_routes)
         .nest("/api/servers/:signing_pubkey", server_routes)
         .route("/health", get(|| async { "ok" }))
         .route("/", get(status_page_handler))

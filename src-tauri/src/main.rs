@@ -1262,27 +1262,55 @@ fn remove_friend(user_id: String) -> Result<(), String> {
         .map_err(|e| format!("Failed to save friends: {}", e))
 }
 
-/// Returns headers for friend API auth (X-User-Id + X-Timestamp + HMAC X-Signature).
-/// Requires env FRIEND_API_SECRET to match the signaling server's SIGNALING_FRIEND_API_SECRET.
+/// Returns headers for friend API auth: request signed with identity Ed25519 key.
+/// Envelope: method + "\n" + path + "\n" + timestamp + "\n" + sha256(body).hex().
+/// No shared secret; server verifies signature with public key (mailbox-style).
 #[tauri::command]
-fn get_friend_auth_headers() -> Result<std::collections::HashMap<String, String>, String> {
-    use hmac::Mac;
+fn get_friend_auth_headers(
+    method: String,
+    path: String,
+    body: Option<String>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    use ed25519_dalek::Signer;
 
-    let user_id = require_session()?;
-    let secret = std::env::var("FRIEND_API_SECRET")
-        .map_err(|_| "Friend API secret not set (set FRIEND_API_SECRET to match server)")?;
+    let _ = require_session()?;
+    let manager = IdentityManager::new()
+        .map_err(|e| format!("Identity manager: {}", e))?;
+    let identity = manager.load_identity()
+        .map_err(|e| format!("Load identity: {}", e))?;
+    let private_key_hex = identity.private_key
+        .as_ref()
+        .ok_or("Identity has no private key (exported?)")?;
+    let private_key_bytes = hex::decode(private_key_hex)
+        .map_err(|e| format!("Invalid private key hex: {}", e))?;
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(
+        private_key_bytes.as_slice().try_into()
+            .map_err(|_| "Invalid private key length")?,
+    );
+
     let timestamp = chrono::Utc::now().timestamp();
-    let payload = format!("{}{}", user_id, timestamp);
-    let mut mac = <hmac::Hmac<sha2::Sha256> as Mac>::new_from_slice(secret.as_bytes())
-        .map_err(|e| format!("HMAC init failed: {}", e))?;
-    mac.update(payload.as_bytes());
-    let result = mac.finalize();
-    let signature = hex::encode(result.into_bytes());
+    let body_hash = match body.as_deref().unwrap_or("") {
+        "" => String::new(),
+        b => {
+            use sha2::Digest;
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(b.as_bytes());
+            hex::encode(hasher.finalize())
+        }
+    };
+    let envelope = format!("{}\n{}\n{}\n{}",
+        method.to_uppercase(),
+        path.trim(),
+        timestamp,
+        body_hash,
+    );
+    let signature = signing_key.sign(envelope.as_bytes());
 
     let mut headers = std::collections::HashMap::new();
-    headers.insert("X-User-Id".to_string(), user_id);
+    headers.insert("X-User-Id".to_string(), identity.user_id);
     headers.insert("X-Timestamp".to_string(), timestamp.to_string());
-    headers.insert("X-Signature".to_string(), signature);
+    headers.insert("X-Public-Key".to_string(), identity.public_key.clone());
+    headers.insert("X-Signature".to_string(), base64::encode(signature.to_bytes()));
     Ok(headers)
 }
 

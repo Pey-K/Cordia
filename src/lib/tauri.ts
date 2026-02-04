@@ -263,11 +263,20 @@ export async function removeFriend(userId: string): Promise<void> {
 }
 
 /**
- * Headers for friend API auth (X-User-Id + X-Timestamp + HMAC X-Signature).
- * Requires FRIEND_API_SECRET env to match server's SIGNALING_FRIEND_API_SECRET.
+ * Headers for friend API auth: request signed with identity Ed25519 key.
+ * Pass method, full path (e.g. /api/friends/requests), and optional body string.
+ * No shared secret; server verifies signature with public key.
  */
-export async function getFriendAuthHeaders(): Promise<Record<string, string>> {
-  return await invoke<Record<string, string>>('get_friend_auth_headers')
+export async function getFriendAuthHeaders(
+  method: string,
+  path: string,
+  body?: string | null
+): Promise<Record<string, string>> {
+  return await invoke<Record<string, string>>('get_friend_auth_headers', {
+    method,
+    path,
+    body: body ?? null,
+  })
 }
 
 export async function registerKeyFileAssociation(): Promise<void> {
