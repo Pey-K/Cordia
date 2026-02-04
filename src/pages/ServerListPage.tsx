@@ -1007,8 +1007,17 @@ function ServerListPage() {
                                 className="h-8 w-8 text-green-600"
                                 title="Accept"
                                 onClick={async () => {
-                                  if (entry.fromRequest) await acceptFriendRequest(entry.userId).catch(() => {})
-                                  if (entry.fromRedemption) await acceptCodeRedemption(entry.userId).catch(() => {})
+                                  // Seed remote profile so friends list shows correct name (for users not in shared servers)
+                                  remoteProfiles.applyUpdate({
+                                    user_id: entry.userId,
+                                    display_name: entry.displayName,
+                                    secondary_name: null,
+                                    show_secondary: false,
+                                    rev: 1,
+                                  })
+                                  const myDisplayName = identity?.display_name ?? profile?.display_name ?? undefined
+                                  if (entry.fromRequest) await acceptFriendRequest(entry.userId, myDisplayName).catch(() => {})
+                                  if (entry.fromRedemption) await acceptCodeRedemption(entry.userId, myDisplayName).catch(() => {})
                                 }}
                               >
                                 <Check className="h-3.5 w-3.5" />
@@ -1031,7 +1040,7 @@ function ServerListPage() {
                       </div>
                     </div>
                   )}
-                  {friends.length === 0 && mergedIncoming.length === 0 ? (
+                  {friends.length === 0 && mergedIncoming.length === 0 && pendingOutgoing.length === 0 ? (
                     <p className="text-sm font-light leading-relaxed text-muted-foreground">
                       Add friends from server members: open their profile and choose Send friend request. Or create a
                       friend code to share.
@@ -1104,7 +1113,7 @@ function ServerListPage() {
                     </div>
                   )}
                 </div>
-                {(friends.length > 0 || mergedIncoming.length > 0) && (
+                {(friends.length > 0 || mergedIncoming.length > 0 || pendingOutgoing.length > 0) && (
                   <p className="mt-2 text-xs font-mono text-muted-foreground shrink-0">
                     {sortedFriendsWithPresence.filter((f) => f.bestLevel !== 'offline').length} online
                   </p>

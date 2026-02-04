@@ -3,6 +3,7 @@ import { listFriends, addFriend as addFriendTauri, removeFriend as removeFriendT
 import { useAccount } from './AccountContext'
 import { useSignaling } from './SignalingContext'
 import { useIdentity } from './IdentityContext'
+import { useRemoteProfiles } from './RemoteProfilesContext'
 import * as friendApi from '../lib/friend-api'
 
 export interface PendingIncomingItem {
@@ -27,12 +28,12 @@ interface FriendsContextType {
   isFriend: (userId: string) => boolean
   hasPendingOutgoing: (userId: string) => boolean
   sendFriendRequest: (toUserId: string, fromDisplayName?: string) => Promise<void>
-  acceptFriendRequest: (fromUserId: string) => Promise<void>
+  acceptFriendRequest: (fromUserId: string, accepterDisplayName?: string) => Promise<void>
   declineFriendRequest: (fromUserId: string) => Promise<void>
   createFriendCode: () => Promise<string>
   revokeFriendCode: () => Promise<void>
   redeemFriendCode: (code: string, redeemerDisplayName: string) => Promise<void>
-  acceptCodeRedemption: (redeemerUserId: string) => Promise<void>
+  acceptCodeRedemption: (redeemerUserId: string, codeOwnerDisplayName?: string) => Promise<void>
   declineCodeRedemption: (redeemerUserId: string) => Promise<void>
 }
 
@@ -47,6 +48,7 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
   const { currentAccountId } = useAccount()
   const { signalingUrl } = useSignaling()
   const { identity } = useIdentity()
+  const { applyUpdate: applyRemoteProfile } = useRemoteProfiles()
   const identityUserIdRef = useRef<string | null>(null)
 
   useEffect(() => {
@@ -114,9 +116,9 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
   )
 
   const acceptFriendRequest = useCallback(
-    async (fromUserId: string) => {
+    async (fromUserId: string, accepterDisplayName?: string) => {
       if (!signalingUrl) throw new Error('No beacon configured')
-      await friendApi.acceptFriendRequest(signalingUrl, fromUserId)
+      await friendApi.acceptFriendRequest(signalingUrl, fromUserId, accepterDisplayName)
       setPendingIncoming((prev) => prev.filter((r) => r.from_user_id !== fromUserId))
       await addFriend(fromUserId)
     },
@@ -156,9 +158,9 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
   )
 
   const acceptCodeRedemption = useCallback(
-    async (redeemerUserId: string) => {
+    async (redeemerUserId: string, codeOwnerDisplayName?: string) => {
       if (!signalingUrl) throw new Error('No beacon configured')
-      await friendApi.acceptCodeRedemption(signalingUrl, redeemerUserId)
+      await friendApi.acceptCodeRedemption(signalingUrl, redeemerUserId, codeOwnerDisplayName)
       setRedemptions((prev) => prev.filter((r) => r.redeemer_user_id !== redeemerUserId))
       await addFriend(redeemerUserId)
     },
@@ -211,10 +213,19 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
       }
     }
     const onRequestAccepted = (e: Event) => {
-      const ev = e as CustomEvent<{ from_user_id: string; to_user_id: string }>
+      const ev = e as CustomEvent<{ from_user_id: string; to_user_id: string; from_display_name?: string | null }>
       const d = ev.detail
       if (d && identityUserIdRef.current === d.to_user_id) {
         setPendingOutgoing((prev) => prev.filter((id) => id !== d.from_user_id))
+        if (d.from_display_name) {
+          applyRemoteProfile({
+            user_id: d.from_user_id,
+            display_name: d.from_display_name,
+            secondary_name: null,
+            show_secondary: false,
+            rev: 1,
+          })
+        }
         addFriend(d.from_user_id).catch(console.error)
       }
     }
@@ -237,10 +248,23 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
       }
     }
     const onRedemptionAccepted = (e: Event) => {
-      const ev = e as CustomEvent<{ code_owner_id: string; redeemer_user_id: string }>
+      const ev = e as CustomEvent<{
+        code_owner_id: string
+        redeemer_user_id: string
+        code_owner_display_name?: string | null
+      }>
       const d = ev.detail
       if (d && identityUserIdRef.current === d.redeemer_user_id) {
         setPendingOutgoing((prev) => prev.filter((id) => id !== d.code_owner_id))
+        if (d.code_owner_display_name) {
+          applyRemoteProfile({
+            user_id: d.code_owner_id,
+            display_name: d.code_owner_display_name,
+            secondary_name: null,
+            show_secondary: false,
+            rev: 1,
+          })
+        }
         addFriend(d.code_owner_id).catch(console.error)
       }
     }
@@ -277,7 +301,7 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
       window.removeEventListener('cordia:friend-code-redemption-declined', onRedemptionDeclined)
       window.removeEventListener('cordia:friend-removed', onFriendRemoved)
     }
-  }, [addFriend, refreshFriends])
+  }, [addFriend, refreshFriends, applyRemoteProfile])
 
   const value: FriendsContextType = {
     friends,

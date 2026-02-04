@@ -56,11 +56,12 @@ export async function sendFriendRequest(
 
 export async function acceptFriendRequest(
   signalingUrl: string,
-  fromUserId: string
+  fromUserId: string,
+  accepterDisplayName?: string
 ): Promise<{ accepted: boolean }> {
   return friendFetch(signalingUrl, '/requests/accept', {
     method: 'POST',
-    body: { from_user_id: fromUserId },
+    body: { from_user_id: fromUserId, from_display_name: accepterDisplayName ?? null },
   }) as Promise<{ accepted: boolean }>
 }
 
@@ -109,11 +110,12 @@ export async function redeemFriendCode(
 
 export async function acceptCodeRedemption(
   signalingUrl: string,
-  redeemerUserId: string
+  redeemerUserId: string,
+  codeOwnerDisplayName?: string
 ): Promise<{ accepted: boolean }> {
   return friendFetch(signalingUrl, '/codes/redemptions/accept', {
     method: 'POST',
-    body: { redeemer_user_id: redeemerUserId },
+    body: { redeemer_user_id: redeemerUserId, code_owner_display_name: codeOwnerDisplayName ?? null },
   }) as Promise<{ accepted: boolean }>
 }
 
