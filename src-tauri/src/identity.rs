@@ -36,7 +36,16 @@ pub struct UserIdentity {
     pub display_name: String,
     pub public_key: String,     // Hex-encoded public key
     #[serde(skip_serializing)]
-    pub private_key: Option<String>, // Hex-encoded private key (only in memory)
+    pub private_key: Option<String>, // Hex-encoded private key (only in memory; not in exports)
+}
+
+/// Format stored in keys.dat (encrypted). Includes private_key so it survives save/load.
+#[derive(Serialize, Deserialize)]
+struct StoredIdentity {
+    pub user_id: String,
+    pub display_name: String,
+    pub public_key: String,
+    pub private_key: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -242,7 +251,14 @@ impl IdentityManager {
         let plaintext = cipher.decrypt(nonce, ciphertext.as_ref())
             .map_err(|_| IdentityError::InvalidIdentity)?;
         
-        let identity: UserIdentity = serde_json::from_slice(&plaintext)?;
+        let stored: StoredIdentity = serde_json::from_slice(&plaintext)
+            .map_err(|_| IdentityError::InvalidIdentity)?;
+        let identity = UserIdentity {
+            user_id: stored.user_id,
+            display_name: stored.display_name,
+            public_key: stored.public_key,
+            private_key: stored.private_key,
+        };
         Ok(identity)
     }
 
@@ -252,8 +268,14 @@ impl IdentityManager {
         let device_key = Self::get_device_key()?;
         let key = Self::derive_key_from_device(&device_key, &salt)?;
         
-        // Serialize identity
-        let plaintext = serde_json::to_vec(identity)?;
+        // Serialize identity (use StoredIdentity so private_key is persisted in keys.dat)
+        let stored = StoredIdentity {
+            user_id: identity.user_id.clone(),
+            display_name: identity.display_name.clone(),
+            public_key: identity.public_key.clone(),
+            private_key: identity.private_key.clone(),
+        };
+        let plaintext = serde_json::to_vec(&stored)?;
         
         // Encrypt
         let cipher = Aes256Gcm::new(&key.into());

@@ -1280,7 +1280,7 @@ fn get_friend_auth_headers(
         .map_err(|e| format!("Load identity: {}", e))?;
     let private_key_hex = identity.private_key
         .as_ref()
-        .ok_or("Identity has no private key (exported?)")?;
+        .ok_or("Identity has no private key. If you created this account before a recent update, create a new account to use friend requests and friend codes.")?;
     let private_key_bytes = hex::decode(private_key_hex)
         .map_err(|e| format!("Invalid private key hex: {}", e))?;
     let signing_key = ed25519_dalek::SigningKey::from_bytes(
