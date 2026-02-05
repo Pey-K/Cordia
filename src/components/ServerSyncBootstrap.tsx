@@ -163,27 +163,33 @@ export function ServerSyncBootstrap() {
         }
       }
 
-      /** Push profile (including PFP) to friends via signaling as messenger only; server does not store */
-      const sendProfilePush = async (override?: {
-        display_name?: string | null
-        real_name?: string | null
-        show_real_name?: boolean
-        updated_at?: string | null
-        avatar_data_url?: string | null
-        avatar_rev?: number
-      }) => {
+      /** Push profile (including PFP) to friends (and optionally extra user IDs, e.g. redeemers) via signaling */
+      const sendProfilePush = async (
+        override?: {
+          display_name?: string | null
+          real_name?: string | null
+          show_real_name?: boolean
+          updated_at?: string | null
+          avatar_data_url?: string | null
+          avatar_rev?: number
+        },
+        extraToUserIds?: string[]
+      ) => {
         if (!ws || ws.readyState !== WebSocket.OPEN) return
         const { profile: p, identity: id, accountInfoMap: am, currentAccountId: cid } = profilePushRef.current
         if (!id?.user_id) return
         try {
           const friends = await listFriends()
-          if (friends.length === 0) return
+          const toUserIds = extraToUserIds?.length
+            ? [...new Set([...friends, ...extraToUserIds])]
+            : friends
+          if (toUserIds.length === 0) return
           const rev = override?.updated_at != null ? Date.parse(override.updated_at) : (p?.updated_at ? Date.parse(p.updated_at) : 0)
           const accountCreatedAt = cid && am[cid]?.created_at ? am[cid].created_at : null
           ws.send(
             JSON.stringify({
               type: 'ProfilePush',
-              to_user_ids: friends,
+              to_user_ids: toUserIds,
               display_name: override?.display_name ?? p?.display_name ?? id?.display_name ?? null,
               real_name: override?.show_real_name ? (override?.real_name ?? p?.real_name ?? null) : (p?.show_real_name ? (p?.real_name ?? null) : null),
               show_real_name: override?.show_real_name ?? Boolean(p?.show_real_name),
@@ -389,15 +395,19 @@ export function ServerSyncBootstrap() {
 
           // Friend-related messages: dispatch for FriendsContext
           if (msg.type === 'FriendPendingSnapshot') {
+            const pendingCodeRedemptions = msg.pending_code_redemptions ?? []
             window.dispatchEvent(
               new CustomEvent('cordia:friend-pending-snapshot', {
                 detail: {
                   pending_incoming: msg.pending_incoming ?? [],
                   pending_outgoing: msg.pending_outgoing ?? [],
-                  pending_code_redemptions: msg.pending_code_redemptions ?? [],
+                  pending_code_redemptions: pendingCodeRedemptions,
                 },
               })
             )
+            // So redeemers see our name/PFP on their "Pending" row instead of "Unknown"
+            const redeemerIds = pendingCodeRedemptions.map((r: { redeemer_user_id: string }) => r.redeemer_user_id).filter(Boolean)
+            if (redeemerIds.length) sendProfilePush(undefined, redeemerIds)
             return
           }
           if (msg.type === 'FriendRequestIncoming') {
@@ -443,6 +453,8 @@ export function ServerSyncBootstrap() {
                 },
               })
             )
+            // So redeemer sees our name/PFP on their "Pending" row instead of "Unknown"
+            if (msg.redeemer_user_id) sendProfilePush(undefined, [msg.redeemer_user_id])
             return
           }
           if (msg.type === 'FriendCodeRedemptionAccepted') {
@@ -528,6 +540,8 @@ export function ServerSyncBootstrap() {
       window.addEventListener('cordia:servers-updated', onServersUpdated)
       const onFriendsUpdated = () => {
         sendPresenceHello('friends-updated').catch(() => {})
+        // New friends (e.g. after accept) get our profile/PFP immediately
+        sendProfilePush().catch(() => {})
       }
       window.addEventListener('cordia:friends-updated', onFriendsUpdated)
       const onProfileUpdated = (ev: Event) => {

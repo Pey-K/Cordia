@@ -14,7 +14,7 @@ use identity::{IdentityManager, UserIdentity};
 use audio_settings::{AudioSettingsManager, AudioSettings};
 use server::{ServerManager, ServerInfo};
 use signaling::{check_signaling_health, get_default_signaling_url};
-use account_manager::{AccountManager, SessionState, AccountInfo, KnownProfile};
+use account_manager::{AccountManager, SessionState, AccountInfo, KnownProfile, KnownProfileForExport};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use chacha20poly1305::{XChaCha20Poly1305, aead::{Aead, KeyInit, AeadCore}};
@@ -303,7 +303,10 @@ fn export_full_identity_for_account(
     let signaling_server_url = account_info.signaling_server_url;
     let friends = account_manager.load_friends(&account_id).unwrap_or_default();
     let known_profiles_map = account_manager.load_known_profiles(&account_id).unwrap_or_default();
-    let known_profiles = serde_json::to_value(&known_profiles_map).ok();
+    let known_profiles_for_export: std::collections::HashMap<String, KnownProfileForExport> = known_profiles_map.iter()
+        .map(|(k, v)| (k.clone(), KnownProfileForExport::from(v)))
+        .collect();
+    let known_profiles = serde_json::to_value(&known_profiles_for_export).ok();
     // Build known_house_names from current server list so restore shows last-known names when offline
     let known_house_names: std::collections::HashMap<String, String> = servers.iter()
         .filter(|s| !s.name.is_empty())
@@ -373,7 +376,10 @@ fn export_full_identity(profile_json: Option<serde_json::Value>) -> Result<Vec<u
     let signaling_server_url = account_info.signaling_server_url;
     let friends = account_manager.load_friends(&current_account_id).unwrap_or_default();
     let known_profiles_map = account_manager.load_known_profiles(&current_account_id).unwrap_or_default();
-    let known_profiles = serde_json::to_value(&known_profiles_map).ok();
+    let known_profiles_for_export: std::collections::HashMap<String, KnownProfileForExport> = known_profiles_map.iter()
+        .map(|(k, v)| (k.clone(), KnownProfileForExport::from(v)))
+        .collect();
+    let known_profiles = serde_json::to_value(&known_profiles_for_export).ok();
     let known_house_names: std::collections::HashMap<String, String> = servers.iter()
         .filter(|s| !s.name.is_empty())
         .map(|s| (s.signing_pubkey.clone(), s.name.clone()))

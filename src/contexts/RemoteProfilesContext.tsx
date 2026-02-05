@@ -43,8 +43,8 @@ function knownToRemote(userId: string, k: KnownProfile): RemoteProfile {
     show_secondary: Boolean(k.show_secondary),
     rev: Number(k.rev) || 0,
     account_created_at: k.account_created_at ?? null,
-    avatar_data_url: null,
-    avatar_rev: 0,
+    avatar_data_url: k.avatar_data_url ?? null,
+    avatar_rev: Number(k.avatar_rev) || 0,
   }
 }
 
@@ -55,6 +55,8 @@ function remoteToKnown(p: RemoteProfile): KnownProfile {
     show_secondary: p.show_secondary,
     rev: p.rev,
     account_created_at: p.account_created_at,
+    avatar_data_url: p.avatar_data_url ?? null,
+    avatar_rev: p.avatar_rev,
   }
 }
 
@@ -104,7 +106,7 @@ export function RemoteProfilesProvider({ children }: { children: ReactNode }) {
     }
   }, [currentAccountId])
 
-  // Persist known_profiles (no avatar) when profiles change, debounced
+  // Persist known_profiles (incl. avatar) to local account storage when profiles change, debounced
   useEffect(() => {
     if (!currentAccountId || profiles.size === 0) return
     if (persistTimeoutRef.current) clearTimeout(persistTimeoutRef.current)
