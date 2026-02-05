@@ -31,12 +31,16 @@ interface FriendsContextType {
   hasPendingOutgoing: (userId: string) => boolean
   sendFriendRequest: (toUserId: string, fromDisplayName?: string, fromAccountCreatedAt?: string | null) => Promise<void>
   acceptFriendRequest: (fromUserId: string, accepterDisplayName?: string, accepterAccountCreatedAt?: string | null) => Promise<void>
+  cancelFriendRequest: (toUserId: string) => Promise<void>
   declineFriendRequest: (fromUserId: string) => Promise<void>
   createFriendCode: () => Promise<string>
   revokeFriendCode: () => Promise<void>
   redeemFriendCode: (code: string, redeemerDisplayName: string, redeemerAccountCreatedAt?: string | null) => Promise<void>
   acceptCodeRedemption: (redeemerUserId: string, codeOwnerDisplayName?: string, codeOwnerAccountCreatedAt?: string | null) => Promise<void>
+  cancelCodeRedemption: (codeOwnerId: string) => Promise<void>
   declineCodeRedemption: (redeemerUserId: string) => Promise<void>
+  /** Cancel pending invite to this user (tries request cancel then redemption cancel). */
+  cancelPendingTo: (userId: string) => Promise<void>
 }
 
 const FriendsContext = createContext<FriendsContextType | null>(null)
@@ -131,6 +135,15 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
     [signalingUrl, addFriend, currentAccountId, accountInfoMap]
   )
 
+  const cancelFriendRequest = useCallback(
+    async (toUserId: string) => {
+      if (!signalingUrl) throw new Error('No beacon configured')
+      await friendApi.cancelFriendRequest(signalingUrl, toUserId)
+      setPendingOutgoing((prev) => prev.filter((id) => id !== toUserId))
+    },
+    [signalingUrl]
+  )
+
   const declineFriendRequest = useCallback(
     async (fromUserId: string) => {
       if (!signalingUrl) throw new Error('No beacon configured')
@@ -180,11 +193,40 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
     [signalingUrl, addFriend, currentAccountId, accountInfoMap]
   )
 
+  const cancelCodeRedemption = useCallback(
+    async (codeOwnerId: string) => {
+      if (!signalingUrl) throw new Error('No beacon configured')
+      await friendApi.cancelCodeRedemption(signalingUrl, codeOwnerId)
+      setPendingOutgoing((prev) => prev.filter((id) => id !== codeOwnerId))
+    },
+    [signalingUrl]
+  )
+
   const declineCodeRedemption = useCallback(
     async (redeemerUserId: string) => {
       if (!signalingUrl) throw new Error('No beacon configured')
       await friendApi.declineCodeRedemption(signalingUrl, redeemerUserId)
       setRedemptions((prev) => prev.filter((r) => r.redeemer_user_id !== redeemerUserId))
+    },
+    [signalingUrl]
+  )
+
+  const cancelPendingTo = useCallback(
+    async (userId: string) => {
+      if (!signalingUrl) throw new Error('No beacon configured')
+      try {
+        await friendApi.cancelFriendRequest(signalingUrl, userId)
+        setPendingOutgoing((prev) => prev.filter((id) => id !== userId))
+        return
+      } catch {
+        // not a direct request, try redemption
+      }
+      try {
+        await friendApi.cancelCodeRedemption(signalingUrl, userId)
+        setPendingOutgoing((prev) => prev.filter((id) => id !== userId))
+      } catch {
+        // neither found
+      }
     },
     [signalingUrl]
   )
@@ -323,22 +365,42 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
       }
     }
 
+    const onFriendRequestCancelled = (e: Event) => {
+      const ev = e as CustomEvent<{ from_user_id: string; to_user_id: string }>
+      const d = ev.detail
+      if (d?.from_user_id) {
+        setPendingIncoming((prev) => prev.filter((r) => r.from_user_id !== d.from_user_id))
+      }
+    }
+
+    const onFriendCodeRedemptionCancelled = (e: Event) => {
+      const ev = e as CustomEvent<{ code_owner_id: string; redeemer_user_id: string }>
+      const d = ev.detail
+      if (d?.redeemer_user_id) {
+        setRedemptions((prev) => prev.filter((r) => r.redeemer_user_id !== d.redeemer_user_id))
+      }
+    }
+
     window.addEventListener('cordia:friend-pending-snapshot', onPendingSnapshot)
     window.addEventListener('cordia:friend-request-incoming', onRequestIncoming)
     window.addEventListener('cordia:friend-request-accepted', onRequestAccepted)
     window.addEventListener('cordia:friend-request-declined', onRequestDeclined)
+    window.addEventListener('cordia:friend-request-cancelled', onFriendRequestCancelled)
     window.addEventListener('cordia:friend-code-redemption-incoming', onRedemptionIncoming)
     window.addEventListener('cordia:friend-code-redemption-accepted', onRedemptionAccepted)
     window.addEventListener('cordia:friend-code-redemption-declined', onRedemptionDeclined)
+    window.addEventListener('cordia:friend-code-redemption-cancelled', onFriendCodeRedemptionCancelled)
     window.addEventListener('cordia:friend-removed', onFriendRemoved)
     return () => {
       window.removeEventListener('cordia:friend-pending-snapshot', onPendingSnapshot)
       window.removeEventListener('cordia:friend-request-incoming', onRequestIncoming)
       window.removeEventListener('cordia:friend-request-accepted', onRequestAccepted)
       window.removeEventListener('cordia:friend-request-declined', onRequestDeclined)
+      window.removeEventListener('cordia:friend-request-cancelled', onFriendRequestCancelled)
       window.removeEventListener('cordia:friend-code-redemption-incoming', onRedemptionIncoming)
       window.removeEventListener('cordia:friend-code-redemption-accepted', onRedemptionAccepted)
       window.removeEventListener('cordia:friend-code-redemption-declined', onRedemptionDeclined)
+      window.removeEventListener('cordia:friend-code-redemption-cancelled', onFriendCodeRedemptionCancelled)
       window.removeEventListener('cordia:friend-removed', onFriendRemoved)
     }
   }, [addFriend, refreshFriends, applyRemoteProfile])
@@ -356,12 +418,15 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
     hasPendingOutgoing,
     sendFriendRequest,
     acceptFriendRequest,
+    cancelFriendRequest,
     declineFriendRequest,
     createFriendCode,
     revokeFriendCode,
     redeemFriendCode,
     acceptCodeRedemption,
+    cancelCodeRedemption,
     declineCodeRedemption,
+    cancelPendingTo,
   }
 
   return <FriendsContext.Provider value={value}>{children}</FriendsContext.Provider>

@@ -75,6 +75,16 @@ export async function acceptFriendRequest(
   }) as Promise<{ accepted: boolean }>
 }
 
+export async function cancelFriendRequest(
+  signalingUrl: string,
+  toUserId: string
+): Promise<{ cancelled: boolean }> {
+  return friendFetch(signalingUrl, '/requests/cancel', {
+    method: 'POST',
+    body: { to_user_id: toUserId },
+  }) as Promise<{ cancelled: boolean }>
+}
+
 export async function declineFriendRequest(
   signalingUrl: string,
   fromUserId: string
@@ -134,6 +144,16 @@ export async function acceptCodeRedemption(
       code_owner_account_created_at: codeOwnerAccountCreatedAt ?? null,
     },
   }) as Promise<{ accepted: boolean }>
+}
+
+export async function cancelCodeRedemption(
+  signalingUrl: string,
+  codeOwnerId: string
+): Promise<{ cancelled: boolean }> {
+  return friendFetch(signalingUrl, '/codes/redemptions/cancel', {
+    method: 'POST',
+    body: { code_owner_id: codeOwnerId },
+  }) as Promise<{ cancelled: boolean }>
 }
 
 export async function declineCodeRedemption(

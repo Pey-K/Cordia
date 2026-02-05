@@ -328,6 +328,12 @@ pub enum SignalingMessage {
         to_user_id: String,
     },
 
+    /// Sender cancelled their friend request to you (remove from your pending_incoming).
+    FriendRequestCancelled {
+        from_user_id: String,
+        to_user_id: String,
+    },
+
     /// Someone used your friend code (also in snapshot).
     FriendCodeRedemptionIncoming {
         redeemer_user_id: String,
@@ -351,6 +357,12 @@ pub enum SignalingMessage {
 
     /// Code owner declined you.
     FriendCodeRedemptionDeclined {
+        code_owner_id: String,
+        redeemer_user_id: String,
+    },
+
+    /// Redeemer cancelled their redemption (code owner: remove from pending_code_redemptions).
+    FriendCodeRedemptionCancelled {
         code_owner_id: String,
         redeemer_user_id: String,
     },
@@ -935,6 +947,7 @@ async fn main() {
         .route("/api/friends/codes/revoke", axum::routing::post(handlers::friends::revoke_friend_code))
         .route("/api/friends/codes/redeem", axum::routing::post(handlers::friends::redeem_friend_code))
         .route("/api/friends/codes/redemptions/accept", axum::routing::post(handlers::friends::accept_code_redemption))
+        .route("/api/friends/codes/redemptions/cancel", axum::routing::post(handlers::friends::cancel_code_redemption))
         .route("/api/friends/codes/redemptions/decline", axum::routing::post(handlers::friends::decline_code_redemption))
         .route("/api/friends/remove", axum::routing::post(handlers::friends::remove_friend))
         .layer(middleware::from_fn(friend_auth_middleware));
