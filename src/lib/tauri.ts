@@ -262,13 +262,15 @@ export async function removeFriend(userId: string): Promise<void> {
   return await invoke('remove_friend', { userId })
 }
 
-/** Minimal persisted profile (no avatar) so we never show "Unknown" for someone we've seen */
+/** Persisted profile per account (incl. optional avatar). Avatar is stored locally only, not in .key export. */
 export interface KnownProfile {
   display_name: string
   secondary_name?: string | null
   show_secondary?: boolean
   rev?: number
   account_created_at?: string | null
+  avatar_data_url?: string | null
+  avatar_rev?: number
 }
 
 export async function loadKnownProfiles(): Promise<Record<string, KnownProfile>> {

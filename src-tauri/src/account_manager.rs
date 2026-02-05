@@ -41,7 +41,8 @@ pub struct AccountInfo {
     pub signaling_server_url: Option<String>,
 }
 
-/// Cached profile data for a remote user (display name, etc.) persisted per account and in .key export
+/// Cached profile data for a remote user (display name, avatar, etc.) persisted per account.
+/// Avatars are stored locally but excluded from .key export to keep key file size small.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KnownProfile {
     pub display_name: String,
@@ -53,6 +54,33 @@ pub struct KnownProfile {
     pub rev: Option<u64>,
     #[serde(default)]
     pub account_created_at: Option<String>,
+    /// Cached PFP data URL; stored locally only, not included in .key export
+    #[serde(default)]
+    pub avatar_data_url: Option<String>,
+    #[serde(default)]
+    pub avatar_rev: Option<u64>,
+}
+
+/// Lightweight profile for .key export (no avatar to keep file size small)
+#[derive(Debug, Clone, Serialize)]
+pub struct KnownProfileForExport {
+    pub display_name: String,
+    pub secondary_name: Option<String>,
+    pub show_secondary: bool,
+    pub rev: Option<u64>,
+    pub account_created_at: Option<String>,
+}
+
+impl From<&KnownProfile> for KnownProfileForExport {
+    fn from(p: &KnownProfile) -> Self {
+        Self {
+            display_name: p.display_name.clone(),
+            secondary_name: p.secondary_name.clone(),
+            show_secondary: p.show_secondary,
+            rev: p.rev,
+            account_created_at: p.account_created_at.clone(),
+        }
+    }
 }
 
 /// Manages account containers and session state

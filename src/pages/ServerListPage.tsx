@@ -17,6 +17,11 @@ import { useRemoteProfiles } from '../contexts/RemoteProfilesContext'
 import { useServers } from '../contexts/ServersContext'
 import { useFriends } from '../contexts/FriendsContext'
 
+/** Strip to raw 8-char code (no dash). Used so dash is never part of stored/copied value. */
+function normalizeFriendCode(code: string): string {
+  return (code ?? '').replace(/\W/g, '').toUpperCase().slice(0, 8)
+}
+
 function ServerListPage() {
   const navigate = useNavigate()
   const { identity } = useIdentity()
@@ -61,6 +66,8 @@ function ServerListPage() {
   const [showFriendCodePopover, setShowFriendCodePopover] = useState(false)
   const [friendCodeInput, setFriendCodeInput] = useState('')
   const [friendCodeError, setFriendCodeError] = useState('')
+  const friendCodeFirstInputRef = useRef<HTMLInputElement>(null)
+  const friendCodeSecondInputRef = useRef<HTMLInputElement>(null)
   const [isRedeemingCode, setIsRedeemingCode] = useState(false)
   const [isCreatingCode, setIsCreatingCode] = useState(false)
   const [hoveredServerId, setHoveredServerId] = useState<string | null>(null)
@@ -287,7 +294,7 @@ function ServerListPage() {
       return {
         displayName: rp?.display_name || fallbackName,
         secondaryName: rp?.show_secondary ? rp.secondary_name : null,
-        avatarDataUrl: null,
+        avatarDataUrl: rp?.avatar_data_url ?? null,
       }
     }
 
@@ -360,7 +367,7 @@ function ServerListPage() {
             const offlineSegment = visible.slice(offlineStartInVisible)
             return (
               <>
-                {onlineSegment.map((m, i) => renderAvatar(m, i, i * stepPx, i))}
+                {onlineSegment.map((m, i) => renderAvatar(m, i, i * stepPx, visible.length - 1 - i))}
                 <div
                   key="offline-sep"
                   className="absolute top-0 flex h-7 items-center"
@@ -375,13 +382,13 @@ function ServerListPage() {
                   <div className="h-4 w-px shrink-0 bg-muted-foreground/80" aria-hidden />
                 </div>
                 {offlineSegment.map((m, j) =>
-                  renderAvatar(m, j, offlineStartInVisible * stepPx + separatorWidthPx + j * stepPx, offlineStartInVisible + j)
+                  renderAvatar(m, j, offlineStartInVisible * stepPx + separatorWidthPx + j * stepPx, visible.length - 1 - (offlineStartInVisible + j))
                 )}
               </>
             )
           }
 
-          return visible.map((m, i) => renderAvatar(m, i, i * stepPx, i))
+          return visible.map((m, i) => renderAvatar(m, i, i * stepPx, visible.length - 1 - i))
         })()}
 
         {extraCount > 0 && (
@@ -391,7 +398,7 @@ function ServerListPage() {
               left: hasSeparatorInVisible
                 ? offlineStartInVisible * stepPx + separatorWidthPx + (visible.length - offlineStartInVisible) * stepPx
                 : visible.length * stepPx,
-              ['--z' as any]: visible.length,
+              ['--z' as any]: 0,
             }}
             title={`${extraCount} more`}
           >
@@ -887,20 +894,26 @@ function ServerListPage() {
                       <Plus className="h-4 w-4" />
                     </Button>
                     {showFriendCodePopover && (
-                      <div className="absolute right-0 top-full mt-1 z-50 w-72 border-2 border-border bg-card rounded-lg p-3 shadow-lg space-y-3">
+                      <div className="absolute right-0 top-full mt-1 z-50 w-56 border-2 border-border bg-card rounded-lg p-3 shadow-lg space-y-3">
                         {myFriendCode ? (
                           <>
                             <p className="text-xs text-muted-foreground font-light">Your code</p>
                             <div className="flex items-center gap-2">
-                              <code className="flex-1 px-2 py-1.5 bg-background border border-border rounded text-sm font-mono tracking-wider truncate">
-                                {myFriendCode}
-                              </code>
+                              <div className="flex items-center gap-1 flex-1 min-w-0">
+                                <code className="min-w-[6.5ch] text-sm font-mono tracking-wider uppercase text-center">
+                                  {normalizeFriendCode(myFriendCode ?? '').slice(0, 4)}
+                                </code>
+                                <span className="text-muted-foreground font-mono select-none" aria-hidden>-</span>
+                                <code className="min-w-[6.5ch] text-sm font-mono tracking-wider uppercase text-center">
+                                  {normalizeFriendCode(myFriendCode ?? '').slice(4, 8)}
+                                </code>
+                              </div>
                               <Button
                                 variant="outline"
                                 size="icon"
                                 className="h-8 w-8 shrink-0"
                                 onClick={() => {
-                                  navigator.clipboard.writeText(myFriendCode ?? '')
+                                  navigator.clipboard.writeText(normalizeFriendCode(myFriendCode ?? ''))
                                 }}
                                 title="Copy"
                               >
@@ -943,17 +956,55 @@ function ServerListPage() {
                         <div className="border-t border-border pt-2">
                           <p className="text-xs text-muted-foreground font-light mb-1">Add by code</p>
                           <div className="flex gap-2">
-                            <input
-                              type="text"
-                              value={friendCodeInput}
-                              onChange={(e) => {
-                                setFriendCodeInput(e.target.value.toUpperCase())
-                                setFriendCodeError('')
-                              }}
-                              placeholder="XXXX-XXXX"
-                              className="flex-1 px-2 py-1.5 bg-background border border-border rounded text-sm font-mono tracking-wider uppercase"
-                              spellCheck={false}
-                            />
+                            <div className="flex items-center gap-1 flex-1 min-w-0">
+                              <input
+                                ref={friendCodeFirstInputRef}
+                                type="text"
+                                value={friendCodeInput.slice(0, 4)}
+                                onChange={(e) => {
+                                  const raw = e.target.value.replace(/\W/g, '').toUpperCase().slice(0, 8)
+                                  setFriendCodeInput(raw)
+                                  setFriendCodeError('')
+                                  if (raw.length > 4) {
+                                    setTimeout(() => friendCodeSecondInputRef.current?.focus(), 0)
+                                  }
+                                }}
+                                placeholder="XXXX"
+                                className="min-w-[6.5ch] w-[6.5ch] px-2 py-1.5 bg-background border border-border rounded text-sm font-mono tracking-wider uppercase"
+                                spellCheck={false}
+                              />
+                              <span className="text-muted-foreground font-mono select-none" aria-hidden>-</span>
+                              <input
+                                ref={friendCodeSecondInputRef}
+                                type="text"
+                                value={friendCodeInput.slice(4, 8)}
+                                onChange={(e) => {
+                                  const second = e.target.value.replace(/\W/g, '').toUpperCase().slice(0, 4)
+                                  setFriendCodeInput(friendCodeInput.slice(0, 4) + second)
+                                  setFriendCodeError('')
+                                }}
+                                onKeyDown={(e) => {
+                                  const atStart = (e.target as HTMLInputElement).selectionStart === 0
+                                  if (e.key === 'Backspace' && atStart && friendCodeInput.length > 0) {
+                                    e.preventDefault()
+                                    const newFirst = friendCodeInput.slice(0, 4).slice(0, -1)
+                                    const newSecond = friendCodeInput.slice(4, 8)
+                                    setFriendCodeInput(newFirst + newSecond)
+                                    setTimeout(() => {
+                                      const el = friendCodeFirstInputRef.current
+                                      if (el) {
+                                        el.focus()
+                                        el.setSelectionRange(newFirst.length, newFirst.length)
+                                      }
+                                    }, 0)
+                                  }
+                                }}
+                                placeholder="XXXX"
+                                className="min-w-[6.5ch] w-[6.5ch] px-2 py-1.5 bg-background border border-border rounded text-sm font-mono tracking-wider uppercase"
+                                spellCheck={false}
+                                maxLength={4}
+                              />
+                            </div>
                             <Button
                               variant="outline"
                               size="sm"
@@ -1086,7 +1137,7 @@ function ServerListPage() {
                             >
                               <button
                                 type="button"
-                                className={`relative h-7 w-7 shrink-0 grid place-items-center rounded-none ring-2 ring-background focus:outline-none overflow-visible ${pending ? 'grayscale' : ''}`}
+                                className={`relative h-7 w-7 shrink-0 grid place-items-center rounded-none ring-2 ring-background will-change-transform transition-transform duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.06] focus:outline-none overflow-visible ${pending ? 'grayscale' : ''}`}
                                 style={!rp?.avatar_data_url ? avatarStyleForUser(userId) : undefined}
                                 onClick={(e) => {
                                   e.stopPropagation()
@@ -1100,15 +1151,15 @@ function ServerListPage() {
                                 ) : (
                                   <span className="text-[9px] font-mono tracking-wider">{getInitials(displayName)}</span>
                                 )}
-                                <div className="absolute -top-0.5 left-1/2 -translate-x-1/2">
+                                <div className="absolute -top-1 left-1/2 -translate-x-1/2">
                                   {bestLevel === 'in_call' ? (
-                                    <div className="h-1.5 w-1.5 bg-blue-500 ring-2 ring-background" />
+                                    <div className="h-2 w-2 bg-blue-500 ring-2 ring-background" />
                                   ) : bestLevel === 'active' ? (
-                                    <div className="h-1.5 w-1.5 bg-green-500 ring-2 ring-background" />
+                                    <div className="h-2 w-2 bg-green-500 ring-2 ring-background" />
                                   ) : bestLevel === 'online' ? (
-                                    <div className="h-1.5 w-1.5 bg-amber-500 ring-2 ring-background" />
+                                    <div className="h-2 w-2 bg-amber-500 ring-2 ring-background" />
                                   ) : (
-                                    <div className="h-1.5 w-1.5 bg-muted-foreground ring-2 ring-background" />
+                                    <div className="h-2 w-2 bg-muted-foreground ring-2 ring-background" />
                                   )}
                                 </div>
                               </button>
