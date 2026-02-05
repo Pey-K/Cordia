@@ -443,6 +443,14 @@ export function ServerSyncBootstrap() {
             )
             return
           }
+          if (msg.type === 'FriendRequestCancelled') {
+            window.dispatchEvent(
+              new CustomEvent('cordia:friend-request-cancelled', {
+                detail: { from_user_id: msg.from_user_id, to_user_id: msg.to_user_id },
+              })
+            )
+            return
+          }
           if (msg.type === 'FriendCodeRedemptionIncoming') {
             window.dispatchEvent(
               new CustomEvent('cordia:friend-code-redemption-incoming', {
@@ -473,6 +481,14 @@ export function ServerSyncBootstrap() {
           if (msg.type === 'FriendCodeRedemptionDeclined') {
             window.dispatchEvent(
               new CustomEvent('cordia:friend-code-redemption-declined', {
+                detail: { code_owner_id: msg.code_owner_id, redeemer_user_id: msg.redeemer_user_id },
+              })
+            )
+            return
+          }
+          if (msg.type === 'FriendCodeRedemptionCancelled') {
+            window.dispatchEvent(
+              new CustomEvent('cordia:friend-code-redemption-cancelled', {
                 detail: { code_owner_id: msg.code_owner_id, redeemer_user_id: msg.redeemer_user_id },
               })
             )

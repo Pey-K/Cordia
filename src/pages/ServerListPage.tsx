@@ -44,6 +44,7 @@ function ServerListPage() {
     acceptFriendRequest,
     declineFriendRequest,
     acceptCodeRedemption,
+    cancelPendingTo,
     declineCodeRedemption,
     createFriendCode,
     revokeFriendCode,
@@ -1173,6 +1174,17 @@ function ServerListPage() {
                                   <p className="text-[11px] text-muted-foreground truncate">{secondaryName}</p>
                                 ) : null}
                               </div>
+                              {pending && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="shrink-0 h-7 px-1.5 text-[11px] font-light text-muted-foreground hover:text-destructive"
+                                  onClick={() => cancelPendingTo(userId)}
+                                  title="Cancel pending invite"
+                                >
+                                  <XCircle className="h-3 w-3" />
+                                </Button>
+                              )}
                               {canJoin && !pending && (
                                 <Button
                                   variant="ghost"

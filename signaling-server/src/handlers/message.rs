@@ -192,12 +192,20 @@ pub async fn handle_message(
                         created_at: req.created_at.to_rfc3339(),
                     })
                     .collect();
-                let pending_outgoing: Vec<String> = friends
+                let mut pending_outgoing: Vec<String> = friends
                     .friend_requests
                     .iter()
                     .filter(|((from, _), _)| from == &user_id)
                     .map(|((_, to), _)| to.clone())
                     .collect();
+                // Include code owners we're waiting on (we redeemed their code)
+                for (owner_id, redemptions) in &friends.code_redemptions {
+                    if redemptions.iter().any(|r| r.redeemer_user_id == user_id) {
+                        if !pending_outgoing.contains(owner_id) {
+                            pending_outgoing.push(owner_id.clone());
+                        }
+                    }
+                }
                 let pending_code_redemptions: Vec<CodeRedemptionItem> = friends
                     .code_redemptions
                     .get(&user_id)
