@@ -1221,6 +1221,14 @@ async fn set_signaling_server_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Read text from the system clipboard (avoids webview permission prompt).
+#[tauri::command]
+fn read_clipboard_text() -> Result<String, String> {
+    use arboard::Clipboard;
+    let mut clipboard = Clipboard::new().map_err(|e| format!("Clipboard unavailable: {}", e))?;
+    clipboard.get_text().map_err(|e| format!("Clipboard read failed: {}", e))
+}
+
 #[cfg(windows)]
 #[tauri::command]
 fn register_key_file_association_command() -> Result<(), String> {
@@ -1463,7 +1471,8 @@ fn main() {
             check_signaling_server,
             get_default_signaling_server,
             get_signaling_server_url,
-            set_signaling_server_url
+            set_signaling_server_url,
+            read_clipboard_text
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -299,6 +299,11 @@ export async function getFriendAuthHeaders(
   })
 }
 
+/** Prefer when in Tauri app to avoid webview "Allow this site to read from your clipboard?" prompt. */
+export async function readClipboardText(): Promise<string> {
+  return await invoke<string>('read_clipboard_text')
+}
+
 export async function registerKeyFileAssociation(): Promise<void> {
   return await invoke('register_key_file_association_command')
 }

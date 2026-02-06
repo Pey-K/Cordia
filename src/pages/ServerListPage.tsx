@@ -1,11 +1,14 @@
 import { useNavigate } from 'react-router-dom'
-import { Plus, Minus, Users, Bell, Trash2, Star, CornerDownLeft, Copy, X, Check, XCircle, LogIn } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import { Plus, Minus, Users, Bell, Trash2, Star, CornerDownLeft, Copy, X, Check, XCircle, LogIn, ClipboardPaste } from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useWindowSize } from '../lib/useWindowSize'
+import { FriendsDrawerPanel } from '../components/FriendsDrawer'
 import { useSignaling } from '../contexts/SignalingContext'
 import { SignalingStatus } from '../components/SignalingStatus'
 import { UserProfileCard } from '../components/UserProfileCard'
-import { createServer, deleteServer, type Server, parseInviteUri, publishServerHintOpaque, publishServerHintMemberLeft, redeemTemporaryInvite } from '../lib/tauri'
+import { createServer, deleteServer, type Server, parseInviteUri, publishServerHintOpaque, publishServerHintMemberLeft, redeemTemporaryInvite, readClipboardText } from '../lib/tauri'
 import { useIdentity } from '../contexts/IdentityContext'
 import { usePresence, type PresenceLevel } from '../contexts/PresenceContext'
 import { useVoicePresence } from '../contexts/VoicePresenceContext'
@@ -65,17 +68,44 @@ function ServerListPage() {
   const [profileCardUserId, setProfileCardUserId] = useState<string | null>(null)
   const [profileCardAnchor, setProfileCardAnchor] = useState<DOMRect | null>(null)
   const [showFriendCodePopover, setShowFriendCodePopover] = useState(false)
+  const [closeDrawerTrigger, setCloseDrawerTrigger] = useState(0)
   const [friendCodeInput, setFriendCodeInput] = useState('')
   const [friendCodeError, setFriendCodeError] = useState('')
   const friendCodeFirstInputRef = useRef<HTMLInputElement>(null)
   const friendCodeSecondInputRef = useRef<HTMLInputElement>(null)
   const [isRedeemingCode, setIsRedeemingCode] = useState(false)
   const [isCreatingCode, setIsCreatingCode] = useState(false)
+  const [copiedFriendCode, setCopiedFriendCode] = useState(false)
+  const [pastedCode, setPastedCode] = useState(false)
   const [hoveredServerId, setHoveredServerId] = useState<string | null>(null)
   const [exitingServerId, setExitingServerId] = useState<string | null>(null)
   const [friendsPaneMode, setFriendsPaneMode] = useState<'friends' | 'pending'>('friends')
   const [pendingViewFilter, setPendingViewFilter] = useState<'outgoing' | 'incoming'>('outgoing')
   const exitIconsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const addFriendButtonRef = useRef<HTMLButtonElement | null>(null)
+  const [addFriendButtonRect, setAddFriendButtonRect] = useState<DOMRect | null>(null)
+  const { width } = useWindowSize()
+  const isDrawerMode = width < 605
+  const drawerRowAlign = isDrawerMode ? 'items-start' : 'items-center'
+
+  const handleAddFriendClick = () => {
+    const next = !showFriendCodePopover
+    setShowFriendCodePopover(next)
+    if (next) {
+      setAddFriendButtonRect(addFriendButtonRef.current?.getBoundingClientRect() ?? null)
+    } else {
+      setAddFriendButtonRect(null)
+    }
+  }
+
+  // When the Add by code popup is closed by any means, clear the code boxes so next open starts fresh
+  useEffect(() => {
+    if (!showFriendCodePopover) {
+      setFriendCodeInput('')
+      setFriendCodeError('')
+      setPastedCode(false)
+    }
+  }, [showFriendCodePopover])
 
   const fallbackNameForUser = (userId: string) => {
     for (const s of servers) {
@@ -532,6 +562,29 @@ function ServerListPage() {
     return map
   }, [pendingOutgoing, mergedIncoming, servers, getLevel, voicePresence])
 
+  const stripFriends = useMemo(
+    () =>
+      sortedFriendsOnlyWithPresence.slice(0, 8).map(({ userId, bestLevel, displayName }) => ({
+        userId,
+        bestLevel,
+        displayName,
+        avatarDataUrl: remoteProfiles.getProfile(userId)?.avatar_data_url ?? null,
+      })),
+    [sortedFriendsOnlyWithPresence, remoteProfiles]
+  )
+
+  const stripPending = useMemo(() => {
+    const merged = [
+      ...mergedIncoming.map((e) => ({ userId: e.userId, displayName: e.displayName })),
+      ...pendingOutgoing.map((id) => ({ userId: id, displayName: fallbackNameForUser(id) })),
+    ]
+    return merged.slice(0, 8).map(({ userId, displayName }) => ({
+      userId,
+      displayName,
+      avatarDataUrl: remoteProfiles.getProfile(userId)?.avatar_data_url ?? null,
+    }))
+  }, [mergedIncoming, pendingOutgoing, remoteProfiles, fallbackNameForUser])
+
   const handleCreateServer = async () => {
     if (!identity || !serverName.trim()) return
 
@@ -653,7 +706,6 @@ function ServerListPage() {
     }
   }
 
-
   return (
     <div className="h-full bg-background grid-pattern flex flex-col overflow-hidden">
       <header className="border-b-2 border-border shrink-0">
@@ -671,10 +723,10 @@ function ServerListPage() {
       {/* Split-scroll layout: only the houses list scrolls; neighbors stays fixed */}
       {/* NOTE: overflow must be visible so the Join popover can float above this row without being clipped. */}
       <main className="flex-1 overflow-visible min-h-0">
-        <div className="p-8 h-full">
-          <div className="grid grid-cols-1 md:grid-cols-10 gap-6 items-stretch h-full min-h-0">
-            {/* Left: Houses (Neighborhood) */}
-            <section className="col-span-1 md:col-span-7 flex flex-col min-h-0 h-full">
+        <div className="p-8 h-full relative">
+          <div className="flex gap-6 items-stretch h-full min-h-0">
+            {/* Left: Servers */}
+            <section className="flex-1 min-w-0 flex flex-col min-h-0 h-full">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-4">
                   <div className="w-12 h-px bg-foreground/20"></div>
@@ -898,11 +950,14 @@ function ServerListPage() {
                 )}
               </div>
             </section>
-            {/* Right: Friends / Pending */}
-            <aside className="hidden md:block md:col-span-3 h-full min-h-0 flex flex-col">
-              <div className="border-2 border-border bg-card/50 rounded-lg p-4 flex flex-col min-h-0 h-full">
-                <div className="flex items-center justify-between shrink-0">
-                  <h3 className="text-xs font-light tracking-wider uppercase text-muted-foreground">
+            {/* Right: Friends / Pending — full aside when wide; drawer when < 605px */}
+            {/* When drawer mode: spacer reserves space so content doesn't go behind closed drawer */}
+            {isDrawerMode && <div className="w-2 shrink-0" aria-hidden />}
+            {(() => {
+              const friendsPaneInner = (
+                <>
+                <div className="flex items-center justify-between shrink-0 h-8">
+                  <h3 className="text-xs font-light tracking-wider uppercase text-muted-foreground leading-none">
                     {friendsPaneMode === 'friends' ? 'Friends' : 'Pending invites'}
                   </h3>
                   <div className="flex items-center gap-0.5">
@@ -946,16 +1001,128 @@ function ServerListPage() {
                     </Button>
                     <div className="relative">
                       <Button
+                        ref={addFriendButtonRef}
                         variant="ghost"
                         size="icon"
                         className="h-8 w-8"
-                        onClick={() => setShowFriendCodePopover((v) => !v)}
+                        onClick={handleAddFriendClick}
                         title={showFriendCodePopover ? 'Close friend code' : 'Friend code'}
                       >
                         {showFriendCodePopover ? <Minus className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
                       </Button>
-                    {showFriendCodePopover && (
-                      <div className="absolute right-0 top-full mt-1 z-50 w-56 border-2 border-border bg-card rounded-lg p-3 shadow-lg space-y-3">
+                    {showFriendCodePopover && !isDrawerMode && (
+                      <>
+                        <div className="fixed inset-0 z-40" onMouseDown={() => setShowFriendCodePopover(false)} aria-hidden />
+                        <div className="absolute right-0 top-full mt-1 z-50 w-56 border-2 border-border bg-card rounded-lg p-3 shadow-lg space-y-3" onMouseDown={(e) => e.stopPropagation()}>
+                        <div className="pb-2 border-b border-border">
+                          <p className="text-xs text-muted-foreground font-light mb-1">Add by code</p>
+                          <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-1 shrink-0 min-w-[14ch]">
+                              <input
+                                ref={friendCodeFirstInputRef}
+                                type="text"
+                                value={friendCodeInput.slice(0, 4)}
+                                onChange={(e) => {
+                                  const raw = e.target.value.replace(/\W/g, '').toUpperCase().slice(0, 8)
+                                  setFriendCodeInput(raw)
+                                  setFriendCodeError('')
+                                  if (raw.length > 4) {
+                                    setTimeout(() => friendCodeSecondInputRef.current?.focus(), 0)
+                                  }
+                                }}
+                                placeholder="XXXX"
+                                className="min-w-[6.5ch] w-[6.5ch] px-2 py-1.5 bg-background border border-border rounded-none text-sm font-mono tracking-[0.04em] uppercase focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-0"
+                                spellCheck={false}
+                              />
+                              <span className="text-muted-foreground font-mono select-none" aria-hidden>-</span>
+                              <input
+                                ref={friendCodeSecondInputRef}
+                                type="text"
+                                value={friendCodeInput.slice(4, 8)}
+                                onChange={(e) => {
+                                  const second = e.target.value.replace(/\W/g, '').toUpperCase().slice(0, 4)
+                                  setFriendCodeInput(friendCodeInput.slice(0, 4) + second)
+                                  setFriendCodeError('')
+                                }}
+                                onKeyDown={(e) => {
+                                  const atStart = (e.target as HTMLInputElement).selectionStart === 0
+                                  if (e.key === 'Backspace' && atStart && friendCodeInput.length > 0) {
+                                    e.preventDefault()
+                                    const newFirst = friendCodeInput.slice(0, 4).slice(0, -1)
+                                    const newSecond = friendCodeInput.slice(4, 8)
+                                    setFriendCodeInput(newFirst + newSecond)
+                                    setTimeout(() => {
+                                      const el = friendCodeFirstInputRef.current
+                                      if (el) {
+                                        el.focus()
+                                        el.setSelectionRange(newFirst.length, newFirst.length)
+                                      }
+                                    }, 0)
+                                  }
+                                }}
+                                placeholder="XXXX"
+                                className="min-w-[6.5ch] w-[6.5ch] px-2 py-1.5 bg-background border border-border rounded-none text-sm font-mono tracking-[0.04em] uppercase focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-0"
+                                spellCheck={false}
+                                maxLength={4}
+                              />
+                            </div>
+                            <Button
+                              variant="outline"
+                              size="icon"
+                              className="h-8 w-8 shrink-0 self-center"
+                              title={pastedCode ? 'Pasted' : 'Paste'}
+                              onClick={async () => {
+                                try {
+                                  const text = typeof window !== 'undefined' && (window as { __TAURI__?: unknown }).__TAURI__
+                                    ? await readClipboardText()
+                                    : await navigator.clipboard.readText()
+                                  const raw = (text ?? '').replace(/\W/g, '').toUpperCase().slice(0, 8)
+                                  setFriendCodeInput(raw)
+                                  setFriendCodeError('')
+                                  setPastedCode(true)
+                                  setTimeout(() => setPastedCode(false), 2000)
+                                  if (raw.length > 4) setTimeout(() => friendCodeSecondInputRef.current?.focus(), 0)
+                                  else friendCodeFirstInputRef.current?.focus()
+                                } catch {
+                                  // clipboard read denied or unsupported
+                                }
+                              }}
+                            >
+                              {pastedCode ? (
+                                <Check className="h-3.5 w-3.5 text-green-500" />
+                              ) : (
+                                <ClipboardPaste className="h-3.5 w-3.5" />
+                              )}
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className={`h-8 shrink-0 px-[0.25rem] text-[0.8rem] ${friendCodeInput.trim().length >= 8 && !isRedeemingCode ? 'bg-white text-black border-white hover:bg-white/90 hover:text-black' : ''}`}
+                              disabled={isRedeemingCode || friendCodeInput.trim().length < 8}
+                              onClick={async () => {
+                                setFriendCodeError('')
+                                setIsRedeemingCode(true)
+                                try {
+                                  await redeemFriendCode(
+                                    friendCodeInput.trim(),
+                                    profile?.display_name ?? identity?.display_name ?? 'Unknown'
+                                  )
+                                  setFriendCodeInput('')
+                                  setShowFriendCodePopover(false)
+                                } catch (e) {
+                                  setFriendCodeError(e instanceof Error ? e.message : 'Failed')
+                                } finally {
+                                  setIsRedeemingCode(false)
+                                }
+                              }}
+                            >
+                              {isRedeemingCode ? '...' : 'Add'}
+                            </Button>
+                          </div>
+                          {friendCodeError && (
+                            <p className="text-xs text-destructive mt-1">{friendCodeError}</p>
+                          )}
+                        </div>
                         {myFriendCode ? (
                           <>
                             <p className="text-xs text-muted-foreground font-light">Your code</p>
@@ -975,10 +1142,16 @@ function ServerListPage() {
                                 className="h-8 w-8 shrink-0"
                                 onClick={() => {
                                   navigator.clipboard.writeText(normalizeFriendCode(myFriendCode ?? ''))
+                                  setCopiedFriendCode(true)
+                                  setTimeout(() => setCopiedFriendCode(false), 2000)
                                 }}
                                 title="Copy"
                               >
-                                <Copy className="h-3.5 w-3.5" />
+                                {copiedFriendCode ? (
+                                  <Check className="h-3.5 w-3.5 text-green-500" />
+                                ) : (
+                                  <Copy className="h-3.5 w-3.5" />
+                                )}
                               </Button>
                               <Button
                                 variant="outline"
@@ -1014,95 +1187,8 @@ function ServerListPage() {
                             {isCreatingCode ? 'Creating...' : 'Create friend code'}
                           </Button>
                         )}
-                        <div className="border-t border-border pt-2">
-                          <p className="text-xs text-muted-foreground font-light mb-1">Add by code</p>
-                          <div className="flex gap-2">
-                            <div className="flex items-center gap-1 flex-1 min-w-0">
-                              <input
-                                ref={friendCodeFirstInputRef}
-                                type="text"
-                                value={friendCodeInput.slice(0, 4)}
-                                onChange={(e) => {
-                                  const raw = e.target.value.replace(/\W/g, '').toUpperCase().slice(0, 8)
-                                  setFriendCodeInput(raw)
-                                  setFriendCodeError('')
-                                  if (raw.length > 4) {
-                                    setTimeout(() => friendCodeSecondInputRef.current?.focus(), 0)
-                                  }
-                                }}
-                                placeholder="XXXX"
-                                className="min-w-[6.5ch] w-[6.5ch] px-2 py-1.5 bg-background border border-border rounded text-sm font-mono tracking-wider uppercase"
-                                spellCheck={false}
-                              />
-                              <span className="text-muted-foreground font-mono select-none" aria-hidden>-</span>
-                              <input
-                                ref={friendCodeSecondInputRef}
-                                type="text"
-                                value={friendCodeInput.slice(4, 8)}
-                                onChange={(e) => {
-                                  const second = e.target.value.replace(/\W/g, '').toUpperCase().slice(0, 4)
-                                  setFriendCodeInput(friendCodeInput.slice(0, 4) + second)
-                                  setFriendCodeError('')
-                                }}
-                                onKeyDown={(e) => {
-                                  const atStart = (e.target as HTMLInputElement).selectionStart === 0
-                                  if (e.key === 'Backspace' && atStart && friendCodeInput.length > 0) {
-                                    e.preventDefault()
-                                    const newFirst = friendCodeInput.slice(0, 4).slice(0, -1)
-                                    const newSecond = friendCodeInput.slice(4, 8)
-                                    setFriendCodeInput(newFirst + newSecond)
-                                    setTimeout(() => {
-                                      const el = friendCodeFirstInputRef.current
-                                      if (el) {
-                                        el.focus()
-                                        el.setSelectionRange(newFirst.length, newFirst.length)
-                                      }
-                                    }, 0)
-                                  }
-                                }}
-                                placeholder="XXXX"
-                                className="min-w-[6.5ch] w-[6.5ch] px-2 py-1.5 bg-background border border-border rounded text-sm font-mono tracking-wider uppercase"
-                                spellCheck={false}
-                                maxLength={4}
-                              />
-                            </div>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className={friendCodeInput.trim().length >= 8 && !isRedeemingCode ? 'bg-white text-black border-white hover:bg-white/90 hover:text-black' : ''}
-                              disabled={isRedeemingCode || friendCodeInput.trim().length < 8}
-                              onClick={async () => {
-                                setFriendCodeError('')
-                                setIsRedeemingCode(true)
-                                try {
-                                  await redeemFriendCode(
-                                    friendCodeInput.trim(),
-                                    profile?.display_name ?? identity?.display_name ?? 'Unknown'
-                                  )
-                                  setFriendCodeInput('')
-                                  setShowFriendCodePopover(false)
-                                } catch (e) {
-                                  setFriendCodeError(e instanceof Error ? e.message : 'Failed')
-                                } finally {
-                                  setIsRedeemingCode(false)
-                                }
-                              }}
-                            >
-                              {isRedeemingCode ? '...' : 'Add'}
-                            </Button>
-                          </div>
-                          {friendCodeError && (
-                            <p className="text-xs text-destructive mt-1">{friendCodeError}</p>
-                          )}
-                        </div>
-                        <button
-                          type="button"
-                          className="text-xs text-muted-foreground hover:text-foreground"
-                          onClick={() => setShowFriendCodePopover(false)}
-                        >
-                          Close
-                        </button>
                       </div>
+                      </>
                     )}
                     </div>
                   </div>
@@ -1163,7 +1249,7 @@ function ServerListPage() {
                               return (
                                 <div
                                   key={userId}
-                                  className="flex items-center gap-1.5 h-11 px-1.5 rounded-md hover:bg-accent/30 min-w-0 shrink-0 overflow-visible"
+                                  className={`flex ${drawerRowAlign} gap-1.5 h-11 px-1.5 rounded-md hover:bg-accent/30 min-w-0 shrink-0 overflow-visible`}
                                 >
                                   <button
                                     type="button"
@@ -1222,7 +1308,7 @@ function ServerListPage() {
                             return (
                               <div
                                 key={entry.userId}
-                                className="flex items-center gap-1.5 h-11 px-1.5 rounded-md hover:bg-accent/30 min-w-0 shrink-0 overflow-visible"
+                                className={`flex ${drawerRowAlign} gap-1.5 h-11 px-1.5 rounded-md hover:bg-accent/30 min-w-0 shrink-0 overflow-visible`}
                               >
                                 <button
                                   type="button"
@@ -1320,7 +1406,7 @@ function ServerListPage() {
                           return (
                             <div
                               key={userId}
-                              className="flex items-center gap-1.5 h-11 px-1.5 rounded-md hover:bg-accent/30 min-w-0 shrink-0 overflow-visible"
+                              className={`flex ${drawerRowAlign} gap-1.5 h-11 px-1.5 rounded-md hover:bg-accent/30 min-w-0 shrink-0 overflow-visible`}
                             >
                               <button
                                 type="button"
@@ -1400,11 +1486,190 @@ function ServerListPage() {
                     {sortedFriendsOnlyWithPresence.filter((f) => f.bestLevel !== 'offline').length} online
                   </p>
                 )}
-              </div>
-            </aside>
+                </>
+              )
+              return (
+                <>
+                  {!isDrawerMode && (
+                    <aside className="h-full min-h-0 flex flex-col flex-[0_1_25rem] min-w-[11rem] max-w-[11.75rem]">
+                      <div className="border-2 border-border bg-card/50 rounded-lg p-4 flex flex-col min-h-0 h-full">
+                        {friendsPaneInner}
+                      </div>
+                    </aside>
+                  )}
+                  {isDrawerMode && (
+                    <FriendsDrawerPanel
+                      friendsPaneMode={friendsPaneMode}
+                      pendingOutgoingCount={pendingOutgoing.length}
+                      mergedIncomingCount={mergedIncoming.length}
+                      stripFriends={stripFriends}
+                      stripPending={stripPending}
+                      getInitials={getInitials}
+                      avatarStyleForUser={avatarStyleForUser}
+                      popoverOpen={showFriendCodePopover}
+                      closeDrawerTrigger={closeDrawerTrigger}
+                      onAvatarClick={(userId, rect) => {
+                        setProfileCardUserId(userId)
+                        setProfileCardAnchor(rect)
+                      }}
+                      onToggleMode={() => {
+                        if (friendsPaneMode === 'friends') {
+                          setShowFriendCodePopover(false)
+                          setFriendsPaneMode('pending')
+                        } else {
+                          setFriendsPaneMode('friends')
+                        }
+                      }}
+                    >
+                      {friendsPaneInner}
+                    </FriendsDrawerPanel>
+                  )}
+                </>
+              )
+            })()}
           </div>
         </div>
       </main>
+
+      {/* Friend code popover portal when in drawer mode - renders outside drawer to avoid clipping */}
+      {isDrawerMode &&
+        showFriendCodePopover &&
+        addFriendButtonRect &&
+        createPortal(
+          <>
+            <div
+              className="fixed inset-0 z-[99]"
+              onMouseDown={(e) => {
+                setShowFriendCodePopover(false)
+                setAddFriendButtonRect(null)
+                const drawer = document.querySelector('[data-friends-drawer]')
+                if (drawer) {
+                  const r = drawer.getBoundingClientRect()
+                  const inside = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom
+                  if (!inside) setCloseDrawerTrigger(t => t + 1)
+                } else {
+                  setCloseDrawerTrigger(t => t + 1)
+                }
+              }}
+              aria-hidden
+            />
+            <div
+              className="fixed z-[100] w-56 border-2 border-border bg-card rounded-lg p-3 shadow-lg space-y-3"
+              style={{
+                top: addFriendButtonRect.bottom + 4,
+                right: window.innerWidth - addFriendButtonRect.right,
+              }}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+            <div className="pb-2 border-b border-border">
+              <p className="text-xs text-muted-foreground font-light mb-1">Add by code</p>
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1 shrink-0 min-w-[14ch]">
+                  <input
+                    ref={friendCodeFirstInputRef}
+                    type="text"
+                    value={friendCodeInput.slice(0, 4)}
+                    onChange={(e) => {
+                      const raw = e.target.value.replace(/\W/g, '').toUpperCase().slice(0, 8)
+                      setFriendCodeInput(raw)
+                      setFriendCodeError('')
+                      if (raw.length > 4) setTimeout(() => friendCodeSecondInputRef.current?.focus(), 0)
+                    }}
+                    placeholder="XXXX"
+                    className="min-w-[6.5ch] w-[6.5ch] px-2 py-1.5 bg-background border border-border rounded-none text-sm font-mono tracking-[0.04em] uppercase focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-0"
+                    spellCheck={false}
+                  />
+                  <span className="text-muted-foreground font-mono select-none" aria-hidden>-</span>
+                  <input
+                    ref={friendCodeSecondInputRef}
+                    type="text"
+                    value={friendCodeInput.slice(4, 8)}
+                    onChange={(e) => {
+                      const second = e.target.value.replace(/\W/g, '').toUpperCase().slice(0, 4)
+                      setFriendCodeInput(friendCodeInput.slice(0, 4) + second)
+                      setFriendCodeError('')
+                    }}
+                    onKeyDown={(e) => {
+                      const atStart = (e.target as HTMLInputElement).selectionStart === 0
+                      if (e.key === 'Backspace' && atStart && friendCodeInput.length > 0) {
+                        e.preventDefault()
+                        const newFirst = friendCodeInput.slice(0, 4).slice(0, -1)
+                        const newSecond = friendCodeInput.slice(4, 8)
+                        setFriendCodeInput(newFirst + newSecond)
+                        setTimeout(() => {
+                          const el = friendCodeFirstInputRef.current
+                          if (el) {
+                            el.focus()
+                            el.setSelectionRange(newFirst.length, newFirst.length)
+                          }
+                        }, 0)
+                      }
+                    }}
+                    placeholder="XXXX"
+                    className="min-w-[6.5ch] w-[6.5ch] px-2 py-1.5 bg-background border border-border rounded-none text-sm font-mono tracking-[0.04em] uppercase focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-0"
+                    spellCheck={false}
+                    maxLength={4}
+                  />
+                </div>
+                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0 self-center" title={pastedCode ? 'Pasted' : 'Paste'} onClick={async () => {
+                  try {
+                    const text = (window as { __TAURI__?: unknown }).__TAURI__ ? await readClipboardText() : await navigator.clipboard.readText()
+                    const raw = (text ?? '').replace(/\W/g, '').toUpperCase().slice(0, 8)
+                    setFriendCodeInput(raw)
+                    setFriendCodeError('')
+                    setPastedCode(true)
+                    setTimeout(() => setPastedCode(false), 2000)
+                    if (raw.length > 4) setTimeout(() => friendCodeSecondInputRef.current?.focus(), 0)
+                    else friendCodeFirstInputRef.current?.focus()
+                  } catch {}
+                }}>
+                  {pastedCode ? <Check className="h-3.5 w-3.5 text-green-500" /> : <ClipboardPaste className="h-3.5 w-3.5" />}
+                </Button>
+                <Button variant="outline" size="sm" className={`h-8 shrink-0 px-[0.25rem] text-[0.8rem] ${friendCodeInput.trim().length >= 8 && !isRedeemingCode ? 'bg-white text-black border-white hover:bg-white/90 hover:text-black' : ''}`} disabled={isRedeemingCode || friendCodeInput.trim().length < 8} onClick={async () => {
+                  setFriendCodeError('')
+                  setIsRedeemingCode(true)
+                  try {
+                    await redeemFriendCode(friendCodeInput.trim(), profile?.display_name ?? identity?.display_name ?? 'Unknown')
+                    setFriendCodeInput('')
+                    setShowFriendCodePopover(false)
+                    setAddFriendButtonRect(null)
+                  } catch (e) {
+                    setFriendCodeError(e instanceof Error ? e.message : 'Failed')
+                  } finally {
+                    setIsRedeemingCode(false)
+                  }
+                }}>
+                  {isRedeemingCode ? '...' : 'Add'}
+                </Button>
+              </div>
+              {friendCodeError && <p className="text-xs text-destructive mt-1">{friendCodeError}</p>}
+            </div>
+            {myFriendCode ? (
+              <>
+                <p className="text-xs text-muted-foreground font-light">Your code</p>
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1 flex-1 min-w-0">
+                    <code className="min-w-[6.5ch] text-sm font-mono tracking-wider uppercase text-center">{normalizeFriendCode(myFriendCode ?? '').slice(0, 4)}</code>
+                    <span className="text-muted-foreground font-mono select-none" aria-hidden>-</span>
+                    <code className="min-w-[6.5ch] text-sm font-mono tracking-wider uppercase text-center">{normalizeFriendCode(myFriendCode ?? '').slice(4, 8)}</code>
+                  </div>
+                  <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" onClick={() => { navigator.clipboard.writeText(normalizeFriendCode(myFriendCode ?? '')); setCopiedFriendCode(true); setTimeout(() => setCopiedFriendCode(false), 2000) }} title="Copy">
+                    {copiedFriendCode ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+                  </Button>
+                  <Button variant="outline" size="icon" className="h-8 w-8 shrink-0 text-destructive hover:text-destructive" onClick={async () => { await revokeFriendCode() }} title="Revoke">
+                    <X className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <Button variant="outline" size="sm" className="w-full justify-start gap-2 font-light bg-white text-black border-white hover:bg-white/90 hover:text-black" disabled={isCreatingCode} onClick={async () => { setIsCreatingCode(true); try { await createFriendCode() } catch (e) { console.warn(e) } finally { setIsCreatingCode(false) } }}>
+                <Plus className="h-3.5 w-3.5" />{isCreatingCode ? 'Creating...' : 'Create friend code'}
+              </Button>
+            )}
+          </div>
+          </>,
+          document.body
+        )}
 
       {showCreateDialog && (
         <div className="fixed inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
