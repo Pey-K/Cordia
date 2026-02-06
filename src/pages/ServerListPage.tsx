@@ -961,44 +961,6 @@ function ServerListPage() {
                     {friendsPaneMode === 'friends' ? 'Friends' : 'Pending invites'}
                   </h3>
                   <div className="flex items-center gap-0.5">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 relative"
-                      onClick={() => {
-                        if (friendsPaneMode === 'friends') {
-                          setShowFriendCodePopover(false)
-                          setFriendsPaneMode('pending')
-                        } else {
-                          setFriendsPaneMode('friends')
-                        }
-                      }}
-                      title={friendsPaneMode === 'friends' ? 'Pending invites' : 'Back to friends'}
-                    >
-                      {friendsPaneMode === 'friends' ? (
-                        <>
-                          <Bell className="h-4 w-4" />
-                          {pendingOutgoing.length > 0 && (
-                            <span
-                              className="absolute -top-0.5 left-0.5 min-w-[0.75rem] h-3.5 px-0.5 flex items-center justify-center rounded-sm bg-gray-500 text-black border border-border text-[8px] font-medium leading-none pointer-events-none"
-                              title={`${pendingOutgoing.length} outgoing`}
-                            >
-                              {pendingOutgoing.length > 99 ? '99+' : pendingOutgoing.length}
-                            </span>
-                          )}
-                          {mergedIncoming.length > 0 && (
-                            <span
-                              className="absolute -top-0.5 right-0.5 min-w-[0.75rem] h-3.5 px-0.5 flex items-center justify-center rounded-sm bg-green-500 text-white border border-border text-[8px] font-medium leading-none pointer-events-none"
-                              title={`${mergedIncoming.length} incoming`}
-                            >
-                              {mergedIncoming.length > 99 ? '99+' : mergedIncoming.length}
-                            </span>
-                          )}
-                        </>
-                      ) : (
-                        <Users className="h-4 w-4" />
-                      )}
-                    </Button>
                     <div className="relative">
                       <Button
                         ref={addFriendButtonRef}
@@ -1191,9 +1153,47 @@ function ServerListPage() {
                       </>
                     )}
                     </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 relative"
+                      onClick={() => {
+                        if (friendsPaneMode === 'friends') {
+                          setShowFriendCodePopover(false)
+                          setFriendsPaneMode('pending')
+                        } else {
+                          setFriendsPaneMode('friends')
+                        }
+                      }}
+                      title={friendsPaneMode === 'friends' ? 'Pending invites' : 'Back to friends'}
+                    >
+                      {friendsPaneMode === 'friends' ? (
+                        <>
+                          <Bell className="h-4 w-4" />
+                          {pendingOutgoing.length > 0 && (
+                            <span
+                              className="absolute -top-0.5 left-0.5 min-w-[0.75rem] h-3.5 px-0.5 flex items-center justify-center rounded-sm bg-gray-500 text-black border border-border text-[8px] font-medium leading-none pointer-events-none"
+                              title={`${pendingOutgoing.length} outgoing`}
+                            >
+                              {pendingOutgoing.length > 99 ? '99+' : pendingOutgoing.length}
+                            </span>
+                          )}
+                          {mergedIncoming.length > 0 && (
+                            <span
+                              className="absolute -top-0.5 right-0.5 min-w-[0.75rem] h-3.5 px-0.5 flex items-center justify-center rounded-sm bg-green-500 text-white border border-border text-[8px] font-medium leading-none pointer-events-none"
+                              title={`${mergedIncoming.length} incoming`}
+                            >
+                              {mergedIncoming.length > 99 ? '99+' : mergedIncoming.length}
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <Users className="h-4 w-4" />
+                      )}
+                    </Button>
                   </div>
                 </div>
-                <div className="mt-3 flex-1 min-h-0 overflow-y-auto space-y-3 pr-1">
+                <div className={`mt-3 flex-1 min-h-0 overflow-y-auto space-y-3 pr-1 ${!isDrawerMode ? 'pt-1.5' : ''}`}>
                   {friendsPaneMode === 'pending' ? (
                     <>
                       <div className="flex gap-1 mb-2 pt-5">
@@ -1234,7 +1234,7 @@ function ServerListPage() {
                         pendingOutgoing.length === 0 ? (
                           <p className="text-sm font-light text-muted-foreground">No pending invites you sent.</p>
                         ) : (
-                          <div className="space-y-0.5">
+                          <div className="space-y-1">
                             {pendingOutgoing.map((userId) => {
                               const rp = remoteProfiles.getProfile(userId)
                               const presence = pendingPresenceMap.get(userId)
@@ -1249,7 +1249,7 @@ function ServerListPage() {
                               return (
                                 <div
                                   key={userId}
-                                  className={`flex ${drawerRowAlign} gap-1.5 h-11 px-1.5 rounded-md hover:bg-accent/30 min-w-0 shrink-0 overflow-visible`}
+                                  className={`flex ${drawerRowAlign} gap-1.5 px-1.5 rounded-md min-w-0 shrink-0 overflow-visible min-h-[2rem]`}
                                 >
                                   <button
                                     type="button"
@@ -1300,7 +1300,7 @@ function ServerListPage() {
                       ) : mergedIncoming.length === 0 ? (
                         <p className="text-sm font-light text-muted-foreground">No incoming requests.</p>
                       ) : (
-                        <div className="space-y-0.5">
+                        <div className="space-y-1">
                           {mergedIncoming.map((entry) => {
                             const presence = pendingPresenceMap.get(entry.userId)
                             const bestLevel = presence?.bestLevel ?? 'offline'
@@ -1308,7 +1308,7 @@ function ServerListPage() {
                             return (
                               <div
                                 key={entry.userId}
-                                className={`flex ${drawerRowAlign} gap-1.5 h-11 px-1.5 rounded-md hover:bg-accent/30 min-w-0 shrink-0 overflow-visible`}
+                                className={`flex ${drawerRowAlign} gap-1.5 px-1.5 rounded-md min-w-0 shrink-0 overflow-visible min-h-[2rem]`}
                               >
                                 <button
                                   type="button"
@@ -1392,7 +1392,7 @@ function ServerListPage() {
                       friend code to share.
                     </p>
                   ) : (
-                    <div className="space-y-0.5">
+                    <div className="space-y-1">
                       {(() => {
                         const list = sortedFriendsOnlyWithPresence
                         const offlineStartIndex = list.findIndex((f) => f.bestLevel === 'offline')
@@ -1406,7 +1406,7 @@ function ServerListPage() {
                           return (
                             <div
                               key={userId}
-                              className={`flex ${drawerRowAlign} gap-1.5 h-11 px-1.5 rounded-md hover:bg-accent/30 min-w-0 shrink-0 overflow-visible`}
+                              className={`flex ${drawerRowAlign} gap-1.5 px-1.5 rounded-md min-w-0 shrink-0 overflow-visible min-h-[2rem]`}
                             >
                               <button
                                 type="button"
@@ -1462,8 +1462,8 @@ function ServerListPage() {
                           <>
                             {onlineFriends.map((f) => renderRow(f))}
                             {hasOfflineSep && (
-                              <div className="flex w-full items-center py-0.5" aria-hidden>
-                                <div className="h-px w-full shrink-0 bg-muted-foreground/60" />
+                              <div className="flex w-full items-center px-1 -mt-2" style={{ paddingTop: '0.15rem', paddingBottom: '0.35rem' }} aria-hidden>
+                                <div className="h-px flex-1 bg-muted-foreground/60" />
                               </div>
                             )}
                             {offlineFriends.map((f) => renderRow(f))}

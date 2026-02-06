@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, type ReactNode, type CSSProperties } from 
 import { Bell, Users } from 'lucide-react'
 
 const DRAWER_CLOSED_WIDTH = 48 // px - matches PFP strip
-const DRAWER_OPEN_WIDTH = 176 // 11rem - matches original friends pane
+const DRAWER_OPEN_WIDTH = 188 // 11.75rem
 const HOVER_OPEN_DELAY_MS = 120
 const RESIZE_SUPPRESS_MS = 250
 
@@ -194,8 +194,53 @@ export function FriendsDrawerPanel({
         </button>
       }
       stripContent={
-        <div className="flex flex-col items-center gap-2">
-          {list.map(({ userId, displayName, avatarDataUrl, bestLevel }) => (
+        <div className="flex flex-col items-center gap-2 min-h-0 flex-1">
+          {isFriends ? (() => {
+            const offlineIdx = list.findIndex((f) => f.bestLevel === 'offline')
+            const hasOfflineSep = offlineIdx > 0 && offlineIdx < list.length
+            const online = hasOfflineSep ? list.slice(0, offlineIdx) : list
+            const offline = hasOfflineSep ? list.slice(offlineIdx) : []
+            const renderPfp = ({ userId, displayName, avatarDataUrl, bestLevel }: { userId: string; displayName: string; avatarDataUrl: string | null; bestLevel?: string }) => (
+              <button
+                key={userId}
+                type="button"
+                className="relative h-7 w-7 shrink-0 grid place-items-center rounded-none ring-2 ring-background"
+                style={!avatarDataUrl ? avatarStyleForUser(userId) : undefined}
+                onClick={(e) => onAvatarClick(userId, (e.currentTarget as HTMLElement).getBoundingClientRect())}
+                aria-label={displayName}
+              >
+                {avatarDataUrl ? (
+                  <img src={avatarDataUrl} alt="" className="w-full h-full object-cover" />
+                ) : (
+                  <span className="text-[9px] font-mono tracking-wider">{getInitials(displayName)}</span>
+                )}
+                {bestLevel ? (
+                  <div className="absolute -top-1 left-1/2 -translate-x-1/2">
+                    {bestLevel === 'in_call' ? (
+                      <div className="h-2 w-2 bg-blue-500 ring-2 ring-background" />
+                    ) : bestLevel === 'active' ? (
+                      <div className="h-2 w-2 bg-green-500 ring-2 ring-background" />
+                    ) : bestLevel === 'online' ? (
+                      <div className="h-2 w-2 bg-amber-500 ring-2 ring-background" />
+                    ) : (
+                      <div className="h-2 w-2 bg-muted-foreground ring-2 ring-background" />
+                    )}
+                  </div>
+                ) : null}
+              </button>
+            )
+            return (
+              <>
+                {online.map((f) => renderPfp(f))}
+                {hasOfflineSep && (
+                  <div className="w-full flex items-center justify-center py-0.5" aria-hidden>
+                    <div className="h-px flex-1 max-w-[80%] bg-muted-foreground/60" />
+                  </div>
+                )}
+                {offline.map((f) => renderPfp(f))}
+              </>
+            )
+          })() : list.map(({ userId, displayName, avatarDataUrl }) => (
             <button
               key={userId}
               type="button"
@@ -209,19 +254,6 @@ export function FriendsDrawerPanel({
               ) : (
                 <span className="text-[9px] font-mono tracking-wider">{getInitials(displayName)}</span>
               )}
-              {isFriends && bestLevel ? (
-                <div className="absolute -top-1 left-1/2 -translate-x-1/2">
-                  {bestLevel === 'in_call' ? (
-                    <div className="h-2 w-2 bg-blue-500 ring-2 ring-background" />
-                  ) : bestLevel === 'active' ? (
-                    <div className="h-2 w-2 bg-green-500 ring-2 ring-background" />
-                  ) : bestLevel === 'online' ? (
-                    <div className="h-2 w-2 bg-amber-500 ring-2 ring-background" />
-                  ) : (
-                    <div className="h-2 w-2 bg-muted-foreground ring-2 ring-background" />
-                  )}
-                </div>
-              ) : null}
             </button>
           ))}
         </div>
