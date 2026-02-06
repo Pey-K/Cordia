@@ -108,10 +108,10 @@ export function UserProfileCard({
           <div className="relative mt-auto pt-3 border-t border-border min-h-[45px]">
             {createdLabel ? (
               <span
-                className="absolute left-0 bottom-0.0 text-[10px] text-muted-foreground opacity-60 italic font-light"
+                className="absolute left-0 bottom-0.0 text-[10px] text-muted-foreground opacity-60 font-light"
                 aria-hidden
               >
-                Account created: <br/> {createdLabel}
+                <i>Account created: </i><br/> {createdLabel}
               </span>
             ) : null}
             {showFriendAction && (
