@@ -19,6 +19,7 @@ import { useProfile } from '../contexts/ProfileContext'
 import { useRemoteProfiles } from '../contexts/RemoteProfilesContext'
 import { useServers } from '../contexts/ServersContext'
 import { useFriends } from '../contexts/FriendsContext'
+import { useToast } from '../contexts/ToastContext'
 
 /** Strip to raw 8-char code (no dash). Used so dash is never part of stored/copied value. */
 function normalizeFriendCode(code: string): string {
@@ -54,12 +55,12 @@ function ServerListPage() {
     redeemFriendCode,
     myFriendCode,
   } = useFriends()
+  const { toast } = useToast()
   const [isCreating, setIsCreating] = useState(false)
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<Server | null>(null)
   const [serverName, setServerName] = useState('')
   const [inviteCode, setInviteCode] = useState('')
-  const [joinError, setJoinError] = useState('')
   const [showJoinInline, setShowJoinInline] = useState(false)
   const [showCreateInline, setShowCreateInline] = useState(false)
   const joinFirstInputRef = useRef<HTMLInputElement | null>(null)
@@ -71,7 +72,6 @@ function ServerListPage() {
   const [showFriendCodePopover, setShowFriendCodePopover] = useState(false)
   const [closeDrawerTrigger, setCloseDrawerTrigger] = useState(0)
   const [friendCodeInput, setFriendCodeInput] = useState('')
-  const [friendCodeError, setFriendCodeError] = useState('')
   const friendCodeFirstInputRef = useRef<HTMLInputElement>(null)
   const friendCodeSecondInputRef = useRef<HTMLInputElement>(null)
   const [isRedeemingCode, setIsRedeemingCode] = useState(false)
@@ -105,7 +105,6 @@ function ServerListPage() {
   useEffect(() => {
     if (!showFriendCodePopover) {
       setFriendCodeInput('')
-      setFriendCodeError('')
       setPastedCode(false)
       setRevealFriendCode(false)
     }
@@ -615,6 +614,7 @@ function ServerListPage() {
       navigate(`/home/${newServer.id}`, { state: { server: newServer } })
     } catch (error) {
       console.error('Failed to create server:', error)
+      toast('Failed to create server. Please try again.')
     } finally {
       setIsCreating(false)
     }
@@ -624,7 +624,6 @@ function ServerListPage() {
     if (!identity || !inviteCode.trim()) return
 
     const input = inviteCode.trim()
-    setJoinError('')
     setIsCreating(true)
 
     try {
@@ -634,7 +633,7 @@ function ServerListPage() {
       if (/^rmmt:\/\//i.test(input)) {
         const parsed = parseInviteUri(input)
         if (!parsed) {
-          setJoinError('Invalid invite. Paste the full invite link (cordia://...).')
+          toast('Invalid invite. Paste the full invite link (cordia://...).')
           return
         }
 
@@ -646,7 +645,7 @@ function ServerListPage() {
         inviteCode = parsed.signingPubkey
       } else {
         if (!signalingServer) {
-          setJoinError('No beacon configured.')
+          toast('No beacon configured.')
           return
         }
         inviteCode = input
@@ -661,13 +660,12 @@ function ServerListPage() {
         window.dispatchEvent(new Event('cordia:servers-updated'))
         setShowJoinInline(false)
         setInviteCode('')
-        setJoinError('')
         navigate(`/home/${updatedServer.id}`, { state: { server: updatedServer } })
         return
       }
     } catch (error) {
       console.error('Failed to join server:', error)
-      setJoinError('Failed to join server. Please try again.')
+      toast('Failed to join server. Please try again.')
     } finally {
       setIsCreating(false)
     }
@@ -706,7 +704,7 @@ function ServerListPage() {
       window.dispatchEvent(new Event('cordia:servers-updated'))
     } catch (error) {
       console.error('Failed to delete server:', error)
-      setJoinError('Failed to delete server. Please try again.')
+      toast('Failed to delete server. Please try again.')
     } finally {
       setIsCreating(false)
     }
@@ -777,7 +775,6 @@ function ServerListPage() {
                                 onChange={(e) => {
                                   const raw = e.target.value.replace(/\W/g, '').toUpperCase().slice(0, 8)
                                   setInviteCode(raw)
-                                  setJoinError('')
                                   if (raw.length > 4) setTimeout(() => joinSecondInputRef.current?.focus(), 0)
                                 }}
                                 onKeyDown={(e) => {
@@ -785,7 +782,6 @@ function ServerListPage() {
                                   else if (e.key === 'Escape') {
                                     setShowJoinInline(false)
                                     setInviteCode('')
-                                    setJoinError('')
                                   }
                                   const atStart = (e.target as HTMLInputElement).selectionStart === 0
                                   if (e.key === 'Backspace' && atStart && inviteCode.length > 0) {
@@ -814,14 +810,12 @@ function ServerListPage() {
                                 onChange={(e) => {
                                   const second = e.target.value.replace(/\W/g, '').toUpperCase().slice(0, 4)
                                   setInviteCode(inviteCode.slice(0, 4) + second)
-                                  setJoinError('')
                                 }}
                                 onKeyDown={(e) => {
                                   if (e.key === 'Enter' && !isCreating) handleJoinServer()
                                   else if (e.key === 'Escape') {
                                     setShowJoinInline(false)
                                     setInviteCode('')
-                                    setJoinError('')
                                   }
                                   const atStart = (e.target as HTMLInputElement).selectionStart === 0
                                   if (e.key === 'Backspace' && atStart && inviteCode.length > 0) {
@@ -856,7 +850,6 @@ function ServerListPage() {
                                     : await navigator.clipboard.readText()
                                   const raw = (text ?? '').replace(/\W/g, '').toUpperCase().slice(0, 8)
                                   setInviteCode(raw)
-                                  setJoinError('')
                                   setPastedJoinCode(true)
                                   setTimeout(() => setPastedJoinCode(false), 2000)
                                   if (raw.length > 4) setTimeout(() => joinSecondInputRef.current?.focus(), 0)
@@ -877,7 +870,6 @@ function ServerListPage() {
                             </Button>
                           </div>
                         </div>
-                        {joinError && <p className="text-xs text-destructive mt-1">{joinError}</p>}
                       </div>
                     </div>
                   )}
@@ -1068,7 +1060,6 @@ function ServerListPage() {
                                 onChange={(e) => {
                                   const raw = e.target.value.replace(/\W/g, '').toUpperCase().slice(0, 8)
                                   setFriendCodeInput(raw)
-                                  setFriendCodeError('')
                                   if (raw.length > 4) {
                                     setTimeout(() => friendCodeSecondInputRef.current?.focus(), 0)
                                   }
@@ -1085,7 +1076,6 @@ function ServerListPage() {
                                 onChange={(e) => {
                                   const second = e.target.value.replace(/\W/g, '').toUpperCase().slice(0, 4)
                                   setFriendCodeInput(friendCodeInput.slice(0, 4) + second)
-                                  setFriendCodeError('')
                                 }}
                                 onKeyDown={(e) => {
                                   const atStart = (e.target as HTMLInputElement).selectionStart === 0
@@ -1121,7 +1111,6 @@ function ServerListPage() {
                                     : await navigator.clipboard.readText()
                                   const raw = (text ?? '').replace(/\W/g, '').toUpperCase().slice(0, 8)
                                   setFriendCodeInput(raw)
-                                  setFriendCodeError('')
                                   setPastedCode(true)
                                   setTimeout(() => setPastedCode(false), 2000)
                                   if (raw.length > 4) setTimeout(() => friendCodeSecondInputRef.current?.focus(), 0)
@@ -1143,7 +1132,6 @@ function ServerListPage() {
                               className={`h-8 shrink-0 px-[0.25rem] text-[0.8rem] ${friendCodeInput.trim().length >= 8 && !isRedeemingCode ? 'bg-white text-black border-white hover:bg-white/90 hover:text-black' : ''}`}
                               disabled={isRedeemingCode || friendCodeInput.trim().length < 8}
                               onClick={async () => {
-                                setFriendCodeError('')
                                 setIsRedeemingCode(true)
                                 try {
                                   await redeemFriendCode(
@@ -1153,7 +1141,7 @@ function ServerListPage() {
                                   setFriendCodeInput('')
                                   setShowFriendCodePopover(false)
                                 } catch (e) {
-                                  setFriendCodeError(e instanceof Error ? e.message : 'Failed')
+                                  toast(e instanceof Error ? e.message : 'Failed')
                                 } finally {
                                   setIsRedeemingCode(false)
                                 }
@@ -1162,9 +1150,6 @@ function ServerListPage() {
                               {isRedeemingCode ? '...' : 'Add'}
                             </Button>
                           </div>
-                          {friendCodeError && (
-                            <p className="text-xs text-destructive mt-1">{friendCodeError}</p>
-                          )}
                         </div>
                         {myFriendCode ? (
                           <>
@@ -1677,7 +1662,6 @@ function ServerListPage() {
                     onChange={(e) => {
                       const raw = e.target.value.replace(/\W/g, '').toUpperCase().slice(0, 8)
                       setFriendCodeInput(raw)
-                      setFriendCodeError('')
                       if (raw.length > 4) setTimeout(() => friendCodeSecondInputRef.current?.focus(), 0)
                     }}
                     placeholder="XXXX"
@@ -1692,7 +1676,6 @@ function ServerListPage() {
                     onChange={(e) => {
                       const second = e.target.value.replace(/\W/g, '').toUpperCase().slice(0, 4)
                       setFriendCodeInput(friendCodeInput.slice(0, 4) + second)
-                      setFriendCodeError('')
                     }}
                     onKeyDown={(e) => {
                       const atStart = (e.target as HTMLInputElement).selectionStart === 0
@@ -1721,7 +1704,6 @@ function ServerListPage() {
                     const text = (window as { __TAURI__?: unknown }).__TAURI__ ? await readClipboardText() : await navigator.clipboard.readText()
                     const raw = (text ?? '').replace(/\W/g, '').toUpperCase().slice(0, 8)
                     setFriendCodeInput(raw)
-                    setFriendCodeError('')
                     setPastedCode(true)
                     setTimeout(() => setPastedCode(false), 2000)
                     if (raw.length > 4) setTimeout(() => friendCodeSecondInputRef.current?.focus(), 0)
@@ -1731,7 +1713,6 @@ function ServerListPage() {
                   {pastedCode ? <Check className="h-3.5 w-3.5 text-green-500" /> : <ClipboardPaste className="h-3.5 w-3.5" />}
                 </Button>
                 <Button variant="outline" size="sm" className={`h-8 shrink-0 px-[0.25rem] text-[0.8rem] ${friendCodeInput.trim().length >= 8 && !isRedeemingCode ? 'bg-white text-black border-white hover:bg-white/90 hover:text-black' : ''}`} disabled={isRedeemingCode || friendCodeInput.trim().length < 8} onClick={async () => {
-                  setFriendCodeError('')
                   setIsRedeemingCode(true)
                   try {
                     await redeemFriendCode(friendCodeInput.trim(), profile?.display_name ?? identity?.display_name ?? 'Unknown')
@@ -1739,7 +1720,7 @@ function ServerListPage() {
                     setShowFriendCodePopover(false)
                     setAddFriendButtonRect(null)
                   } catch (e) {
-                    setFriendCodeError(e instanceof Error ? e.message : 'Failed')
+                    toast(e instanceof Error ? e.message : 'Failed')
                   } finally {
                     setIsRedeemingCode(false)
                   }
@@ -1747,7 +1728,6 @@ function ServerListPage() {
                   {isRedeemingCode ? '...' : 'Add'}
                 </Button>
               </div>
-              {friendCodeError && <p className="text-xs text-destructive mt-1">{friendCodeError}</p>}
             </div>
             {myFriendCode ? (
               <>

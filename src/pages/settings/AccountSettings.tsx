@@ -6,12 +6,13 @@ import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AvatarCropModal } from '../../components/AvatarCropModal'
+import { useToast } from '../../contexts/ToastContext'
 
 export function AccountSettings() {
   const { identity } = useIdentity()
   const { profile, setAvatarFromFile, setAvatarFromDataUrl, clearAvatar, saveProfileFields } = useProfile()
+  const { toast } = useToast()
   const fileRef = useRef<HTMLInputElement | null>(null)
-  const [avatarError, setAvatarError] = useState('')
   const [revealUserId, setRevealUserId] = useState(false)
   const [revealPublicKey, setRevealPublicKey] = useState(false)
   const [pendingCropUrl, setPendingCropUrl] = useState<string | null>(null)
@@ -165,7 +166,7 @@ export function AccountSettings() {
                       setPendingCropUrl(url)
                     } catch (err) {
                       const msg = err instanceof Error ? err.message : ''
-                      setAvatarError(
+                      toast(
                         msg === 'GIF too large'
                           ? 'That GIF is too large. Please choose a smaller one (max 2MB).'
                           : 'Failed to set avatar. Please try a different image.'
@@ -197,7 +198,6 @@ export function AccountSettings() {
                 </div>
               </div>
             </div>
-            {avatarError && <p className="text-xs text-red-500">{avatarError}</p>}
             <p className="text-xs text-muted-foreground font-light">Stored locally on this device (for now).</p>
           </div>
         </div>
@@ -298,7 +298,7 @@ export function AccountSettings() {
               URL.revokeObjectURL(pendingCropUrl)
               setPendingCropUrl(null)
             } catch {
-              setAvatarError('Failed to set avatar. Please try a different image.')
+              toast('Failed to set avatar. Please try a different image.')
               URL.revokeObjectURL(pendingCropUrl)
               setPendingCropUrl(null)
             }

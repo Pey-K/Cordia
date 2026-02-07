@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, Upload, Loader2, Key, Shield } from 'lucide-react'
+import { useToast } from '../contexts/ToastContext'
 import { Button } from '../components/ui/button'
 import { importIdentity } from '../lib/tauri'
 
 function IdentityRestorePage() {
+  const { toast } = useToast()
   const [isImporting, setIsImporting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
   const [displayedText, setDisplayedText] = useState('')
   const [isDragging, setIsDragging] = useState(false)
   const navigate = useNavigate()
@@ -52,7 +53,6 @@ function IdentityRestorePage() {
 
   const processFile = async (file: File) => {
     setIsImporting(true)
-    setError(null)
 
     try {
       const arrayBuffer = await file.arrayBuffer()
@@ -80,7 +80,7 @@ function IdentityRestorePage() {
       // Reload to initialize AccountContext with new session
       window.location.href = '/home'
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to import account. The file may be corrupted or invalid.')
+      toast(err instanceof Error ? err.message : 'Failed to import account. The file may be corrupted or invalid.')
       setIsImporting(false)
     }
   }
@@ -197,12 +197,6 @@ function IdentityRestorePage() {
                 </label>
               </div>
             </div>
-
-            {error && (
-              <div className="bg-destructive/10 border-l-2 border-destructive p-4 text-sm text-destructive">
-                {error}
-              </div>
-            )}
 
             {isImporting && (
               <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground font-light">

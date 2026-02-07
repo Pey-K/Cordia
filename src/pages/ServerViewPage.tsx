@@ -13,6 +13,7 @@ import { useSpeaking } from '../contexts/SpeakingContext'
 import { useSidebarWidth } from '../contexts/SidebarWidthContext'
 import { useActiveServer } from '../contexts/ActiveServerContext'
 import { cn } from '../lib/utils'
+import { useToast } from '../contexts/ToastContext'
 
 function ServerViewPage() {
   const { serverId } = useParams<{ serverId: string }>()
@@ -26,6 +27,7 @@ function ServerViewPage() {
   const { joinVoice, leaveVoice, isInVoice: webrtcIsInVoice, currentRoomId } = useWebRTC()
   const { signalingUrl, status: signalingStatus } = useSignaling()
   const { width, setWidth, resetWidth } = useSidebarWidth()
+  const { toast } = useToast()
 
   /** For the current user, presence is instant from local state; for others, use signaling data. */
   const getMemberLevel = (signingPubkey: string, userId: string, isInVoiceForUser: boolean): PresenceLevel => {
@@ -52,7 +54,6 @@ function ServerViewPage() {
   const [isRevokingInvite, setIsRevokingInvite] = useState(false)
   const [deleteChatTarget, setDeleteChatTarget] = useState<Chat | null>(null)
   const [isDeletingChat, setIsDeletingChat] = useState(false)
-  const [deleteChatError, setDeleteChatError] = useState('')
 
   const getInitials = (name: string) => {
     const cleaned = name.trim()
@@ -326,14 +327,12 @@ function ServerViewPage() {
 
   const handleDeleteChatClick = (e: React.MouseEvent, chat: Chat) => {
     e.stopPropagation()
-    setDeleteChatError('')
     setDeleteChatTarget(chat)
   }
 
   const confirmDeleteChat = async () => {
     if (!serverId || !server || !deleteChatTarget) return
     setIsDeletingChat(true)
-    setDeleteChatError('')
 
     try {
       // If we're currently in this chat's voice channel, disconnect first.
@@ -357,7 +356,7 @@ function ServerViewPage() {
       window.dispatchEvent(new Event('cordia:servers-updated'))
     } catch (e) {
       console.error('Failed to delete chat:', e)
-      setDeleteChatError('Failed to delete chat. Please try again.')
+      toast('Failed to delete chat. Please try again.')
     } finally {
       setIsDeletingChat(false)
     }
@@ -834,9 +833,6 @@ function ServerViewPage() {
               <p className="text-sm text-muted-foreground font-light leading-relaxed">
                 This will remove <span className="text-foreground font-normal">#{deleteChatTarget.name}</span> for everyone in this server.
               </p>
-              {deleteChatError && (
-                <p className="text-sm text-red-500 font-light">{deleteChatError}</p>
-              )}
             </div>
             <div className="flex gap-3 pt-2">
               <Button

@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Loader2, Key, WifiOff, Download } from 'lucide-react'
+import { useToast } from '../contexts/ToastContext'
 import { Button } from '../components/ui/button'
 import { createIdentity } from '../lib/tauri'
 
 function IdentitySetupPage() {
+  const { toast } = useToast()
   const [displayName, setDisplayName] = useState('')
   const [isCreating, setIsCreating] = useState(false)
-  const [error, setError] = useState<string | null>(null)
   const [displayedText, setDisplayedText] = useState('')
   const navigate = useNavigate()
   
@@ -31,12 +32,11 @@ function IdentitySetupPage() {
 
   const handleCreate = async () => {
     if (!displayName.trim()) {
-      setError('Please enter a display name')
+      toast('Please enter a display name')
       return
     }
 
     setIsCreating(true)
-    setError(null)
 
     try {
       // Create identity (also creates account and sets session)
@@ -45,7 +45,7 @@ function IdentitySetupPage() {
       // Reload to initialize AccountContext with new session
       window.location.href = '/home'
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create account')
+      toast(err instanceof Error ? err.message : 'Failed to create account')
       setIsCreating(false)
     }
   }
@@ -117,12 +117,6 @@ function IdentitySetupPage() {
                 autoFocus
               />
             </div>
-
-            {error && (
-              <div className="bg-destructive/10 border-l-2 border-destructive p-4 text-sm text-destructive">
-                {error}
-              </div>
-            )}
 
             <div className="space-y-3 pt-4">
               <Button

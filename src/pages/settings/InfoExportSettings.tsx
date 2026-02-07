@@ -1,17 +1,18 @@
 import { useState } from 'react'
 import { Download, Loader2, LogOut } from 'lucide-react'
 import { Button } from '../../components/ui/button'
+import { useToast } from '../../contexts/ToastContext'
 import { useAccount } from '../../contexts/AccountContext'
 import { useProfile } from '../../contexts/ProfileContext'
 import { useIdentity } from '../../contexts/IdentityContext'
 import { exportFullIdentity, exportFullIdentityDebug } from '../../lib/tauri'
 
 export function InfoExportSettings() {
+  const { toast } = useToast()
   const { logout } = useAccount()
   const { profile } = useProfile()
   const { identity } = useIdentity()
   const [isExporting, setIsExporting] = useState(false)
-  const [exportError, setExportError] = useState<string | null>(null)
 
   function handleLogout() {
     logout()
@@ -24,7 +25,6 @@ export function InfoExportSettings() {
 
   async function handleExport() {
     setIsExporting(true)
-    setExportError(null)
 
     try {
       // Build profile JSON from context (exclude avatar - too large in base64)
@@ -70,7 +70,7 @@ export function InfoExportSettings() {
       document.body.removeChild(a)
       URL.revokeObjectURL(url)
     } catch (err) {
-      setExportError(err instanceof Error ? err.message : 'Failed to export account')
+      toast(err instanceof Error ? err.message : 'Failed to export account')
     } finally {
       setIsExporting(false)
     }
@@ -87,11 +87,6 @@ export function InfoExportSettings() {
           <p className="text-xs text-muted-foreground font-light">Export your account for backup</p>
         </div>
         <div className="space-y-4">
-          {exportError && (
-            <div className="bg-destructive/10 border-l-2 border-destructive p-4 text-sm text-destructive">
-              {exportError}
-            </div>
-          )}
           <Button
             variant="outline"
             onClick={handleExport}

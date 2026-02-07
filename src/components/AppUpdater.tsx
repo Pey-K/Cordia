@@ -2,12 +2,13 @@ import { useEffect, useState } from 'react'
 import { checkUpdate, installUpdate, onUpdaterEvent, type UpdateManifest, type UpdateStatusResult } from '@tauri-apps/api/updater'
 import { relaunch } from '@tauri-apps/api/process'
 import { Button } from './ui/button'
+import { useToast } from '../contexts/ToastContext'
 
 export function AppUpdater() {
+  const { toast } = useToast()
   const [updateManifest, setUpdateManifest] = useState<UpdateManifest | null>(null)
   const [dismissed, setDismissed] = useState(false)
   const [installing, setInstalling] = useState(false)
-  const [installError, setInstallError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
 
   useEffect(() => {
@@ -20,7 +21,10 @@ export function AppUpdater() {
         const unlistenFn = await onUpdaterEvent((res: UpdateStatusResult) => {
           if (res.status === 'PENDING') setStatus('Downloading...')
           else if (res.status === 'DONE') setStatus('Installing...')
-          else if (res.status === 'ERROR' && res.error) setInstallError(res.error)
+          else if (res.status === 'ERROR') {
+            // Don't toast background update-check errors (e.g. "Could not fetch a valid release JSON")
+            // — they're expected when no update server, dev mode, or offline
+          }
           else if (res.status === 'UPTODATE') setStatus(null)
         })
         unlisten = unlistenFn
@@ -28,7 +32,6 @@ export function AppUpdater() {
         const result = await checkUpdate()
         if (result.shouldUpdate && result.manifest) {
           setUpdateManifest(result.manifest)
-          setInstallError(null)
         }
       } catch (e) {
         // Not in Tauri or updater disabled / network error - ignore
@@ -45,13 +48,12 @@ export function AppUpdater() {
   const handleUpdate = async () => {
     if (!updateManifest || installing) return
     setInstalling(true)
-    setInstallError(null)
     try {
       await installUpdate()
       await relaunch()
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      setInstallError(msg)
+      toast(msg)
       setInstalling(false)
     }
   }
@@ -60,7 +62,6 @@ export function AppUpdater() {
     setDismissed(true)
     setUpdateManifest(null)
     setStatus(null)
-    setInstallError(null)
   }
 
   if (!window.__TAURI__ || !updateManifest || dismissed) return null
@@ -74,9 +75,6 @@ export function AppUpdater() {
         </div>
         {updateManifest.body?.trim() && (
           <p className="text-xs text-muted-foreground whitespace-pre-wrap">{updateManifest.body}</p>
-        )}
-        {installError && (
-          <p className="text-xs text-destructive">{installError}</p>
         )}
         {status && (
           <p className="text-xs text-muted-foreground">{status}</p>
