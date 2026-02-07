@@ -30,7 +30,7 @@
       }
     },
     "updater": {
-      "active": true,
+      "active": false,
       "endpoints": [
         "https://github.com/REPLACE_OWNER/REPLACE_REPO/releases/latest/download/latest.json"
       ],
