@@ -37,7 +37,7 @@ Cordia comes with a default beacon at `beacon.pkcollection.net` that you can use
 ```bash
 docker-compose up -d
 ```
-See **[SIGNALING_SETUP.md](SIGNALING_SETUP.md)** for details.
+See **[BEACON_SETUP.md](BEACON_SETUP.md)** for details.
 
 **Note:** You can change the beacon URL at any time in Settings → Connections. Each account can use a different beacon.
 
@@ -56,7 +56,7 @@ Cordia uses a hybrid P2P model that gracefully degrades based on available infra
 
 - **Beacon** (optional): WebSocket server for peer discovery, chat metadata, and presence tracking
   - **Default Beacon**: `beacon.pkcollection.net` (hosted for your convenience)
-  - **Self-Hosted**: Run your own beacon for full control (see [SIGNALING_SETUP.md](SIGNALING_SETUP.md))
+  - **Self-Hosted**: Run your own beacon for full control (see [BEACON_SETUP.md](BEACON_SETUP.md))
   - **Per-Account**: Each account can use a different beacon
   - **Privacy**: The beacon cannot read your user data - all server data and messages are encrypted and stored locally
 - **WebRTC P2P**: Direct peer-to-peer connections for voice communication
@@ -88,7 +88,7 @@ The app needs microphone access for voice chat. In the packaged app (Windows/mac
 
 - **[Quick Start Guide](QUICKSTART.md)** - Get running in 3 steps
 - **[Windows Setup](SETUP.md)** - Windows development environment setup
-- **[Beacon Setup](SIGNALING_SETUP.md)** - Deploy the beacon
+- **[Beacon Setup](BEACON_SETUP.md)** - Deploy the beacon
 - **[Deployment Guide](DEPLOYMENT_GUIDE.md)** - Deploy to your NAS or server
 - **[GitHub Setup](GITHUB_SETUP.md)** - Set up automatic Docker builds
 
@@ -195,7 +195,7 @@ See **[DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)** for complete deployment instr
    ```bash
    curl -fsSL https://raw.githubusercontent.com/Pey-K/Roommate/main/deploy/install.sh | bash
    ```
-3. **Manual Setup** - See [SIGNALING_SETUP.md](SIGNALING_SETUP.md)
+3. **Manual Setup** - See [BEACON_SETUP.md](BEACON_SETUP.md)
 
 ## Roadmap
 

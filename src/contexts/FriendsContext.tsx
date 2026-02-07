@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { listFriends, addFriend as addFriendTauri, removeFriend as removeFriendTauri } from '../lib/tauri'
 import { useAccount } from './AccountContext'
-import { useSignaling } from './SignalingContext'
+import { useBeacon } from './BeaconContext'
 import { useIdentity } from './IdentityContext'
 import { useRemoteProfiles } from './RemoteProfilesContext'
 import * as friendApi from '../lib/friend-api'
@@ -52,7 +52,7 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
   const [redemptions, setRedemptions] = useState<CodeRedemptionItem[]>([])
   const [myFriendCode, setMyFriendCode] = useState<string | null>(null)
   const { currentAccountId, accountInfoMap } = useAccount()
-  const { signalingUrl } = useSignaling()
+  const { beaconUrl } = useBeacon()
   const { identity } = useIdentity()
   const { applyUpdate: applyRemoteProfile } = useRemoteProfiles()
   const identityUserIdRef = useRef<string | null>(null)
@@ -94,9 +94,9 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
 
   const removeFriend = useCallback(
     async (userId: string) => {
-      if (signalingUrl) {
+      if (beaconUrl) {
         try {
-          await friendApi.removeFriend(signalingUrl, userId)
+          await friendApi.removeFriend(beaconUrl, userId)
         } catch (e) {
           console.warn('Beacon remove-friend notify failed:', e)
         }
@@ -105,7 +105,7 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
       await refreshFriends()
       window.dispatchEvent(new Event('cordia:friends-updated'))
     },
-    [refreshFriends, signalingUrl]
+    [refreshFriends, beaconUrl]
   )
 
   const isFriend = useCallback((userId: string) => friends.includes(userId), [friends])
@@ -113,9 +113,9 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
 
   const sendFriendRequest = useCallback(
     async (toUserId: string, fromDisplayName?: string, fromAccountCreatedAt?: string | null) => {
-      if (!signalingUrl) throw new Error('No beacon configured')
+      if (!beaconUrl) throw new Error('No beacon configured')
       const accountCreatedAt = fromAccountCreatedAt ?? (currentAccountId ? accountInfoMap[currentAccountId]?.created_at ?? null : null)
-      const result = await friendApi.sendFriendRequest(signalingUrl, toUserId, fromDisplayName, accountCreatedAt)
+      const result = await friendApi.sendFriendRequest(beaconUrl, toUserId, fromDisplayName, accountCreatedAt)
       if (result.accepted || result.mutual) {
         await addFriend(toUserId)
         setPendingOutgoing((prev) => prev.filter((id) => id !== toUserId))
@@ -123,99 +123,99 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
         setPendingOutgoing((prev) => (prev.includes(toUserId) ? prev : [...prev, toUserId]))
       }
     },
-    [signalingUrl, addFriend, currentAccountId, accountInfoMap]
+    [beaconUrl, addFriend, currentAccountId, accountInfoMap]
   )
 
   const acceptFriendRequest = useCallback(
     async (fromUserId: string, accepterDisplayName?: string, accepterAccountCreatedAt?: string | null) => {
-      if (!signalingUrl) throw new Error('No beacon configured')
+      if (!beaconUrl) throw new Error('No beacon configured')
       const accountCreatedAt = accepterAccountCreatedAt ?? (currentAccountId ? accountInfoMap[currentAccountId]?.created_at ?? null : null)
-      await friendApi.acceptFriendRequest(signalingUrl, fromUserId, accepterDisplayName, accountCreatedAt)
+      await friendApi.acceptFriendRequest(beaconUrl, fromUserId, accepterDisplayName, accountCreatedAt)
       setPendingIncoming((prev) => prev.filter((r) => r.from_user_id !== fromUserId))
       await addFriend(fromUserId)
     },
-    [signalingUrl, addFriend, currentAccountId, accountInfoMap]
+    [beaconUrl, addFriend, currentAccountId, accountInfoMap]
   )
 
   const cancelFriendRequest = useCallback(
     async (toUserId: string) => {
-      if (!signalingUrl) throw new Error('No beacon configured')
-      await friendApi.cancelFriendRequest(signalingUrl, toUserId)
+      if (!beaconUrl) throw new Error('No beacon configured')
+      await friendApi.cancelFriendRequest(beaconUrl, toUserId)
       setPendingOutgoing((prev) => prev.filter((id) => id !== toUserId))
     },
-    [signalingUrl]
+    [beaconUrl]
   )
 
   const declineFriendRequest = useCallback(
     async (fromUserId: string) => {
-      if (!signalingUrl) throw new Error('No beacon configured')
-      await friendApi.declineFriendRequest(signalingUrl, fromUserId)
+      if (!beaconUrl) throw new Error('No beacon configured')
+      await friendApi.declineFriendRequest(beaconUrl, fromUserId)
       setPendingIncoming((prev) => prev.filter((r) => r.from_user_id !== fromUserId))
     },
-    [signalingUrl]
+    [beaconUrl]
   )
 
   const createFriendCode = useCallback(async () => {
-    if (!signalingUrl) throw new Error('No beacon configured')
-    const result = await friendApi.createFriendCode(signalingUrl)
+    if (!beaconUrl) throw new Error('No beacon configured')
+    const result = await friendApi.createFriendCode(beaconUrl)
     setMyFriendCode(result.code)
     return result.code
-  }, [signalingUrl])
+  }, [beaconUrl])
 
   const revokeFriendCode = useCallback(async () => {
-    if (!signalingUrl) throw new Error('No beacon configured')
-    await friendApi.revokeFriendCode(signalingUrl)
+    if (!beaconUrl) throw new Error('No beacon configured')
+    await friendApi.revokeFriendCode(beaconUrl)
     setMyFriendCode(null)
-  }, [signalingUrl])
+  }, [beaconUrl])
 
   const redeemFriendCode = useCallback(
     async (code: string, redeemerDisplayName: string, redeemerAccountCreatedAt?: string | null) => {
-      if (!signalingUrl) throw new Error('No beacon configured')
+      if (!beaconUrl) throw new Error('No beacon configured')
       const identityUserId = identity?.user_id ?? identityUserIdRef.current
       if (!identityUserId) throw new Error('Not logged in')
       const accountCreatedAt = redeemerAccountCreatedAt ?? (currentAccountId ? accountInfoMap[currentAccountId]?.created_at ?? null : null)
-      const result = await friendApi.redeemFriendCode(signalingUrl, code, identityUserId, redeemerDisplayName, accountCreatedAt)
+      const result = await friendApi.redeemFriendCode(beaconUrl, code, identityUserId, redeemerDisplayName, accountCreatedAt)
       if (result.code_owner_id && !friends.includes(result.code_owner_id)) {
         setPendingOutgoing((prev) =>
           prev.includes(result.code_owner_id!) ? prev : [...prev, result.code_owner_id!]
         )
       }
     },
-    [signalingUrl, identity?.user_id, currentAccountId, accountInfoMap, friends]
+    [beaconUrl, identity?.user_id, currentAccountId, accountInfoMap, friends]
   )
 
   const acceptCodeRedemption = useCallback(
     async (redeemerUserId: string, codeOwnerDisplayName?: string, codeOwnerAccountCreatedAt?: string | null) => {
-      if (!signalingUrl) throw new Error('No beacon configured')
+      if (!beaconUrl) throw new Error('No beacon configured')
       const accountCreatedAt = codeOwnerAccountCreatedAt ?? (currentAccountId ? accountInfoMap[currentAccountId]?.created_at ?? null : null)
-      await friendApi.acceptCodeRedemption(signalingUrl, redeemerUserId, codeOwnerDisplayName, accountCreatedAt)
+      await friendApi.acceptCodeRedemption(beaconUrl, redeemerUserId, codeOwnerDisplayName, accountCreatedAt)
       setRedemptions((prev) => prev.filter((r) => r.redeemer_user_id !== redeemerUserId))
       await addFriend(redeemerUserId)
     },
-    [signalingUrl, addFriend, currentAccountId, accountInfoMap]
+    [beaconUrl, addFriend, currentAccountId, accountInfoMap]
   )
 
   const cancelCodeRedemption = useCallback(
     async (codeOwnerId: string) => {
-      if (!signalingUrl) throw new Error('No beacon configured')
-      await friendApi.cancelCodeRedemption(signalingUrl, codeOwnerId)
+      if (!beaconUrl) throw new Error('No beacon configured')
+      await friendApi.cancelCodeRedemption(beaconUrl, codeOwnerId)
       setPendingOutgoing((prev) => prev.filter((id) => id !== codeOwnerId))
     },
-    [signalingUrl]
+    [beaconUrl]
   )
 
   const declineCodeRedemption = useCallback(
     async (redeemerUserId: string) => {
-      if (!signalingUrl) throw new Error('No beacon configured')
-      await friendApi.declineCodeRedemption(signalingUrl, redeemerUserId)
+      if (!beaconUrl) throw new Error('No beacon configured')
+      await friendApi.declineCodeRedemption(beaconUrl, redeemerUserId)
       setRedemptions((prev) => prev.filter((r) => r.redeemer_user_id !== redeemerUserId))
     },
-    [signalingUrl]
+    [beaconUrl]
   )
 
   const cancelPendingTo = useCallback(
     async (userId: string) => {
-      if (!signalingUrl) throw new Error('No beacon configured')
+      if (!beaconUrl) throw new Error('No beacon configured')
       const clearPending = () => {
         setPendingOutgoing((prev) => prev.filter((id) => id !== userId))
         recentlyCancelledOutgoingRef.current.add(userId)
@@ -230,14 +230,14 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
         )
       }
       try {
-        await friendApi.cancelFriendRequest(signalingUrl, userId)
+        await friendApi.cancelFriendRequest(beaconUrl, userId)
         clearPending()
         return
       } catch {
         // not a direct request or 404 (e.g. beacon restarted / no cancel route), try redemption
       }
       try {
-        await friendApi.cancelCodeRedemption(signalingUrl, userId)
+        await friendApi.cancelCodeRedemption(beaconUrl, userId)
         clearPending()
         return
       } catch {
@@ -245,7 +245,7 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
         clearPending()
       }
     },
-    [signalingUrl]
+    [beaconUrl]
   )
 
   // Subscribe to friend WebSocket events (dispatched by ServerSyncBootstrap)

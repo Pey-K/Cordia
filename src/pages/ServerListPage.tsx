@@ -5,8 +5,8 @@ import { Button } from '../components/ui/button'
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useWindowSize } from '../lib/useWindowSize'
 import { FriendsDrawerPanel } from '../components/FriendsDrawer'
-import { useSignaling } from '../contexts/SignalingContext'
-import { SignalingStatus } from '../components/SignalingStatus'
+import { useBeacon } from '../contexts/BeaconContext'
+import { BeaconStatus } from '../components/BeaconStatus'
 import { UserProfileCard } from '../components/UserProfileCard'
 import { createServer, deleteServer, type Server, parseInviteUri, publishServerHintOpaque, publishServerHintMemberLeft, redeemTemporaryInvite, readClipboardText } from '../lib/tauri'
 import { useIdentity } from '../contexts/IdentityContext'
@@ -31,7 +31,7 @@ function ServerListPage() {
   const { identity } = useIdentity()
   const { currentAccountId, accountInfoMap } = useAccount()
   const { getLevel } = usePresence()
-  const { signalingUrl, status: signalingStatus } = useSignaling()
+  const { beaconUrl, status: beaconStatus } = useBeacon()
   const { profile } = useProfile()
   const remoteProfiles = useRemoteProfiles()
   const { servers, refreshServers, getServerById } = useServers()
@@ -222,7 +222,7 @@ function ServerListPage() {
     const voicePresence = useVoicePresence()
     const { activeSigningPubkey } = useActiveServer()
     const { isInVoice } = useWebRTC()
-    const { status: signalingStatus } = useSignaling()
+    const { status: beaconStatus } = useBeacon()
     const avatarPx = 28 // h-7/w-7
     const stepPx = 19    // overlap step (smaller = more overlap)
     const overflowBlockPx = 28 // +N pill same width as avatar
@@ -234,7 +234,7 @@ function ServerListPage() {
     // Current user's presence from local state (instant); others from server (PresenceContext)
     const getMemberLevel = (m: { user_id: string }): PresenceLevel => {
       if (identity?.user_id && m.user_id === identity.user_id) {
-        const signalingConnected = signalingStatus === 'connected'
+        const signalingConnected = beaconStatus === 'connected'
         if (!signalingConnected) return 'offline'
         if (isInVoice) return 'in_call'
         if (activeSigningPubkey === server.signing_pubkey) return 'active'
@@ -258,11 +258,11 @@ function ServerListPage() {
         return a.index - b.index
       })
       return withLevel.map((x) => x.member)
-    }, [server.members, server.signing_pubkey, getLevel, voicePresence, identity?.user_id, signalingStatus, activeSigningPubkey, isInVoice])
+    }, [server.members, server.signing_pubkey, getLevel, voicePresence, identity?.user_id, beaconStatus, activeSigningPubkey, isInVoice])
 
     const offlineStartIndex = useMemo(() => {
       return sortedMembers.findIndex((m) => getMemberLevel(m) === 'offline')
-    }, [sortedMembers, server.signing_pubkey, getLevel, voicePresence, identity?.user_id, signalingStatus, activeSigningPubkey, isInVoice])
+    }, [sortedMembers, server.signing_pubkey, getLevel, voicePresence, identity?.user_id, beaconStatus, activeSigningPubkey, isInVoice])
 
     const hasSeparatorInFullList = offlineStartIndex > 0 && offlineStartIndex < sortedMembers.length
 
@@ -601,8 +601,8 @@ function ServerListPage() {
         identity.display_name
       )
 
-      if (signalingStatus === 'connected' && signalingUrl) {
-        publishServerHintOpaque(signalingUrl, newServer.id).catch(e => console.warn('Failed to publish server hint:', e))
+      if (beaconStatus === 'connected' && beaconUrl) {
+        publishServerHintOpaque(beaconUrl, newServer.id).catch(e => console.warn('Failed to publish server hint:', e))
       }
 
       await refreshServers()
@@ -627,7 +627,7 @@ function ServerListPage() {
     setIsCreating(true)
 
     try {
-      let signalingServer = signalingUrl || ''
+      let effectiveBeaconUrl = beaconUrl || ''
       let inviteCode: string | null = null
 
       if (/^rmmt:\/\//i.test(input)) {
@@ -637,14 +637,14 @@ function ServerListPage() {
           return
         }
 
-        signalingServer =
+        effectiveBeaconUrl =
           parsed.server.startsWith('ws://') || parsed.server.startsWith('wss://')
             ? parsed.server
             : `wss://${parsed.server}`
         // Temporary invites use cordia://{code}@{server}
         inviteCode = parsed.signingPubkey
       } else {
-        if (!signalingServer) {
+        if (!effectiveBeaconUrl) {
           toast('No beacon configured.')
           return
         }
@@ -653,7 +653,7 @@ function ServerListPage() {
 
       // If we have an invite code, redeem it (this imports server + keys and joins locally)
       if (inviteCode) {
-        const updatedServer = await redeemTemporaryInvite(signalingServer, inviteCode, identity.user_id, identity.display_name)
+        const updatedServer = await redeemTemporaryInvite(effectiveBeaconUrl, inviteCode, identity.user_id, identity.display_name)
 
         await refreshServers()
         // Let WS-based bootstraps (presence + hint subscriptions) know a new server exists.
@@ -690,9 +690,9 @@ function ServerListPage() {
 
       // Best-effort: advertise leave to other members (requires symmetric key to encrypt hint).
       // If this fails (e.g. server missing key), we still delete locally so the user can always leave.
-      if (identity && signalingStatus === 'connected' && signalingUrl) {
+      if (identity && beaconStatus === 'connected' && beaconUrl) {
         try {
-          await publishServerHintMemberLeft(signalingUrl, serverId, identity.user_id)
+          await publishServerHintMemberLeft(beaconUrl, serverId, identity.user_id)
         } catch (_) {
           // Ignore: allow delete even when we can't notify the beacon (e.g. missing symmetric key).
         }
@@ -719,7 +719,7 @@ function ServerListPage() {
             <h1 className="text-sm font-light tracking-wider uppercase">Home</h1>
           </div>
           <div className="flex items-center gap-2">
-            <SignalingStatus />
+            <BeaconStatus />
           </div>
         </div>
       </header>

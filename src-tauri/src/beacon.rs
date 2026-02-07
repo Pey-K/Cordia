@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum SignalingError {
+pub enum BeaconError {
     #[error("Connection failed: {0}")]
     ConnectionFailed(String),
     #[error("Timeout")]
@@ -13,20 +13,20 @@ pub enum SignalingError {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub enum SignalingStatus {
+pub enum BeaconStatus {
     Connected,
     Disconnected,
     Checking,
 }
 
-/// Check if signaling server is available at the given URL
-pub async fn check_signaling_health(url: &str) -> Result<bool, SignalingError> {
+/// Check if beacon is available at the given URL
+pub async fn check_beacon_health(url: &str) -> Result<bool, BeaconError> {
     let timeout = Duration::from_secs(5);
     let url = url.trim();
 
     // Parse the URL to validate it
     if !url.starts_with("ws://") && !url.starts_with("wss://") {
-        return Err(SignalingError::InvalidUrl(
+        return Err(BeaconError::InvalidUrl(
             "URL must start with ws:// or wss://".to_string()
         ));
     }
@@ -44,26 +44,26 @@ pub async fn check_signaling_health(url: &str) -> Result<bool, SignalingError> {
     let client = reqwest::Client::builder()
         .timeout(timeout)
         .build()
-        .map_err(|e| SignalingError::ConnectionFailed(e.to_string()))?;
+        .map_err(|e| BeaconError::ConnectionFailed(e.to_string()))?;
 
     match client.get(&health_url).send().await {
         Ok(response) => {
             if response.status().is_success() {
                 Ok(true)
             } else {
-                Err(SignalingError::ConnectionFailed(
+                Err(BeaconError::ConnectionFailed(
                     format!("HTTP {} from health endpoint", response.status())
                 ))
             }
         }
         Err(e) => {
-            Err(SignalingError::ConnectionFailed(e.to_string()))
+            Err(BeaconError::ConnectionFailed(e.to_string()))
         }
     }
 }
 
-/// Get the default signaling server URL
-pub fn get_default_signaling_url() -> String {
-    // Default public signaling server for end users (Discord-like out-of-box behavior)
+/// Get the default beacon URL
+pub fn get_default_beacon_url() -> String {
+    // Default public beacon for end users (Discord-like out-of-box behavior)
     "wss://beacon.pkcollection.net".to_string()
 }

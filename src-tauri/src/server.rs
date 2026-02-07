@@ -193,7 +193,7 @@ impl Drop for Server {
 }
 
 impl Server {
-    /// Create a new house with fresh cryptographic keys
+    /// Create a new server with fresh cryptographic keys
     pub fn new(
         name: String,
         creator_user_id: String,
@@ -255,12 +255,12 @@ impl Server {
         })
     }
 
-    /// Check if this house has the symmetric key (can encrypt/decrypt)
+    /// Check if this server has the symmetric key (can encrypt/decrypt)
     pub fn has_symmetric_key(&self) -> bool {
         self.server_symmetric_key.is_some()
     }
 
-    /// Check if this house has the signing key (can sign events)
+    /// Check if this server has the signing key (can sign events)
     pub fn has_signing_key(&self) -> bool {
         self.signing_secret.is_some()
     }
@@ -338,7 +338,7 @@ impl Server {
         Ok(plaintext)
     }
 
-    /// Sign data with house signing key (Ed25519)
+    /// Sign data with server signing key (Ed25519)
     pub fn sign(&self, data: &[u8]) -> Result<String, ServerError> {
         let secret = self.signing_secret.as_ref()
             .ok_or(ServerError::MissingSigningKey)?;
@@ -351,7 +351,7 @@ impl Server {
         Ok(base64::encode(signature.to_bytes()))
     }
 
-    /// Verify signature with house signing pubkey (Ed25519)
+    /// Verify signature with server signing pubkey (Ed25519)
     pub fn verify(&self, data: &[u8], signature_b64: &str) -> Result<bool, ServerError> {
         let pubkey_bytes = base64::decode(&self.signing_pubkey)
             .map_err(|e| ServerError::Base64Decode(e.to_string()))?;
@@ -370,7 +370,7 @@ impl Server {
         Ok(verifying_key.verify(data, &signature).is_ok())
     }
 
-    /// Encrypt data with house symmetric key (XChaCha20-Poly1305)
+    /// Encrypt data with server symmetric key (XChaCha20-Poly1305)
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, ServerError> {
         let key = self.server_symmetric_key.as_ref()
             .ok_or(ServerError::MissingSymmetricKey)?;
@@ -388,7 +388,7 @@ impl Server {
         Ok(result)
     }
 
-    /// Decrypt data with house symmetric key (XChaCha20-Poly1305)
+    /// Decrypt data with server symmetric key (XChaCha20-Poly1305)
     pub fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, ServerError> {
         let key = self.server_symmetric_key.as_ref()
             .ok_or(ServerError::MissingSymmetricKey)?;
@@ -453,17 +453,18 @@ impl Server {
             None
         };
 
-        // Encrypt symmetric key if present
-        let encrypted_symmetric_key = if let Some(ref key) = self.server_symmetric_key {
-            let cipher = XChaCha20Poly1305::new(device_key.into());
-            let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
-            let ciphertext = cipher.encrypt(&nonce, key.as_ref())
-                .map_err(|_| ServerError::EncryptionFailed)?;
-            let mut result = nonce.to_vec();
-            result.extend(ciphertext);
-            Some(base64::encode(&result))
-        } else {
-            None
+        // Encrypt symmetric key - required; never persist without it
+        let encrypted_symmetric_key = match &self.server_symmetric_key {
+            Some(key) => {
+                let cipher = XChaCha20Poly1305::new(device_key.into());
+                let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+                let ciphertext = cipher.encrypt(&nonce, key.as_ref())
+                    .map_err(|_| ServerError::EncryptionFailed)?;
+                let mut result = nonce.to_vec();
+                result.extend(ciphertext);
+                Some(base64::encode(&result))
+            }
+            None => return Err(ServerError::MissingSymmetricKey),
         };
 
         Ok(ServerStorage {
@@ -505,22 +506,23 @@ impl Server {
             None
         };
 
-        // Decrypt symmetric key if present
-        let server_symmetric_key = if let Some(ref encrypted) = storage.encrypted_symmetric_key {
-            let data = base64::decode(encrypted)
-                .map_err(|e| ServerError::Base64Decode(e.to_string()))?;
-            if data.len() < 24 {
-                return Err(ServerError::InvalidCiphertext);
+        // Decrypt symmetric key - required; never load server without it
+        let server_symmetric_key = match &storage.encrypted_symmetric_key {
+            Some(encrypted) => {
+                let data = base64::decode(encrypted)
+                    .map_err(|e| ServerError::Base64Decode(e.to_string()))?;
+                if data.len() < 24 {
+                    return Err(ServerError::InvalidCiphertext);
+                }
+                let nonce: [u8; 24] = data[..24].try_into()
+                    .map_err(|_| ServerError::KeyConversion)?;
+                let ciphertext = &data[24..];
+                let cipher = XChaCha20Poly1305::new(device_key.into());
+                let plaintext = cipher.decrypt((&nonce).into(), ciphertext)
+                    .map_err(|_| ServerError::DecryptionFailed)?;
+                Some(plaintext)
             }
-            let nonce: [u8; 24] = data[..24].try_into()
-                .map_err(|_| ServerError::KeyConversion)?;
-            let ciphertext = &data[24..];
-            let cipher = XChaCha20Poly1305::new(device_key.into());
-            let plaintext = cipher.decrypt((&nonce).into(), ciphertext)
-                .map_err(|_| ServerError::DecryptionFailed)?;
-            Some(plaintext)
-        } else {
-            None
+            None => return Err(ServerError::MissingSymmetricKey),
         };
 
         Ok(Server {
@@ -632,8 +634,8 @@ impl ServerManager {
         if let Some(account_id) = session.current_account_id {
             // Account mode: use account container
             let data_dir = account_manager.get_account_dir(&account_id);
-            let houses_dir = data_dir.join("houses");
-            fs::create_dir_all(&houses_dir)?;
+            let servers_dir = data_dir.join("servers");
+            fs::create_dir_all(&servers_dir)?;
             Ok(Self {
                 data_dir,
                 account_id: Some(account_id),
@@ -642,8 +644,8 @@ impl ServerManager {
         } else {
             // Legacy mode: use base data directory
             let data_dir = Self::get_legacy_data_dir()?;
-            let houses_dir = data_dir.join("houses");
-            fs::create_dir_all(&houses_dir)?;
+            let servers_dir = data_dir.join("servers");
+            fs::create_dir_all(&servers_dir)?;
             Ok(Self {
                 data_dir,
                 account_id: None,
@@ -660,8 +662,8 @@ impl ServerManager {
         let device_key = Self::get_device_key()?;
 
         let data_dir = account_manager.get_account_dir(account_id);
-        let houses_dir = data_dir.join("houses");
-        fs::create_dir_all(&houses_dir)?;
+        let servers_dir = data_dir.join("servers");
+        fs::create_dir_all(&servers_dir)?;
 
         Ok(Self {
             data_dir,
@@ -832,7 +834,24 @@ impl ServerManager {
     }
 
     fn get_server_path(&self, server_id: &str) -> PathBuf {
-        self.data_dir.join("houses").join(format!("{}.json", server_id))
+        self.data_dir.join("servers").join(format!("{}.json", server_id))
+    }
+
+    /// Persist ServerStorage to disk. Enforces encrypted_symmetric_key must be Some.
+    /// Uses atomic write (temp file + rename) to avoid partial writes.
+    fn persist_server_storage(&self, storage: &ServerStorage, server_id: &str) -> Result<(), ServerError> {
+        if storage.encrypted_symmetric_key.is_none() {
+            return Err(ServerError::MissingSymmetricKey);
+        }
+        let server_path = self.get_server_path(server_id);
+        if let Some(parent) = server_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let tmp_path = server_path.with_extension("json.tmp");
+        let json = serde_json::to_string_pretty(storage)?;
+        fs::write(&tmp_path, json)?;
+        fs::rename(&tmp_path, &server_path)?;
+        Ok(())
     }
 
     /// Get the account ID if in account mode
@@ -850,11 +869,8 @@ impl ServerManager {
     }
 
     pub fn save_server(&self, server: &Server) -> Result<(), ServerError> {
-        let server_path = self.get_server_path(&server.id);
         let storage = server.to_storage(&self.device_key)?;
-        let json = serde_json::to_string_pretty(&storage)?;
-        fs::write(server_path, json)?;
-        Ok(())
+        self.persist_server_storage(&storage, &server.id)
     }
 
     /// Restore a server from exported data (plaintext keys will be encrypted with device key)
@@ -864,9 +880,9 @@ impl ServerManager {
         plaintext_symmetric_key: Vec<u8>,
         plaintext_signing_secret: Option<Vec<u8>>,
     ) -> Result<(), ServerError> {
-        // Ensure houses directory exists (backward compat path)
-        let houses_dir = self.data_dir.join("houses");
-        fs::create_dir_all(&houses_dir)?;
+        // Ensure servers directory exists
+        let servers_dir = self.data_dir.join("servers");
+        fs::create_dir_all(&servers_dir)?;
         use chacha20poly1305::{XChaCha20Poly1305, aead::{Aead, KeyInit}};
         use rand::rngs::OsRng;
         
@@ -977,12 +993,7 @@ impl ServerManager {
             public_key,
         };
         
-        // Write to disk
-        let server_path = self.get_server_path(&server_id);
-        let json = serde_json::to_string_pretty(&storage)?;
-        fs::write(server_path, json)?;
-        
-        Ok(())
+        self.persist_server_storage(&storage, &server_id)
     }
 
     pub fn load_server(&self, server_id: &str) -> Result<Server, ServerError> {
@@ -1010,17 +1021,17 @@ impl ServerManager {
         Ok(Server::from_storage_readonly(storage))
     }
 
-    /// List all server IDs by scanning the houses directory (backward compat path)
-    /// No list.json needed - each house is a separate .json file
+    /// List all server IDs by scanning the servers directory
+    /// No list.json needed - each server is a separate .json file
     pub fn list_servers(&self) -> Result<Vec<String>, ServerError> {
-        let houses_dir = self.data_dir.join("houses");
+        let servers_dir = self.data_dir.join("servers");
 
-        if !houses_dir.exists() {
+        if !servers_dir.exists() {
             return Ok(Vec::new());
         }
 
         let mut server_ids = Vec::new();
-        for entry in fs::read_dir(houses_dir)? {
+        for entry in fs::read_dir(servers_dir)? {
             let entry = entry?;
             let path = entry.path();
 
@@ -1135,17 +1146,13 @@ impl ServerManager {
     }
 
     /// Import a server "hint" (metadata-only) into this account's local storage.
-    /// This persists the server so it can show up in lists and be joined/used.
-    ///
-    /// NOTE: This intentionally does NOT import any secrets. The encrypted secret fields
-    /// are left as None. Key exchange / secret distribution is handled elsewhere.
+    /// Only updates existing servers that already have a symmetric key.
+    /// For new servers, returns Err(MissingSymmetricKey) - join via invite first.
     pub fn import_server_hint(&self, info: ServerInfo) -> Result<(), ServerError> {
         // Find existing server by signing_pubkey (not by id, since id can differ)
-        // This handles the case where we imported a server with a new UUID, but beacon provides different UUID
         let (existing_server_id, preserve_encrypted_signing_secret, preserve_encrypted_symmetric_key) = 
             match self.find_server_id_by_signing_pubkey(&info.signing_pubkey)? {
                 Some(existing_id) => {
-                    // Server exists - preserve its encrypted secrets
                     let server_path = self.get_server_path(&existing_id);
                     let (signing_secret, symmetric_key) = if server_path.exists() {
                         match fs::read_to_string(&server_path)
@@ -1160,14 +1167,9 @@ impl ServerManager {
                     };
                     (existing_id, signing_secret, symmetric_key)
                 }
-                None => {
-                    // New server - use the id from the beacon
-                    (info.id.clone(), None, None)
-                }
+                None => return Err(ServerError::MissingSymmetricKey),
             };
         
-        let server_path = self.get_server_path(&existing_server_id);
-
         let storage = ServerStorage {
             id: existing_server_id.clone(),
             name: info.name,
@@ -1186,9 +1188,7 @@ impl ServerManager {
             public_key: info.public_key,
         };
 
-        let json = serde_json::to_string_pretty(&storage)?;
-        fs::write(server_path, json)?;
-        Ok(())
+        self.persist_server_storage(&storage, &existing_server_id)
     }
 
     /// Import a server from an invite token that contains the server symmetric key.
@@ -1248,9 +1248,7 @@ impl ServerManager {
             public_key: info.public_key,
         };
 
-        let server_path = self.get_server_path(&storage.id);
-        let json = serde_json::to_string_pretty(&storage)?;
-        fs::write(server_path, json)?;
+        self.persist_server_storage(&storage, &server_id)?;
         Ok(server_id)  // Return the actual server ID used
     }
 }

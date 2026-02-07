@@ -151,7 +151,6 @@ export function AccountSettings() {
                   onChange={async (e) => {
                     const file = e.target.files?.[0]
                     if (!file) return
-                    setAvatarError('')
                     try {
                       // GIFs: keep animated, no cropping.
                       if (file.type === 'image/gif') {

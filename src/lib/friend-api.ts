@@ -7,11 +7,11 @@ import { getFriendAuthHeaders } from './tauri'
 import { getHttpUrl } from './tauri'
 
 async function friendFetch(
-  signalingUrl: string,
+  beaconUrl: string,
   path: string,
   options: { method: string; body?: object }
 ): Promise<unknown> {
-  const base = getHttpUrl(signalingUrl)
+  const base = getHttpUrl(beaconUrl)
   const fullPath = `/api/friends${path}`
   const url = `${base.replace(/\/$/, '')}${fullPath}`
   const bodyStr = options.body != null ? JSON.stringify(options.body) : undefined
@@ -44,12 +44,12 @@ export interface SendFriendRequestResult {
 }
 
 export async function sendFriendRequest(
-  signalingUrl: string,
+  beaconUrl: string,
   toUserId: string,
   fromDisplayName?: string,
   fromAccountCreatedAt?: string | null
 ): Promise<SendFriendRequestResult> {
-  return friendFetch(signalingUrl, '/requests', {
+  return friendFetch(beaconUrl, '/requests', {
     method: 'POST',
     body: {
       to_user_id: toUserId,
@@ -60,12 +60,12 @@ export async function sendFriendRequest(
 }
 
 export async function acceptFriendRequest(
-  signalingUrl: string,
+  beaconUrl: string,
   fromUserId: string,
   accepterDisplayName?: string,
   accepterAccountCreatedAt?: string | null
 ): Promise<{ accepted: boolean }> {
-  return friendFetch(signalingUrl, '/requests/accept', {
+  return friendFetch(beaconUrl, '/requests/accept', {
     method: 'POST',
     body: {
       from_user_id: fromUserId,
@@ -76,20 +76,20 @@ export async function acceptFriendRequest(
 }
 
 export async function cancelFriendRequest(
-  signalingUrl: string,
+  beaconUrl: string,
   toUserId: string
 ): Promise<{ cancelled: boolean }> {
-  return friendFetch(signalingUrl, '/requests/cancel', {
+  return friendFetch(beaconUrl, '/requests/cancel', {
     method: 'POST',
     body: { to_user_id: toUserId },
   }) as Promise<{ cancelled: boolean }>
 }
 
 export async function declineFriendRequest(
-  signalingUrl: string,
+  beaconUrl: string,
   fromUserId: string
 ): Promise<{ declined: boolean }> {
-  return friendFetch(signalingUrl, '/requests/decline', {
+  return friendFetch(beaconUrl, '/requests/decline', {
     method: 'POST',
     body: { from_user_id: fromUserId },
   }) as Promise<{ declined: boolean }>
@@ -101,25 +101,25 @@ export interface CreateFriendCodeResult {
 }
 
 export async function createFriendCode(
-  signalingUrl: string
+  beaconUrl: string
 ): Promise<CreateFriendCodeResult> {
-  return friendFetch(signalingUrl, '/codes', { method: 'POST' }) as Promise<CreateFriendCodeResult>
+  return friendFetch(beaconUrl, '/codes', { method: 'POST' }) as Promise<CreateFriendCodeResult>
 }
 
 export async function revokeFriendCode(
-  signalingUrl: string
+  beaconUrl: string
 ): Promise<{ revoked: boolean }> {
-  return friendFetch(signalingUrl, '/codes/revoke', { method: 'POST' }) as Promise<{ revoked: boolean }>
+  return friendFetch(beaconUrl, '/codes/revoke', { method: 'POST' }) as Promise<{ revoked: boolean }>
 }
 
 export async function redeemFriendCode(
-  signalingUrl: string,
+  beaconUrl: string,
   code: string,
   redeemerUserId: string,
   redeemerDisplayName: string,
   redeemerAccountCreatedAt?: string | null
 ): Promise<{ pending: boolean; code_owner_id?: string }> {
-  return friendFetch(signalingUrl, '/codes/redeem', {
+  return friendFetch(beaconUrl, '/codes/redeem', {
     method: 'POST',
     body: {
       code: code.trim().toUpperCase(),
@@ -131,12 +131,12 @@ export async function redeemFriendCode(
 }
 
 export async function acceptCodeRedemption(
-  signalingUrl: string,
+  beaconUrl: string,
   redeemerUserId: string,
   codeOwnerDisplayName?: string,
   codeOwnerAccountCreatedAt?: string | null
 ): Promise<{ accepted: boolean }> {
-  return friendFetch(signalingUrl, '/codes/redemptions/accept', {
+  return friendFetch(beaconUrl, '/codes/redemptions/accept', {
     method: 'POST',
     body: {
       redeemer_user_id: redeemerUserId,
@@ -147,30 +147,30 @@ export async function acceptCodeRedemption(
 }
 
 export async function cancelCodeRedemption(
-  signalingUrl: string,
+  beaconUrl: string,
   codeOwnerId: string
 ): Promise<{ cancelled: boolean }> {
-  return friendFetch(signalingUrl, '/codes/redemptions/cancel', {
+  return friendFetch(beaconUrl, '/codes/redemptions/cancel', {
     method: 'POST',
     body: { code_owner_id: codeOwnerId },
   }) as Promise<{ cancelled: boolean }>
 }
 
 export async function declineCodeRedemption(
-  signalingUrl: string,
+  beaconUrl: string,
   redeemerUserId: string
 ): Promise<{ declined: boolean }> {
-  return friendFetch(signalingUrl, '/codes/redemptions/decline', {
+  return friendFetch(beaconUrl, '/codes/redemptions/decline', {
     method: 'POST',
     body: { redeemer_user_id: redeemerUserId },
   }) as Promise<{ declined: boolean }>
 }
 
 export async function removeFriend(
-  signalingUrl: string,
+  beaconUrl: string,
   friendUserId: string
 ): Promise<{ removed: boolean }> {
-  return friendFetch(signalingUrl, '/remove', {
+  return friendFetch(beaconUrl, '/remove', {
     method: 'POST',
     body: { friend_user_id: friendUserId },
   }) as Promise<{ removed: boolean }>

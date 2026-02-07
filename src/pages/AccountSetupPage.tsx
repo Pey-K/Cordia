@@ -5,7 +5,7 @@ import { useToast } from '../contexts/ToastContext'
 import { Button } from '../components/ui/button'
 import { createIdentity } from '../lib/tauri'
 
-function IdentitySetupPage() {
+function AccountSetupPage() {
   const { toast } = useToast()
   const [displayName, setDisplayName] = useState('')
   const [isCreating, setIsCreating] = useState(false)
@@ -151,5 +151,4 @@ function IdentitySetupPage() {
   )
 }
 
-export default IdentitySetupPage
-
+export default AccountSetupPage

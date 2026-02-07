@@ -450,7 +450,7 @@ impl IdentityManager {
         Ok(identity)
     }
 
-    /// Export full identity with profile, server keys, friends list, known display names, and known house names in binary .key format
+    /// Export full identity with profile, server keys, friends list, known display names, and known server names in binary .key format
     pub fn export_full_identity(
         &self,
         profile_data: Option<serde_json::Value>,
@@ -458,7 +458,7 @@ impl IdentityManager {
         signaling_server_url: Option<String>,
         friends: Vec<String>,
         known_profiles: Option<serde_json::Value>,
-        known_house_names: Option<serde_json::Value>,
+        known_server_names: Option<serde_json::Value>,
     ) -> Result<Vec<u8>, IdentityError> {
         let identity = self.load_identity()?;
 
@@ -474,7 +474,7 @@ impl IdentityManager {
             #[serde(skip_serializing_if = "Option::is_none")]
             known_profiles: Option<serde_json::Value>,
             #[serde(skip_serializing_if = "Option::is_none")]
-            known_house_names: Option<serde_json::Value>,
+            known_server_names: Option<serde_json::Value>,
         }
 
         let export = FullExportFormat {
@@ -485,7 +485,7 @@ impl IdentityManager {
             signaling_server_url,
             friends,
             known_profiles,
-            known_house_names,
+            known_server_names,
         };
 
         // Serialize to JSON
@@ -596,8 +596,8 @@ impl IdentityManager {
             friends: Vec<String>,
             #[serde(default)]
             known_profiles: Option<serde_json::Value>,
-            #[serde(default)]
-            known_house_names: Option<serde_json::Value>,
+            #[serde(default, alias = "known_house_names")]
+            known_server_names: Option<serde_json::Value>,
         }
 
         let export: FullExportFormat = serde_json::from_slice(&plaintext)
@@ -608,7 +608,7 @@ impl IdentityManager {
         }
 
         // Don't save here - caller (import_identity_auto) will save after account setup
-        Ok((export.identity, export.profile, export.servers, export.signaling_server_url, export.friends, export.known_profiles, export.known_house_names))
+        Ok((export.identity, export.profile, export.servers, export.signaling_server_url, export.friends, export.known_profiles, export.known_server_names))
     }
 
 }

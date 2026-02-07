@@ -71,7 +71,7 @@ When reporting a vulnerability, please include:
 If you're running your own beacon:
 
 - **Keep Updated**: Regularly update to the latest version
-- **Security options**: Use env vars to restrict CORS (`BEACON_CORS_ORIGINS`), cap request body size (`BEACON_MAX_BODY_BYTES`), and limit WebSocket connections (`BEACON_MAX_WS_CONNECTIONS`, `BEACON_MAX_WS_PER_IP`). See SIGNALING_SETUP.md → Security (beacon).
+- **Security options**: Use env vars to restrict CORS (`BEACON_CORS_ORIGINS`), cap request body size (`BEACON_MAX_BODY_BYTES`), and limit WebSocket connections (`BEACON_MAX_WS_CONNECTIONS`, `BEACON_MAX_WS_PER_IP`). See BEACON_SETUP.md → Security (beacon).
 - **Access Control**: Consider implementing authentication for production (future enhancement)
 - **Rate Limiting**: Additional per-IP rate limiting can be added; connection limits above help with resource exhaustion
 - **Monitoring**: Monitor logs for suspicious activity
@@ -81,7 +81,7 @@ If you're running your own beacon:
 
 ### Current Limitations
 
-- **No Authentication**: The beacon has no user/auth; optional CORS, body size, and connection limits are available via env (see SIGNALING_SETUP.md)
+- **No Authentication**: The beacon has no user/auth; optional CORS, body size, and connection limits are available via env (see BEACON_SETUP.md)
 - **Public Invite Codes**: Invite codes are not cryptographically secure (they're opaque but predictable)
 - **IP Exposure**: P2P connections may expose your local IP address to peers
 - **No Message Encryption**: Voice is P2P but beacon messages are not encrypted (future: E2E encryption)
