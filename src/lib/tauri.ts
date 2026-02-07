@@ -120,12 +120,12 @@ export async function joinServer(serverId: string, userId: string, displayName: 
   return await invoke('join_server', { serverId, userId, displayName })
 }
 
-export async function addRoom(serverId: string, name: string, description: string | null): Promise<Server> {
-  return await invoke('add_room', { serverId, name, description })
+export async function addChat(serverId: string, name: string, description: string | null): Promise<Server> {
+  return await invoke('add_chat', { serverId, name, description })
 }
 
-export async function removeChat(serverId: string, roomId: string): Promise<Server> {
-  return await invoke('remove_chat', { serverId, roomId })
+export async function removeChat(serverId: string, chatId: string): Promise<Server> {
+  return await invoke('remove_chat', { serverId, chatId })
 }
 
 
@@ -133,61 +133,61 @@ export async function importServerHint(server: Server): Promise<void> {
   return await invoke('import_server_hint', { server })
 }
 
-export async function registerServerHint(signalingServer: string, hint: EncryptedServerHint): Promise<void> {
-  return await invoke('register_server_hint', { signalingServer, hint })
+export async function registerServerHint(beaconUrl: string, hint: EncryptedServerHint): Promise<void> {
+  return await invoke('register_server_hint', { beaconUrl, hint })
 }
 
-export async function getServerHint(signalingServer: string, signingPubkey: string): Promise<EncryptedServerHint | null> {
-  return await invoke('get_server_hint', { signalingServer, signingPubkey })
+export async function getServerHint(beaconUrl: string, signingPubkey: string): Promise<EncryptedServerHint | null> {
+  return await invoke('get_server_hint', { beaconUrl, signingPubkey })
 }
 
-export async function publishServerHintOpaque(signalingServer: string, serverId: string): Promise<void> {
-  return await invoke('publish_server_hint_opaque', { signalingServer, serverId })
+export async function publishServerHintOpaque(beaconUrl: string, serverId: string): Promise<void> {
+  return await invoke('publish_server_hint_opaque', { beaconUrl, serverId })
 }
 
-export async function publishServerHintMemberLeft(signalingServer: string, serverId: string, userId: string): Promise<void> {
-  return await invoke('publish_server_hint_member_left', { signalingServer, serverId, userId })
+export async function publishServerHintMemberLeft(beaconUrl: string, serverId: string, userId: string): Promise<void> {
+  return await invoke('publish_server_hint_member_left', { beaconUrl, serverId, userId })
 }
 
-export async function fetchAndImportServerHintOpaque(signalingServer: string, signingPubkey: string): Promise<boolean> {
-  return await invoke('fetch_and_import_server_hint_opaque', { signalingServer, signingPubkey })
+export async function fetchAndImportServerHintOpaque(beaconUrl: string, signingPubkey: string): Promise<boolean> {
+  return await invoke('fetch_and_import_server_hint_opaque', { beaconUrl, signingPubkey })
 }
 
-export async function resolveInviteCode(signalingServer: string, inviteCode: string): Promise<string | null> {
-  return await invoke('resolve_invite_code', { signalingServer, inviteCode })
+export async function resolveInviteCode(beaconUrl: string, inviteCode: string): Promise<string | null> {
+  return await invoke('resolve_invite_code', { beaconUrl, inviteCode })
 }
 
-export async function createTemporaryInvite(signalingServer: string, serverId: string, maxUses: number): Promise<string> {
-  return await invoke('create_temporary_invite', { signalingServer, serverId, maxUses })
+export async function createTemporaryInvite(beaconUrl: string, serverId: string, maxUses: number): Promise<string> {
+  return await invoke('create_temporary_invite', { beaconUrl, serverId, maxUses })
 }
 
 export async function redeemTemporaryInvite(
-  signalingServer: string,
+  beaconUrl: string,
   code: string,
   userId: string,
   displayName: string
 ): Promise<Server> {
-  return await invoke('redeem_temporary_invite', { signalingServer, code, userId, displayName })
+  return await invoke('redeem_temporary_invite', { beaconUrl, code, userId, displayName })
 }
 
-export async function revokeActiveInvite(signalingServer: string, serverId: string): Promise<void> {
-  return await invoke('revoke_active_invite', { signalingServer, serverId })
+export async function revokeActiveInvite(beaconUrl: string, serverId: string): Promise<void> {
+  return await invoke('revoke_active_invite', { beaconUrl, serverId })
 }
 
-export async function checkSignalingServer(url?: string): Promise<boolean> {
-  return await invoke('check_signaling_server', { url })
+export async function checkBeacon(url?: string): Promise<boolean> {
+  return await invoke('check_beacon', { url })
 }
 
-export async function getDefaultSignalingServer(): Promise<string> {
-  return await invoke('get_default_signaling_server')
+export async function getDefaultBeacon(): Promise<string> {
+  return await invoke('get_default_beacon')
 }
 
-export async function getSignalingServerUrl(): Promise<string> {
-  return await invoke('get_signaling_server_url')
+export async function getBeaconUrl(): Promise<string> {
+  return await invoke('get_beacon_url')
 }
 
-export async function setSignalingServerUrl(url: string): Promise<void> {
-  return await invoke('set_signaling_server_url', { url })
+export async function setBeaconUrl(url: string): Promise<void> {
+  return await invoke('set_beacon_url', { url })
 }
 
 // === Account Management ===
@@ -325,10 +325,10 @@ export function parseInviteUri(uri: string): { signingPubkey: string; server: st
 }
 
 /**
- * Get the HTTP base URL from a signaling server URL
+ * Get the HTTP base URL from a beacon URL
  */
-export function getHttpUrl(signalingServer: string): string {
-  let url = signalingServer
+export function getHttpUrl(beaconUrl: string): string {
+  let url = beaconUrl
   if (url.startsWith('wss://')) {
     url = 'https://' + url.slice(6)
   } else if (url.startsWith('ws://')) {

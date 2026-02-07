@@ -5,7 +5,7 @@ import { useToast } from '../contexts/ToastContext'
 import { Button } from '../components/ui/button'
 import { importIdentity } from '../lib/tauri'
 
-function IdentityRestorePage() {
+function AccountRestorePage() {
   const { toast } = useToast()
   const [isImporting, setIsImporting] = useState(false)
   const [displayedText, setDisplayedText] = useState('')
@@ -217,5 +217,4 @@ function IdentityRestorePage() {
   )
 }
 
-export default IdentityRestorePage
-
+export default AccountRestorePage

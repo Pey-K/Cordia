@@ -136,4 +136,4 @@ echo $GITHUB_TOKEN | docker login ghcr.io -u YOUR_USERNAME --password-stdin
 ## Next Steps
 
 - See **[DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)** to deploy your built image
-- See **[SIGNALING_SETUP.md](SIGNALING_SETUP.md)** for local development setup
+- See **[BEACON_SETUP.md](BEACON_SETUP.md)** for local development setup

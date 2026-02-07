@@ -241,5 +241,5 @@ Once the beacon is running:
 
 - Check logs: `docker-compose logs -f cordia-beacon`
 - Verify Docker: `docker ps`
-- See [SIGNALING_SETUP.md](SIGNALING_SETUP.md) for local development setup
+- See [BEACON_SETUP.md](BEACON_SETUP.md) for local development setup
 - See [GITHUB_SETUP.md](GITHUB_SETUP.md) for automated builds

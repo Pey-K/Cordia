@@ -97,7 +97,7 @@ If you prefer to run the beacon directly with Rust:
 
 ```bash
 # Terminal 1 - Beacon
-cd signaling-server
+cd beacon-server
 RUST_LOG=info cargo run
 
 # Terminal 2 - Cordia App (from project root)
@@ -116,9 +116,9 @@ The server runs on port `9001` by default. To change it:
      - "YOUR_PORT:9001"  # Change left side only
    ```
 
-2. Update the app's default URL in `src-tauri/src/signaling.rs`:
+2. Update the app's default URL in `src-tauri/src/beacon.rs`:
    ```rust
-   pub fn get_default_signaling_url() -> String {
+   pub fn get_default_beacon_url() -> String {
        "ws://127.0.0.1:YOUR_PORT".to_string()
    }
    ```
@@ -132,15 +132,6 @@ The server runs on port `9001` by default. To change it:
 
 The beacon stores data in `/mnt/App/apps/signal` on the host machine (for production deployments). For local development, data is stored in Docker volumes.
 
-### User Permissions
-
-The container runs with PUID=1000 and PGID=1000 by default. To change:
-
-```yaml
-environment:
-  - PUID=YOUR_UID
-  - PGID=YOUR_GID
-```
 
 ### Timezone
 
@@ -171,7 +162,7 @@ Example (Docker):
 ```yaml
 environment:
   - BEACON_CORS_ORIGINS=https://your-app.example.com
-  - BEACON_MAX_WS_CONNECTIONS=5000
+  - BEACON_MAX_WS_CONNECTIONS=0
   - BEACON_MAX_WS_PER_IP=7
   - BEACON_RATE_LIMIT_REST_PER_MIN=60
   - BEACON_RATE_LIMIT_WS_PER_MIN=250
@@ -228,7 +219,7 @@ lsof -ti:9001 | xargs kill -9
 
 ### App Shows "Offline" Status
 
-1. **Verify signaling server is running:**
+1. **Verify beacon is running:**
    ```bash
    docker-compose ps
    ```
@@ -236,9 +227,9 @@ lsof -ti:9001 | xargs kill -9
 
 2. **Check server logs:**
    ```bash
-   docker-compose logs signaling-server
+   docker-compose logs cordia-beacon
    ```
-   Look for "Signaling server listening on ws://127.0.0.1:9001"
+   Look for "Beacon listening on ws://127.0.0.1:9001"
 
 3. **Restart the app:**
    - Close Cordia completely
@@ -256,17 +247,17 @@ docker-compose up -d
 
 ## Features Based on Connection
 
-### ✅ With Signaling Server (Connected)
-- Create multiple rooms per house
-- Room persistence and metadata
+### ✅ With Beacon (Connected)
+- Create multiple chats per server
+- Chat persistence and metadata
 - Automatic peer discovery
 - Real-time presence tracking
 - Voice participant visibility
-- House invites and member management
+- Server invites and member management
 
-### ⚠️ Without Signaling Server (Offline Mode)
+### ⚠️ Without Beacon (Offline Mode)
 - **Limited**: Single default chat per server only
-- Room creation disabled
+- Chat creation disabled
 - Direct P2P connections still work
 - Manual peer discovery required
 

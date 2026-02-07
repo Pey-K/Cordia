@@ -2,11 +2,11 @@ import { useEffect, useState, useRef, type CSSProperties } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { ArrowLeft, Copy, Check, PhoneOff, Plus, Trash2, Phone } from 'lucide-react'
 import { Button } from '../components/ui/button'
-import { loadServer, addRoom, removeChat, type Server, type Chat, fetchAndImportServerHintOpaque, publishServerHintOpaque, createTemporaryInvite, revokeActiveInvite } from '../lib/tauri'
+import { loadServer, addChat, removeChat, type Server, type Chat, fetchAndImportServerHintOpaque, publishServerHintOpaque, createTemporaryInvite, revokeActiveInvite } from '../lib/tauri'
 import { useIdentity } from '../contexts/IdentityContext'
 import { useWebRTC } from '../contexts/WebRTCContext'
-import { SignalingStatus } from '../components/SignalingStatus'
-import { useSignaling } from '../contexts/SignalingContext'
+import { BeaconStatus } from '../components/BeaconStatus'
+import { useBeacon } from '../contexts/BeaconContext'
 import { usePresence, type PresenceLevel } from '../contexts/PresenceContext'
 import { useVoicePresence } from '../contexts/VoicePresenceContext'
 import { useSpeaking } from '../contexts/SpeakingContext'
@@ -25,14 +25,14 @@ function ServerViewPage() {
   const voicePresence = useVoicePresence()
   const { isUserSpeaking } = useSpeaking()
   const { joinVoice, leaveVoice, isInVoice: webrtcIsInVoice, currentRoomId } = useWebRTC()
-  const { signalingUrl, status: signalingStatus } = useSignaling()
+  const { beaconUrl, status: beaconStatus } = useBeacon()
   const { width, setWidth, resetWidth } = useSidebarWidth()
   const { toast } = useToast()
 
   /** For the current user, presence is instant from local state; for others, use signaling data. */
   const getMemberLevel = (signingPubkey: string, userId: string, isInVoiceForUser: boolean): PresenceLevel => {
     if (identity?.user_id === userId) {
-      if (signalingStatus !== 'connected') return 'offline'
+      if (beaconStatus !== 'connected') return 'offline'
       if (isInVoiceForUser) return 'in_call'
       if (activeSigningPubkey === signingPubkey) return 'active'
       return 'online'
@@ -95,9 +95,9 @@ function ServerViewPage() {
     if (!server || !serverId) return
 
     // Only sync if signaling is connected
-    if (signalingStatus === 'connected' && signalingUrl) {
+    if (beaconStatus === 'connected' && beaconUrl) {
       try {
-        const changed = await fetchAndImportServerHintOpaque(signalingUrl, server.signing_pubkey)
+        const changed = await fetchAndImportServerHintOpaque(beaconUrl, server.signing_pubkey)
         if (changed) {
           // Reload server data if it changed
           const updatedServer = await loadServer(serverId)
@@ -139,7 +139,7 @@ function ServerViewPage() {
       syncWithSignalingServer()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [server?.signing_pubkey, signalingStatus, signalingUrl])
+  }, [server?.signing_pubkey, beaconStatus, beaconUrl])
 
   // Presence: mark this server as "active" while the user is viewing it.
   useEffect(() => {
@@ -233,12 +233,12 @@ function ServerViewPage() {
 
   const handleCreateInvite = async () => {
     if (!serverId || !server) return
-    if (signalingStatus !== 'connected' || !signalingUrl) return
+    if (beaconStatus !== 'connected' || !beaconUrl) return
 
     setIsCreatingInvite(true)
     try {
       // Default: unlimited uses until someone revokes.
-      await createTemporaryInvite(signalingUrl, serverId, 0)
+      await createTemporaryInvite(beaconUrl, serverId, 0)
       const updated = await loadServer(serverId)
       setServer(updated)
     } catch (e) {
@@ -250,10 +250,10 @@ function ServerViewPage() {
 
   const handleRevokeInvite = async () => {
     if (!serverId) return
-    if (signalingStatus !== 'connected' || !signalingUrl) return
+    if (beaconStatus !== 'connected' || !beaconUrl) return
     setIsRevokingInvite(true)
     try {
-      await revokeActiveInvite(signalingUrl, serverId)
+      await revokeActiveInvite(beaconUrl, serverId)
       const updated = await loadServer(serverId)
       setServer(updated)
     } catch (e) {
@@ -303,7 +303,7 @@ function ServerViewPage() {
 
     setIsCreatingChat(true)
     try {
-      const updatedServer = await addRoom(
+      const updatedServer = await addChat(
         serverId,
         chatName.trim(),
         chatDescription.trim() || null
@@ -311,8 +311,8 @@ function ServerViewPage() {
       setServer(updatedServer)
 
       // Publish updated hint (chats changed)
-      if (signalingStatus === 'connected' && signalingUrl) {
-        publishServerHintOpaque(signalingUrl, updatedServer.id).catch(e => console.warn('Failed to publish server hint:', e))
+      if (beaconStatus === 'connected' && beaconUrl) {
+        publishServerHintOpaque(beaconUrl, updatedServer.id).catch(e => console.warn('Failed to publish server hint:', e))
       }
 
       setShowCreateChatDialog(false)
@@ -348,8 +348,8 @@ function ServerViewPage() {
       }
 
       // Publish updated hint (chats changed) so WS subscribers refresh.
-      if (signalingStatus === 'connected' && signalingUrl) {
-        publishServerHintOpaque(signalingUrl, updatedServer.id).catch(e => console.warn('Failed to publish server hint:', e))
+      if (beaconStatus === 'connected' && beaconUrl) {
+        publishServerHintOpaque(beaconUrl, updatedServer.id).catch(e => console.warn('Failed to publish server hint:', e))
       }
 
       setDeleteChatTarget(null)
@@ -385,7 +385,7 @@ function ServerViewPage() {
             <h1 className="text-sm font-light tracking-wider uppercase truncate min-w-0">{server.name}</h1>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <SignalingStatus />
+            <BeaconStatus />
           </div>
         </div>
       </header>
@@ -730,7 +730,7 @@ function ServerViewPage() {
                 onClick={handleCreateInvite}
                 size="sm"
                 className="h-9 font-light w-full"
-                disabled={isCreatingInvite || signalingStatus !== 'connected' || !signalingUrl}
+                disabled={isCreatingInvite || beaconStatus !== 'connected' || !beaconUrl}
               >
                 {isCreatingInvite ? 'Creating…' : 'Create invite'}
               </Button>

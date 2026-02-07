@@ -1,7 +1,7 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import { IdentityProvider, useIdentity } from './contexts/IdentityContext'
 import { AccountProvider, useAccount } from './contexts/AccountContext'
-import { SignalingProvider } from './contexts/SignalingContext'
+import { BeaconProvider } from './contexts/BeaconContext'
 import { PresenceProvider } from './contexts/PresenceContext'
 import { VoicePresenceProvider } from './contexts/VoicePresenceContext'
 import { SpeakingProvider } from './contexts/SpeakingContext'
@@ -19,8 +19,8 @@ import { AppUpdater } from './components/AppUpdater'
 import { UserCard } from './components/UserCard'
 import SplashPage from './pages/SplashPage'
 import AccountSelectPage from './pages/AccountSelectPage'
-import IdentitySetupPage from './pages/IdentitySetupPage'
-import IdentityRestorePage from './pages/IdentityRestorePage'
+import AccountSetupPage from './pages/AccountSetupPage'
+import AccountRestorePage from './pages/AccountRestorePage'
 import ServerListPage from './pages/ServerListPage'
 import ServerViewPage from './pages/ServerViewPage'
 import SettingsPage from './pages/SettingsPage'
@@ -68,7 +68,7 @@ function App() {
   return (
     <IdentityProvider>
       <AccountProvider>
-        <SignalingProvider>
+        <BeaconProvider>
           <PresenceProvider>
             <VoicePresenceProvider>
               <SpeakingProvider>
@@ -89,8 +89,8 @@ function App() {
                         <Routes>
                           <Route path="/" element={<SplashPage />} />
                           <Route path="/account/select" element={<AccountSelectPage />} />
-                          <Route path="/account/setup" element={<IdentitySetupPage />} />
-                          <Route path="/account/restore" element={<IdentityRestorePage />} />
+                          <Route path="/account/setup" element={<AccountSetupPage />} />
+                          <Route path="/account/restore" element={<AccountRestorePage />} />
                           {/* Redirect old identity URLs to account URLs */}
                           <Route path="/identity/setup" element={<Navigate to="/account/setup" replace />} />
                           <Route path="/identity/restore" element={<Navigate to="/account/restore" replace />} />
@@ -135,7 +135,7 @@ function App() {
               </SpeakingProvider>
             </VoicePresenceProvider>
           </PresenceProvider>
-        </SignalingProvider>
+        </BeaconProvider>
       </AccountProvider>
     </IdentityProvider>
   )

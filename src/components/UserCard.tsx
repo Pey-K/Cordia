@@ -3,7 +3,7 @@ import { PhoneOff, Settings } from 'lucide-react'
 import { useIdentity } from '../contexts/IdentityContext'
 import { useProfile } from '../contexts/ProfileContext'
 import { useWebRTC } from '../contexts/WebRTCContext'
-import { useSignaling } from '../contexts/SignalingContext'
+import { useBeacon } from '../contexts/BeaconContext'
 import { useActiveServer } from '../contexts/ActiveServerContext'
 import { useSidebarWidth } from '../contexts/SidebarWidthContext'
 import { useMemo, useRef, useState, useEffect, type CSSProperties } from 'react'
@@ -41,7 +41,7 @@ export function UserCard() {
   const { identity } = useIdentity()
   const { profile } = useProfile()
   const { isInVoice, leaveVoice } = useWebRTC()
-  const { status: signalingStatus } = useSignaling()
+  const { status: beaconStatus } = useBeacon()
   const { activeSigningPubkey } = useActiveServer()
   const { width, setWidth, resetWidth } = useSidebarWidth()
   const resizeHandleRef = useRef<HTMLDivElement>(null)
@@ -58,7 +58,7 @@ export function UserCard() {
   }, [identity?.user_id])
 
   const displayName = profile.display_name || identity?.display_name || 'Account'
-  const signalingConnected = signalingStatus === 'connected'
+  const signalingConnected = beaconStatus === 'connected'
   const selfPresence = getSelfPresence(signalingConnected, activeSigningPubkey, isInVoice)
 
   const getStatusText = () => {

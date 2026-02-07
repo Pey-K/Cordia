@@ -268,7 +268,7 @@ impl AccountManager {
 
         // Create account directory and subdirectories
         fs::create_dir_all(&account_dir)?;
-        fs::create_dir_all(account_dir.join("houses"))?;
+        fs::create_dir_all(account_dir.join("servers"))?;
 
         // Save account info
         let info = AccountInfo {
@@ -359,9 +359,9 @@ impl AccountManager {
         Ok(())
     }
 
-    /// Load known house names (signing_pubkey -> name) for an account. Empty map if missing.
-    pub fn load_known_house_names(&self, account_id: &str) -> Result<std::collections::HashMap<String, String>, AccountError> {
-        let path = self.get_account_dir(account_id).join("known_house_names.json");
+    /// Load known server names (signing_pubkey -> name) for an account. Empty map if missing.
+    pub fn load_known_server_names(&self, account_id: &str) -> Result<std::collections::HashMap<String, String>, AccountError> {
+        let path = self.get_account_dir(account_id).join("known_server_names.json");
         if !path.exists() {
             return Ok(std::collections::HashMap::new());
         }
@@ -370,11 +370,11 @@ impl AccountManager {
         Ok(map)
     }
 
-    /// Save known house names for an account.
-    pub fn save_known_house_names(&self, account_id: &str, names: &std::collections::HashMap<String, String>) -> Result<(), AccountError> {
+    /// Save known server names for an account.
+    pub fn save_known_server_names(&self, account_id: &str, names: &std::collections::HashMap<String, String>) -> Result<(), AccountError> {
         let account_dir = self.get_account_dir(account_id);
         fs::create_dir_all(&account_dir)?;
-        let path = account_dir.join("known_house_names.json");
+        let path = account_dir.join("known_server_names.json");
         let json = serde_json::to_string_pretty(names)?;
         fs::write(path, json)?;
         Ok(())

@@ -4,9 +4,9 @@ import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import { Select } from '../../components/ui/select'
-import { useSignaling } from '../../contexts/SignalingContext'
+import { useBeacon } from '../../contexts/BeaconContext'
 import { useToast } from '../../contexts/ToastContext'
-import { getSignalingServerUrl, setSignalingServerUrl } from '../../lib/tauri'
+import { getBeaconUrl, setBeaconUrl } from '../../lib/tauri'
 import { getNatOverride, setNatOverride, type NatOverride } from '../../lib/natOverride'
 import { PEER_CONNECTION_CONFIG } from '../../lib/webrtc'
 
@@ -62,7 +62,7 @@ async function probeNatIndicator(): Promise<NatIndicator> {
 
 export function ConnectionSettings() {
   const { toast } = useToast()
-  const { status, checkHealth, reloadUrl } = useSignaling()
+  const { status, checkHealth, reloadUrl } = useBeacon()
   const [url, setUrl] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const [isChecking, setIsChecking] = useState(false)
@@ -72,7 +72,7 @@ export function ConnectionSettings() {
 
   // Load current signaling server URL
   useEffect(() => {
-    getSignalingServerUrl().then(setUrl).catch(console.error)
+    getBeaconUrl().then(setUrl).catch(console.error)
   }, [])
 
   useEffect(() => {
@@ -136,7 +136,7 @@ export function ConnectionSettings() {
         formattedUrl = `ws://${formattedUrl}`
       }
 
-      await setSignalingServerUrl(formattedUrl)
+      await setBeaconUrl(formattedUrl)
       setUrl(formattedUrl) // Update the input to show formatted URL
 
       // Reload URL in context to trigger health check with new URL

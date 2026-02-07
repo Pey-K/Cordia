@@ -3,7 +3,7 @@ import { useAccount } from '../contexts/AccountContext'
 import { useIdentity } from '../contexts/IdentityContext'
 import { usePresence } from '../contexts/PresenceContext'
 import { useVoicePresence } from '../contexts/VoicePresenceContext'
-import { useSignaling } from '../contexts/SignalingContext'
+import { useBeacon } from '../contexts/BeaconContext'
 import { useProfile } from '../contexts/ProfileContext'
 import { useRemoteProfiles } from '../contexts/RemoteProfilesContext'
 import { fetchAndImportServerHintOpaque, listServers, listFriends } from '../lib/tauri'
@@ -22,7 +22,7 @@ export function ServerSyncBootstrap() {
   const { identity } = useIdentity()
   const presence = usePresence()
   const voicePresence = useVoicePresence()
-  const { status: signalingStatus, signalingUrl } = useSignaling()
+  const { status: beaconStatus, beaconUrl } = useBeacon()
   const { profile } = useProfile()
   const remoteProfiles = useRemoteProfiles()
   const ranForSessionRef = useRef<string | null>(null)
@@ -44,7 +44,7 @@ export function ServerSyncBootstrap() {
   useEffect(() => {
     // Only run when logged in + beacon is reachable
     if (!sessionLoaded || !currentAccountId) return
-    if (signalingStatus !== 'connected' || !signalingUrl) return
+    if (beaconStatus !== 'connected' || !beaconUrl) return
 
     // Run once per active account/session
     if (ranForSessionRef.current === currentAccountId) return
@@ -60,7 +60,7 @@ export function ServerSyncBootstrap() {
         for (const s of servers) {
           if (cancelled) return
           try {
-            await fetchAndImportServerHintOpaque(signalingUrl, s.signing_pubkey)
+            await fetchAndImportServerHintOpaque(beaconUrl, s.signing_pubkey)
           } catch (e) {
             console.warn('[ServerSyncBootstrap] Failed to sync server hint:', e)
           }
@@ -85,7 +85,7 @@ export function ServerSyncBootstrap() {
         wsRef.current = null
       }
 
-      const base = signalingUrl.replace(/\/$/, '')
+      const base = beaconUrl.replace(/\/$/, '')
       const wsUrl = base.endsWith('/ws') ? base : base + '/ws'
       const ws = new WebSocket(wsUrl)
       wsRef.current = ws
@@ -293,7 +293,7 @@ export function ServerSyncBootstrap() {
             // (because we need the symmetric key to decrypt). If we don't have it, the import
             // will fail gracefully and we can ignore the update.
             try {
-              const imported = await fetchAndImportServerHintOpaque(signalingUrl, signingPubkey)
+              const imported = await fetchAndImportServerHintOpaque(beaconUrl, signingPubkey)
 
               // If we successfully imported, ensure we're subscribed for future updates
               if (imported && !subscribedSigningPubkeysRef.current.has(signingPubkey)) {
@@ -515,7 +515,7 @@ export function ServerSyncBootstrap() {
         // Best-effort reconnect while logged in
         if (!cancelled) {
           setTimeout(() => {
-            if (!cancelled && signalingStatus === 'connected' && signalingUrl) {
+            if (!cancelled && beaconStatus === 'connected' && beaconUrl) {
               connectWs()
             }
           }, 2000)
@@ -609,7 +609,7 @@ export function ServerSyncBootstrap() {
         wsRef.current = null
       }
     }
-  }, [sessionLoaded, currentAccountId, signalingStatus, signalingUrl])
+  }, [sessionLoaded, currentAccountId, beaconStatus, beaconUrl])
 
   return null
 }

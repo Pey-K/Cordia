@@ -10,7 +10,7 @@ import {
   createRemoteAudioElement,
   closePeerConnection
 } from '../lib/webrtc'
-import { useSignaling } from './SignalingContext'
+import { useBeacon } from './BeaconContext'
 import { useVoicePresence } from './VoicePresenceContext'
 import { useSpeaking } from './SpeakingContext'
 import { useIdentity } from './IdentityContext'
@@ -76,7 +76,7 @@ const WebRTCContext = createContext<WebRTCContextType | null>(null)
 const PROFILE_P2P_CHANNEL = 'cordia-profile'
 
 export function WebRTCProvider({ children }: { children: ReactNode }) {
-  const { signalingUrl } = useSignaling()
+  const { beaconUrl } = useBeacon()
   const voicePresence = useVoicePresence()
   const { setUserSpeaking } = useSpeaking()
   const { identity } = useIdentity()
@@ -965,8 +965,8 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
   // Connect to signaling server (used for initial connect and reconnect)
   // NOTE: This is CONTROL PLANE only - does not touch media
   const connectToSignaling = useCallback(() => {
-    if (!signalingUrl) {
-      console.error('[Signal] Cannot connect: no signalingUrl')
+    if (!beaconUrl) {
+      console.error('[Signal] Cannot connect: no beaconUrl')
       return
     }
 
@@ -982,7 +982,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
     }
 
     console.log('[Signal] Connecting to signaling server...')
-    const base = signalingUrl.replace(/\/$/, '')
+    const base = beaconUrl.replace(/\/$/, '')
     const wsUrl = base.endsWith('/ws') ? base : base + '/ws'
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
@@ -1038,7 +1038,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
         }, 2000)
       }
     }
-  }, [signalingUrl, handleSignalingMessage, startKeepalive, stopKeepalive])
+  }, [beaconUrl, handleSignalingMessage, startKeepalive, stopKeepalive])
 
   const joinVoice = useCallback(async (roomId: string, houseId: string, userId: string, signingPubkey: string) => {
     if (isInVoice) {
@@ -1050,7 +1050,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
       leaveVoiceInternal()
     }
 
-    if (!signalingUrl) {
+    if (!beaconUrl) {
       console.error('[WebRTC] No signaling server URL configured')
       throw new Error('No signaling server configured')
     }
@@ -1119,7 +1119,7 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
 
     // Connect to signaling
     connectToSignaling()
-  }, [isInVoice, signalingUrl, connectToSignaling, voicePresence, setUserSpeaking])
+  }, [isInVoice, beaconUrl, connectToSignaling, voicePresence, setUserSpeaking])
 
   // Internal leave function that doesn't check isInVoice state
   // NOTE: This is an EXPLICIT leave - tear down both signaling AND media

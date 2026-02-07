@@ -108,7 +108,7 @@ The app window will open automatically.
 **If using default beacon (`beacon.pkcollection.net`):**
 - Check your internet connection
 - The default beacon may be temporarily unavailable
-- Try switching to a self-hosted beacon (see [SIGNALING_SETUP.md](SIGNALING_SETUP.md))
+- Try switching to a self-hosted beacon (see [BEACON_SETUP.md](BEACON_SETUP.md))
 
 **If using self-hosted beacon:**
 ```bash
@@ -204,5 +204,5 @@ docker-compose down
 ## Need More Help?
 
 - **Detailed Setup:** See [SETUP.md](SETUP.md) for platform-specific instructions
-- **Beacon Setup:** See [SIGNALING_SETUP.md](SIGNALING_SETUP.md) for advanced configuration
+- **Beacon Setup:** See [BEACON_SETUP.md](BEACON_SETUP.md) for advanced configuration
 - **Deployment:** See [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) to deploy your own beacon

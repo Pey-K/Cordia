@@ -4,7 +4,7 @@
 mod identity;
 mod audio_settings;
 mod server;
-mod signaling;
+mod beacon;
 mod account_manager;
 
 #[cfg(windows)]
@@ -13,7 +13,7 @@ mod file_association;
 use identity::{IdentityManager, UserIdentity};
 use audio_settings::{AudioSettingsManager, AudioSettings};
 use server::{ServerManager, ServerInfo};
-use signaling::{check_signaling_health, get_default_signaling_url};
+use beacon::{check_beacon_health, get_default_beacon_url};
 use account_manager::{AccountManager, SessionState, AccountInfo, KnownProfile, KnownProfileForExport};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -165,7 +165,7 @@ fn merge_server_infos(mut base: ServerInfo, other: ServerInfo) -> ServerInfo {
     base
 }
 
-fn normalize_signaling_to_http(url: &str) -> Result<String, String> {
+fn normalize_beacon_to_http(url: &str) -> Result<String, String> {
     let url = url.trim();
     if url.starts_with("wss://") {
         Ok(url.replacen("wss://", "https://", 1).trim_end_matches('/').to_string())
@@ -256,12 +256,12 @@ fn export_full_identity_for_account(
     let identity_manager = IdentityManager::for_account(&account_id)
         .map_err(|e| format!("Failed to initialize identity manager: {}", e))?;
 
-    // Load all houses for this specific account
+    // Load all servers for this specific account
     let server_manager = ServerManager::for_account(&account_id)
-        .map_err(|e| format!("Failed to initialize house manager for account {}: {}", account_id, e))?;
+        .map_err(|e| format!("Failed to initialize server manager for account {}: {}", account_id, e))?;
     
     let servers = server_manager.load_all_servers()
-        .map_err(|e| format!("Failed to load houses: {}", e))?;
+        .map_err(|e| format!("Failed to load servers: {}", e))?;
 
     // Export only essential cryptographic keys (rooms/members come from signaling server)
     let mut server_data: Vec<serde_json::Value> = Vec::new();
@@ -307,14 +307,14 @@ fn export_full_identity_for_account(
         .map(|(k, v)| (k.clone(), KnownProfileForExport::from(v)))
         .collect();
     let known_profiles = serde_json::to_value(&known_profiles_for_export).ok();
-    // Build known_house_names from current server list so restore shows last-known names when offline
-    let known_house_names: std::collections::HashMap<String, String> = servers.iter()
+    // Build known_server_names from current server list so restore shows last-known names when offline
+    let known_server_names: std::collections::HashMap<String, String> = servers.iter()
         .filter(|s| !s.name.is_empty())
         .map(|s| (s.signing_pubkey.clone(), s.name.clone()))
         .collect();
-    let known_house_names = serde_json::to_value(&known_house_names).ok();
+    let known_server_names = serde_json::to_value(&known_server_names).ok();
 
-    identity_manager.export_full_identity(profile_json, server_data, signaling_server_url, friends, known_profiles, known_house_names)
+    identity_manager.export_full_identity(profile_json, server_data, signaling_server_url, friends, known_profiles, known_server_names)
         .map_err(|e| format!("Failed to export full identity: {}", e))
 }
 
@@ -326,12 +326,12 @@ fn export_full_identity(profile_json: Option<serde_json::Value>) -> Result<Vec<u
     let identity_manager = IdentityManager::new()
         .map_err(|e| format!("Failed to initialize identity manager: {}", e))?;
 
-    // Load all houses for current account
+    // Load all servers for current account
     let server_manager = ServerManager::new()
-        .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
+        .map_err(|e| format!("Failed to initialize server manager: {}", e))?;
     
     let servers = server_manager.load_all_servers()
-        .map_err(|e| format!("Failed to load houses: {}", e))?;
+        .map_err(|e| format!("Failed to load servers: {}", e))?;
 
     // Export only essential cryptographic keys (rooms/members come from signaling server)
     let mut server_data: Vec<serde_json::Value> = Vec::new();
@@ -380,13 +380,13 @@ fn export_full_identity(profile_json: Option<serde_json::Value>) -> Result<Vec<u
         .map(|(k, v)| (k.clone(), KnownProfileForExport::from(v)))
         .collect();
     let known_profiles = serde_json::to_value(&known_profiles_for_export).ok();
-    let known_house_names: std::collections::HashMap<String, String> = servers.iter()
+    let known_server_names: std::collections::HashMap<String, String> = servers.iter()
         .filter(|s| !s.name.is_empty())
         .map(|s| (s.signing_pubkey.clone(), s.name.clone()))
         .collect();
-    let known_house_names = serde_json::to_value(&known_house_names).ok();
+    let known_server_names = serde_json::to_value(&known_server_names).ok();
 
-    identity_manager.export_full_identity(profile_json, server_data, signaling_server_url, friends, known_profiles, known_house_names)
+    identity_manager.export_full_identity(profile_json, server_data, signaling_server_url, friends, known_profiles, known_server_names)
         .map_err(|e| format!("Failed to export full identity: {}", e))
 }
 
@@ -398,12 +398,12 @@ fn export_full_identity_debug(profile_json: Option<serde_json::Value>) -> Result
     let identity_manager = IdentityManager::new()
         .map_err(|e| format!("Failed to initialize identity manager: {}", e))?;
 
-    // Load all houses for current account
+    // Load all servers for current account
     let server_manager = ServerManager::new()
-        .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
+        .map_err(|e| format!("Failed to initialize server manager: {}", e))?;
     
     let servers = server_manager.load_all_servers()
-        .map_err(|e| format!("Failed to load houses: {}", e))?;
+        .map_err(|e| format!("Failed to load servers: {}", e))?;
 
     // Export only essential cryptographic keys (rooms/members come from signaling server)
     let mut server_data: Vec<serde_json::Value> = Vec::new();
@@ -482,7 +482,7 @@ fn import_identity(data: Vec<u8>) -> Result<ImportResult, String> {
     // NO GUARD: Bootstrap command - works without session for initial setup
     
     // Import .key format
-    let (identity, profile_json, server_data, signaling_server_url, friends, known_profiles, known_house_names) = IdentityManager::import_key_format_static(&data)
+    let (identity, profile_json, server_data, signaling_server_url, friends, known_profiles, known_server_names) = IdentityManager::import_key_format_static(&data)
         .map_err(|e| format!("Failed to import .key file: {}", e))?;
     
     // Create account container if it doesn't exist
@@ -505,8 +505,8 @@ fn import_identity(data: Vec<u8>) -> Result<ImportResult, String> {
                 account_id: user_id.clone(),
                 display_name: display_name.clone(),
                 created_at: chrono::Utc::now().to_rfc3339(),
-                signaling_server_url: None,
-            });
+            signaling_server_url: None,
+        });
         account_info.signaling_server_url = signaling_server_url.clone();
         account_manager.save_account_info(&account_info)
             .map_err(|e| format!("Failed to save account info: {}", e))?;
@@ -522,7 +522,7 @@ fn import_identity(data: Vec<u8>) -> Result<ImportResult, String> {
     identity_manager.save_identity(&identity)
         .map_err(|e| format!("Failed to save identity: {}", e))?;
 
-    // Restore houses from exported data
+    // Restore servers from exported data
     // IMPORTANT: ServerManager must be created AFTER session is set to use correct account directory
     let server_count = server_data.len();
     if !server_data.is_empty() {
@@ -535,7 +535,7 @@ fn import_identity(data: Vec<u8>) -> Result<ImportResult, String> {
         }
         
         let server_manager = ServerManager::new()
-            .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
+            .map_err(|e| format!("Failed to initialize server manager: {}", e))?;
         
         for server_json in server_data {
             // Get essential keys from export (rooms/members will come from signaling server)
@@ -546,7 +546,7 @@ fn import_identity(data: Vec<u8>) -> Result<ImportResult, String> {
             
             let symmetric_key_b64: String = server_json.get("symmetric_key_b64")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| format!("Missing symmetric_key_b64 for house {}", signing_pubkey))?
+                .ok_or_else(|| format!("Missing symmetric_key_b64 for server {}", signing_pubkey))?
                 .to_string();
             let symmetric_key = base64::decode(&symmetric_key_b64)
                 .map_err(|e| format!("Invalid symmetric_key_b64: {}", e))?;
@@ -566,12 +566,12 @@ fn import_identity(data: Vec<u8>) -> Result<ImportResult, String> {
                 .unwrap_or("")
                 .to_string();
             
-            // Check if house with this signing_pubkey already exists
+            // Check if server with this signing_pubkey already exists
             match server_manager.find_server_id_by_signing_pubkey(&signing_pubkey)
-                .map_err(|e| format!("Failed to check for existing house: {}", e))? {
+                .map_err(|e| format!("Failed to check for existing server: {}", e))? {
                 Some(_existing_id) => {
                     // House already exists locally - skip import
-                    // The existing house already has the keys (encrypted with this device's key)
+                    // The existing server already has the keys (encrypted with this device's key)
                     // No need to recreate or update anything
                     eprintln!("House with signing_pubkey {} already exists locally, skipping import", signing_pubkey);
                     continue;
@@ -581,7 +581,7 @@ fn import_identity(data: Vec<u8>) -> Result<ImportResult, String> {
                     use uuid::Uuid;
                     let server_id = Uuid::new_v4().to_string();
                     
-                    // Create minimal house JSON - NO default name, let signaling server provide it
+                    // Create minimal server JSON - NO default name, let signaling server provide it
                     let minimal_server_json = serde_json::json!({
                         "id": server_id,
                         "signing_pubkey": signing_pubkey,
@@ -589,7 +589,7 @@ fn import_identity(data: Vec<u8>) -> Result<ImportResult, String> {
                         "invite_code": invite_code,
                     });
                     
-                    // Restore house using ServerManager method (will encrypt keys with device key)
+                    // Restore server using ServerManager method (will encrypt keys with device key)
                     // Rooms/members will be empty initially - signaling server will populate them
                     server_manager.restore_server_from_export(&minimal_server_json, symmetric_key, signing_secret)
                         .map_err(|e| format!("Failed to restore server {}: {}", signing_pubkey, e))?;
@@ -597,9 +597,9 @@ fn import_identity(data: Vec<u8>) -> Result<ImportResult, String> {
             }
         }
         
-        // Verify houses were restored
+        // Verify servers were restored
         let restored_servers = server_manager.load_all_servers()
-            .map_err(|e| format!("Failed to verify restored houses: {}", e))?;
+            .map_err(|e| format!("Failed to verify restored servers: {}", e))?;
         if restored_servers.len() != server_count {
             return Err(format!("Server restoration incomplete: expected {} servers, got {}", 
                 server_count, restored_servers.len()));
@@ -619,13 +619,13 @@ fn import_identity(data: Vec<u8>) -> Result<ImportResult, String> {
         }
     }
 
-    // Restore known house names and apply to servers with empty names (so restore shows names without beacon)
-    if let Some(ref val) = known_house_names {
+    // Restore known server names and apply to servers with empty names (so restore shows names without beacon)
+    if let Some(ref val) = known_server_names {
         if let Ok(map) = serde_json::from_value::<std::collections::HashMap<String, String>>(val.clone()) {
-            let _ = account_manager.save_known_house_names(&user_id, &map);
+            let _ = account_manager.save_known_server_names(&user_id, &map);
             if !map.is_empty() {
                 let server_manager = ServerManager::new()
-                    .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
+                    .map_err(|e| format!("Failed to initialize server manager: {}", e))?;
                 for (signing_pubkey, name) in &map {
                     if name.is_empty() {
                         continue;
@@ -672,9 +672,9 @@ fn create_server(name: String, user_id: String, display_name: String) -> Result<
     require_session()?;
     
     let manager = ServerManager::new()
-        .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
+        .map_err(|e| format!("Failed to initialize server manager: {}", e))?;
     let server = manager.create_server(name, user_id, display_name)
-        .map_err(|e| format!("Failed to create house: {}", e))?;
+        .map_err(|e| format!("Failed to create server: {}", e))?;
     Ok(server.to_info())
 }
 
@@ -684,14 +684,14 @@ fn list_servers() -> Result<Vec<ServerInfo>, String> {
     let account_id = require_session()?;
     
     let manager = ServerManager::new()
-        .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
+        .map_err(|e| format!("Failed to initialize server manager: {}", e))?;
     let mut servers = manager.load_all_servers()
         .map_err(|e| format!("Failed to load servers: {}", e))?;
 
-    // Fill empty house names from cache (e.g. after restore without beacon); then refresh cache from current list
+    // Fill empty server names from cache (e.g. after restore without beacon); then refresh cache from current list
     let account_manager = AccountManager::new()
         .map_err(|e| format!("Failed to access account manager: {}", e))?;
-    let known = account_manager.load_known_house_names(&account_id).unwrap_or_default();
+    let known = account_manager.load_known_server_names(&account_id).unwrap_or_default();
     for s in &mut servers {
         if s.name.is_empty() {
             if let Some(name) = known.get(&s.signing_pubkey) {
@@ -706,7 +706,7 @@ fn list_servers() -> Result<Vec<ServerInfo>, String> {
             new_known.insert(s.signing_pubkey.clone(), s.name.clone());
         }
     }
-    let _ = account_manager.save_known_house_names(&account_id, &new_known);
+    let _ = account_manager.save_known_server_names(&account_id, &new_known);
 
     Ok(servers.into_iter().map(|s| s.to_info()).collect())
 }
@@ -717,7 +717,7 @@ fn load_server(server_id: String) -> Result<ServerInfo, String> {
     require_session()?;
     
     let manager = ServerManager::new()
-        .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
+        .map_err(|e| format!("Failed to initialize server manager: {}", e))?;
     let srv = manager.load_server(&server_id)
         .map_err(|e| format!("Failed to load server: {}", e))?;
     Ok(srv.to_info())
@@ -729,9 +729,9 @@ fn delete_server(server_id: String) -> Result<(), String> {
     require_session()?;
     
     let manager = ServerManager::new()
-        .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
+        .map_err(|e| format!("Failed to initialize server manager: {}", e))?;
     manager.delete_server(&server_id)
-        .map_err(|e| format!("Failed to delete house: {}", e))
+        .map_err(|e| format!("Failed to delete server: {}", e))
 }
 
 #[tauri::command]
@@ -740,7 +740,7 @@ fn find_server_by_invite(invite_code: String) -> Result<Option<ServerInfo>, Stri
     require_session()?;
     
     let manager = ServerManager::new()
-        .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
+        .map_err(|e| format!("Failed to initialize server manager: {}", e))?;
     let server = manager.find_server_by_invite(&invite_code)
         .map_err(|e| format!("Failed to find server: {}", e))?;
     Ok(server.map(|h| h.to_info()))
@@ -752,43 +752,43 @@ fn join_server(server_id: String, user_id: String, display_name: String) -> Resu
     require_session()?;
     
     let manager = ServerManager::new()
-        .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
+        .map_err(|e| format!("Failed to initialize server manager: {}", e))?;
     let server = manager.add_member_to_server(&server_id, user_id, display_name)
-        .map_err(|e| format!("Failed to join house: {}", e))?;
+        .map_err(|e| format!("Failed to join server: {}", e))?;
     Ok(server.to_info())
 }
 
 #[tauri::command]
-fn add_room(server_id: String, name: String, description: Option<String>) -> Result<ServerInfo, String> {
+fn add_chat(server_id: String, name: String, description: Option<String>) -> Result<ServerInfo, String> {
     // GUARDED: Requires active session
     require_session()?;
     
     let manager = ServerManager::new()
-        .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
+        .map_err(|e| format!("Failed to initialize server manager: {}", e))?;
     let srv = manager.add_chat_to_server(&server_id, name, description)
         .map_err(|e| format!("Failed to add chat: {}", e))?;
     Ok(srv.to_info())
 }
 
 #[tauri::command]
-fn remove_chat(server_id: String, room_id: String) -> Result<ServerInfo, String> {
+fn remove_chat(server_id: String, chat_id: String) -> Result<ServerInfo, String> {
     // GUARDED: Requires active session
     require_session()?;
     
     let manager = ServerManager::new()
-        .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
-    let server = manager.remove_chat_from_server(&server_id, &room_id)
-        .map_err(|e| format!("Failed to remove room: {}", e))?;
+        .map_err(|e| format!("Failed to initialize server manager: {}", e))?;
+    let server = manager.remove_chat_from_server(&server_id, &chat_id)
+        .map_err(|e| format!("Failed to remove chat: {}", e))?;
     Ok(server.to_info())
 }
 
 #[tauri::command]
 fn import_server_hint(server: ServerInfo) -> Result<(), String> {
-    // GUARDED: Requires active session (joining a house is a usage action)
+    // GUARDED: Requires active session (joining a server is a usage action)
     require_session()?;
 
     let manager = ServerManager::new()
-        .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
+        .map_err(|e| format!("Failed to initialize server manager: {}", e))?;
 
     manager
         .import_server_hint(server)
@@ -796,11 +796,11 @@ fn import_server_hint(server: ServerInfo) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn register_server_hint(signaling_server: String, hint: EncryptedServerHint) -> Result<(), String> {
+async fn register_server_hint(beacon_url: String, hint: EncryptedServerHint) -> Result<(), String> {
     // Usage command (publishing state) - require session
     require_session()?;
 
-    let base = normalize_signaling_to_http(&signaling_server)?;
+    let base = normalize_beacon_to_http(&beacon_url)?;
     let url = format!(
         "{}/api/servers/{}/register",
         base,
@@ -813,21 +813,21 @@ async fn register_server_hint(signaling_server: String, hint: EncryptedServerHin
         .json(&hint)
         .send()
         .await
-        .map_err(|e| format!("Failed to POST house hint: {}", e))?;
+        .map_err(|e| format!("Failed to POST server hint: {}", e))?;
 
     if !resp.status().is_success() {
-        return Err(format!("Failed to register house hint: HTTP {}", resp.status()));
+        return Err(format!("Failed to register server hint: HTTP {}", resp.status()));
     }
 
     Ok(())
 }
 
 #[tauri::command]
-async fn get_server_hint(signaling_server: String, signing_pubkey: String) -> Result<Option<EncryptedServerHint>, String> {
+async fn get_server_hint(beacon_url: String, signing_pubkey: String) -> Result<Option<EncryptedServerHint>, String> {
     // Usage command (joining) - require session
     require_session()?;
 
-    let base = normalize_signaling_to_http(&signaling_server)?;
+    let base = normalize_beacon_to_http(&beacon_url)?;
     let url = format!(
         "{}/api/servers/{}/hint",
         base,
@@ -839,33 +839,33 @@ async fn get_server_hint(signaling_server: String, signing_pubkey: String) -> Re
         .get(url)
         .send()
         .await
-        .map_err(|e| format!("Failed to GET house hint: {}", e))?;
+        .map_err(|e| format!("Failed to GET server hint: {}", e))?;
 
     if resp.status().as_u16() == 404 {
         return Ok(None);
     }
 
     if !resp.status().is_success() {
-        return Err(format!("Failed to get house hint: HTTP {}", resp.status()));
+        return Err(format!("Failed to get server hint: HTTP {}", resp.status()));
     }
 
     let hint = resp
         .json::<EncryptedServerHint>()
         .await
-        .map_err(|e| format!("Failed to parse house hint JSON: {}", e))?;
+        .map_err(|e| format!("Failed to parse server hint JSON: {}", e))?;
 
     Ok(Some(hint))
 }
 
 #[tauri::command]
-async fn publish_server_hint_opaque(signaling_server: String, server_id: String) -> Result<(), String> {
+async fn publish_server_hint_opaque(beacon_url: String, server_id: String) -> Result<(), String> {
     require_session()?;
 
     let manager = ServerManager::new()
-        .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
+        .map_err(|e| format!("Failed to initialize server manager: {}", e))?;
 
     let server = manager.load_server(&server_id)
-        .map_err(|e| format!("Failed to load house: {}", e))?;
+        .map_err(|e| format!("Failed to load server: {}", e))?;
 
     let symmetric_key = server.get_symmetric_key()
         .ok_or_else(|| "Server missing symmetric key".to_string())?;
@@ -880,18 +880,18 @@ async fn publish_server_hint_opaque(signaling_server: String, server_id: String)
         last_updated: chrono::Utc::now().to_rfc3339(),
     };
 
-    register_server_hint(signaling_server, hint).await
+    register_server_hint(beacon_url, hint).await
 }
 
 #[tauri::command]
-async fn publish_server_hint_member_left(signaling_server: String, server_id: String, user_id: String) -> Result<(), String> {
+async fn publish_server_hint_member_left(beacon_url: String, server_id: String, user_id: String) -> Result<(), String> {
     require_session()?;
 
     let manager = ServerManager::new()
-        .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
+        .map_err(|e| format!("Failed to initialize server manager: {}", e))?;
 
     let server = manager.load_server(&server_id)
-        .map_err(|e| format!("Failed to load house: {}", e))?;
+        .map_err(|e| format!("Failed to load server: {}", e))?;
 
     let symmetric_key = server.get_symmetric_key()
         .ok_or_else(|| "Server missing symmetric key".to_string())?;
@@ -907,30 +907,30 @@ async fn publish_server_hint_member_left(signaling_server: String, server_id: St
         last_updated: chrono::Utc::now().to_rfc3339(),
     };
 
-    register_server_hint(signaling_server, hint).await
+    register_server_hint(beacon_url, hint).await
 }
 
 #[tauri::command]
-async fn fetch_and_import_server_hint_opaque(signaling_server: String, signing_pubkey: String) -> Result<bool, String> {
+async fn fetch_and_import_server_hint_opaque(beacon_url: String, signing_pubkey: String) -> Result<bool, String> {
     require_session()?;
 
     // Fetch encrypted hint from server
-    let hint = match get_server_hint(signaling_server.clone(), signing_pubkey.clone()).await? {
+    let hint = match get_server_hint(beacon_url.clone(), signing_pubkey.clone()).await? {
         Some(h) => h,
         None => return Ok(false),
     };
 
-    // Find local house + symmetric key by signing_pubkey
+    // Find local server + symmetric key by signing_pubkey
     let manager = ServerManager::new()
-        .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
+        .map_err(|e| format!("Failed to initialize server manager: {}", e))?;
 
     let Some(server_id) = manager.find_server_id_by_signing_pubkey(&signing_pubkey)
-        .map_err(|e| format!("Failed to find local house: {}", e))? else {
-        return Err("Cannot decrypt hint: house not present locally (join via invite first)".to_string());
+        .map_err(|e| format!("Failed to find local server: {}", e))? else {
+        return Err("Cannot decrypt hint: server not present locally (join via invite first)".to_string());
     };
 
     let local_server = manager.load_server(&server_id)
-        .map_err(|e| format!("Failed to load local house: {}", e))?;
+        .map_err(|e| format!("Failed to load local server: {}", e))?;
 
     let Some(symmetric_key) = local_server.get_symmetric_key() else {
         // Server exists but has no key (e.g. created in a bad state). Can't decrypt hint; skip without error.
@@ -951,11 +951,11 @@ struct InviteResolveResponse {
 }
 
 #[tauri::command]
-async fn resolve_invite_code(signaling_server: String, invite_code: String) -> Result<Option<String>, String> {
+async fn resolve_invite_code(beacon_url: String, invite_code: String) -> Result<Option<String>, String> {
     // Usage command (joining) - require session
     require_session()?;
 
-    let base = normalize_signaling_to_http(&signaling_server)?;
+    let base = normalize_beacon_to_http(&beacon_url)?;
     let code = invite_code.trim().to_ascii_uppercase();
     let url = format!("{}/api/invites/{}", base, urlencoding::encode(&code));
 
@@ -983,15 +983,15 @@ async fn resolve_invite_code(signaling_server: String, invite_code: String) -> R
 }
 
 #[tauri::command]
-async fn create_temporary_invite(signaling_server: String, server_id: String, max_uses: u32) -> Result<String, String> {
+async fn create_temporary_invite(beacon_url: String, server_id: String, max_uses: u32) -> Result<String, String> {
     require_session()?;
 
     let manager = ServerManager::new()
-        .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
+        .map_err(|e| format!("Failed to initialize server manager: {}", e))?;
 
-    // Load house with secrets (need symmetric key)
+    // Load server with secrets (need symmetric key)
     let server = manager.load_server(&server_id)
-        .map_err(|e| format!("Failed to load house: {}", e))?;
+        .map_err(|e| format!("Failed to load server: {}", e))?;
 
     // Generate a short human-shareable code (8 chars - easy to read over phone)
     const CHARSET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -1008,7 +1008,7 @@ async fn create_temporary_invite(signaling_server: String, server_id: String, ma
 
     // Include active invite fields in the payload so new joiners see the current invite state immediately.
     // We treat the invite as "active until revoked"; this timestamp is just to allow UI hiding if it's very stale.
-    let invite_uri = format!("cordia://{}@{}", code, signaling_server.trim());
+    let invite_uri = format!("cordia://{}@{}", code, beacon_url.trim());
     let expires_at = chrono::Utc::now() + chrono::Duration::days(30);
     server_info.active_invite_uri = Some(invite_uri.clone());
     server_info.active_invite_expires_at = Some(expires_at);
@@ -1020,7 +1020,7 @@ async fn create_temporary_invite(signaling_server: String, server_id: String, ma
     let encrypted_payload = encrypt_invite_payload(&code, &payload)?;
 
     // POST to signaling server
-    let base = normalize_signaling_to_http(&signaling_server)?;
+    let base = normalize_beacon_to_http(&beacon_url)?;
     let url = format!(
         "{}/api/servers/{}/invites",
         base,
@@ -1052,21 +1052,21 @@ async fn create_temporary_invite(signaling_server: String, server_id: String, ma
     manager.set_active_invite(&server_id, Some(invite_uri.clone()), Some(expires_at))
         .map_err(|e| format!("Failed to store active invite: {}", e))?;
 
-    // Propagate active invite to all members via encrypted house hint
-    publish_server_hint_opaque(signaling_server.clone(), server_id.clone()).await?;
+    // Propagate active invite to all members via encrypted server hint
+    publish_server_hint_opaque(beacon_url.clone(), server_id.clone()).await?;
 
     Ok(invite_uri)
 }
 
 #[tauri::command]
-async fn revoke_active_invite(signaling_server: String, server_id: String) -> Result<(), String> {
+async fn revoke_active_invite(beacon_url: String, server_id: String) -> Result<(), String> {
     require_session()?;
 
     let manager = ServerManager::new()
-        .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
+        .map_err(|e| format!("Failed to initialize server manager: {}", e))?;
 
     let server = manager.load_server(&server_id)
-        .map_err(|e| format!("Failed to load house: {}", e))?;
+        .map_err(|e| format!("Failed to load server: {}", e))?;
 
     let code = server
         .active_invite_uri
@@ -1076,7 +1076,7 @@ async fn revoke_active_invite(signaling_server: String, server_id: String) -> Re
         .map(|s| s.to_string());
 
     if let Some(code) = code {
-        let base = normalize_signaling_to_http(&signaling_server)?;
+        let base = normalize_beacon_to_http(&beacon_url)?;
         let url = format!("{}/api/invites/{}/revoke", base, urlencoding::encode(code.trim()));
         let client = reqwest::Client::new();
         let _ = client.post(url).send().await;
@@ -1087,16 +1087,16 @@ async fn revoke_active_invite(signaling_server: String, server_id: String) -> Re
         .map_err(|e| format!("Failed to clear active invite: {}", e))?;
 
     // Propagate revocation to all members
-    publish_server_hint_opaque(signaling_server.clone(), server_id.clone()).await?;
+    publish_server_hint_opaque(beacon_url.clone(), server_id.clone()).await?;
 
     Ok(())
 }
 
 #[tauri::command]
-async fn redeem_temporary_invite(signaling_server: String, code: String, user_id: String, display_name: String) -> Result<ServerInfo, String> {
+async fn redeem_temporary_invite(beacon_url: String, code: String, user_id: String, display_name: String) -> Result<ServerInfo, String> {
     require_session()?;
 
-    let base = normalize_signaling_to_http(&signaling_server)?;
+    let base = normalize_beacon_to_http(&beacon_url)?;
     let url = format!("{}/api/invites/{}/redeem", base, urlencoding::encode(code.trim()));
 
     let client = reqwest::Client::new();
@@ -1121,50 +1121,50 @@ async fn redeem_temporary_invite(signaling_server: String, code: String, user_id
         .map_err(|e| format!("Invalid symmetric key b64: {}", e))?;
 
     let manager = ServerManager::new()
-        .map_err(|e| format!("Failed to initialize house manager: {}", e))?;
+        .map_err(|e| format!("Failed to initialize server manager: {}", e))?;
 
-    // IMPORTANT: The invite payload's house snapshot can be stale (it was created when the invite was generated).
+    // IMPORTANT: The invite payload's server snapshot can be stale (it was created when the invite was generated).
     // Now that we have the symmetric key, pull+decrypt the latest server hint and merge memberships/rooms so we
     // don't overwrite the server's member list with "creator + me".
     let mut merged_server = payload.server.clone();
-    if let Some(latest_hint) = get_server_hint(signaling_server.clone(), merged_server.signing_pubkey.clone()).await? {
-        if let Ok(server_house) = decrypt_server_hint(&symmetric_key, &latest_hint.encrypted_state) {
-            merged_server = merge_server_infos(server_house, merged_server);
+    if let Some(latest_hint) = get_server_hint(beacon_url.clone(), merged_server.signing_pubkey.clone()).await? {
+        if let Ok(server_from_hint) = decrypt_server_hint(&symmetric_key, &latest_hint.encrypted_state) {
+            merged_server = merge_server_infos(server_from_hint, merged_server);
         }
     }
 
-    // Import merged house + symmetric key locally
-    // Returns the actual house ID used (may differ from merged_server.id if house already existed)
+    // Import merged server + symmetric key locally
+    // Returns the actual server ID used (may differ from merged_server.id if server already existed)
     let actual_server_id = manager.import_server_invite(merged_server.clone(), symmetric_key)
-        .map_err(|e| format!("Failed to import house from invite: {}", e))?;
+        .map_err(|e| format!("Failed to import server from invite: {}", e))?;
 
-    // Add member locally using the actual house ID
+    // Add member locally using the actual server ID
     let updated = manager.add_member_to_server(&actual_server_id, user_id, display_name)
-        .map_err(|e| format!("Failed to join house: {}", e))?;
+        .map_err(|e| format!("Failed to join server: {}", e))?;
 
     // CRITICAL: Publish updated encrypted hint as part of redeem flow.
     // Otherwise, other clients (including the creator) may never learn about this membership change,
     // and later syncs can overwrite the joiner's local member list.
-    publish_server_hint_opaque(signaling_server.clone(), actual_server_id).await?;
+    publish_server_hint_opaque(beacon_url.clone(), actual_server_id).await?;
 
     Ok(updated.to_info())
 }
 
 #[tauri::command]
-async fn check_signaling_server(url: Option<String>) -> Result<bool, String> {
-    let server_url = url.unwrap_or_else(get_default_signaling_url);
-    check_signaling_health(&server_url)
+async fn check_beacon(url: Option<String>) -> Result<bool, String> {
+    let server_url = url.unwrap_or_else(get_default_beacon_url);
+    check_beacon_health(&server_url)
         .await
-        .map_err(|e| format!("Signaling check failed: {}", e))
+        .map_err(|e| format!("Beacon check failed: {}", e))
 }
 
 #[tauri::command]
-fn get_default_signaling_server() -> String {
-    get_default_signaling_url()
+fn get_default_beacon() -> String {
+    get_default_beacon_url()
 }
 
 #[tauri::command]
-async fn get_signaling_server_url() -> Result<String, String> {
+async fn get_beacon_url() -> Result<String, String> {
     // GUARDED: Requires active session
     require_session()?;
     
@@ -1184,11 +1184,11 @@ async fn get_signaling_server_url() -> Result<String, String> {
         });
     
     Ok(account_info.signaling_server_url
-        .unwrap_or_else(|| get_default_signaling_url()))
+        .unwrap_or_else(|| get_default_beacon_url()))
 }
 
 #[tauri::command]
-async fn set_signaling_server_url(url: String) -> Result<(), String> {
+async fn set_beacon_url(url: String) -> Result<(), String> {
     // GUARDED: Requires active session
     require_session()?;
     
@@ -1209,7 +1209,7 @@ async fn set_signaling_server_url(url: String) -> Result<(), String> {
     
     // Only save if different from default (to avoid cluttering account info)
     let trimmed_url = url.trim().to_string();
-    if trimmed_url == get_default_signaling_url() {
+    if trimmed_url == get_default_beacon_url() {
         account_info.signaling_server_url = None;
     } else {
         account_info.signaling_server_url = Some(trimmed_url);
@@ -1455,7 +1455,7 @@ fn main() {
             delete_server,
             find_server_by_invite,
             join_server,
-            add_room,
+            add_chat,
             remove_chat,
             import_server_hint,
             register_server_hint,
@@ -1467,11 +1467,11 @@ fn main() {
             create_temporary_invite,
             revoke_active_invite,
             redeem_temporary_invite,
-            // Signaling commands
-            check_signaling_server,
-            get_default_signaling_server,
-            get_signaling_server_url,
-            set_signaling_server_url,
+            // Beacon commands
+            check_beacon,
+            get_default_beacon,
+            get_beacon_url,
+            set_beacon_url,
             read_clipboard_text
         ])
         .run(tauri::generate_context!())
