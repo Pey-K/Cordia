@@ -5,14 +5,15 @@ import type { CSSProperties } from 'react'
 import { Plus, X, Download, Loader2 } from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { deleteAccount, exportFullIdentityForAccount } from '../lib/tauri'
+import { useToast } from '../contexts/ToastContext'
 
 function AccountSelectPage() {
   const { accounts, accountInfoMap, isLoading: accountsLoading, switchToAccount, authError, refreshAccounts } = useAccount()
+  const { toast } = useToast()
   const navigate = useNavigate()
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
   const [isExporting, setIsExporting] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
-  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   useEffect(() => {
     // If no accounts exist, redirect to setup
@@ -29,7 +30,7 @@ function AccountSelectPage() {
       navigate('/home')
     } catch (error) {
       console.error('Failed to select account:', error)
-      alert('Failed to select account. Please try again.')
+      toast('Failed to select account. Please try again.')
     }
   }
 
@@ -40,7 +41,6 @@ function AccountSelectPage() {
   const handleDeleteClick = (accountId: string, e: React.MouseEvent) => {
     e.stopPropagation()
     setDeleteTarget(accountId)
-    setDeleteError(null)
   }
 
   const sanitizeFilename = (name: string): string => {
@@ -52,7 +52,6 @@ function AccountSelectPage() {
     if (!deleteTarget) return
 
     setIsExporting(true)
-    setDeleteError(null)
 
     try {
       // Read profile from localStorage
@@ -86,7 +85,7 @@ function AccountSelectPage() {
       document.body.removeChild(a)
       URL.revokeObjectURL(url)
     } catch (err) {
-      setDeleteError(err instanceof Error ? err.message : 'Failed to export account')
+      toast(err instanceof Error ? err.message : 'Failed to export account')
     } finally {
       setIsExporting(false)
     }
@@ -96,7 +95,6 @@ function AccountSelectPage() {
     if (!deleteTarget) return
 
     setIsDeleting(true)
-    setDeleteError(null)
 
     try {
       await deleteAccount(deleteTarget)
@@ -109,7 +107,7 @@ function AccountSelectPage() {
         navigate('/account/setup')
       }
     } catch (err) {
-      setDeleteError(err instanceof Error ? err.message : 'Failed to delete account')
+      toast(err instanceof Error ? err.message : 'Failed to delete account')
     } finally {
       setIsDeleting(false)
     }
@@ -117,7 +115,6 @@ function AccountSelectPage() {
 
   const handleCancelDelete = () => {
     setDeleteTarget(null)
-    setDeleteError(null)
   }
 
   const readLocalProfile = (accountId: string) => {
@@ -272,12 +269,6 @@ function AccountSelectPage() {
                     Before deleting, download your account keys. You can use them to restore this account on another device or after reinstallation.
                   </p>
                 </div>
-
-                {deleteError && (
-                  <div className="bg-destructive/10 border-l-2 border-destructive p-3 text-sm text-destructive">
-                    {deleteError}
-                  </div>
-                )}
 
                 <div className="flex gap-3">
                   <Button

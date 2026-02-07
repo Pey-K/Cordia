@@ -5,6 +5,7 @@ import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import { Select } from '../../components/ui/select'
 import { useSignaling } from '../../contexts/SignalingContext'
+import { useToast } from '../../contexts/ToastContext'
 import { getSignalingServerUrl, setSignalingServerUrl } from '../../lib/tauri'
 import { getNatOverride, setNatOverride, type NatOverride } from '../../lib/natOverride'
 import { PEER_CONNECTION_CONFIG } from '../../lib/webrtc'
@@ -60,6 +61,7 @@ async function probeNatIndicator(): Promise<NatIndicator> {
 }
 
 export function ConnectionSettings() {
+  const { toast } = useToast()
   const { status, checkHealth, reloadUrl } = useSignaling()
   const [url, setUrl] = useState('')
   const [isSaving, setIsSaving] = useState(false)
@@ -144,7 +146,7 @@ export function ConnectionSettings() {
       setTimeout(() => setSaveMessage(''), 3000)
     } catch (error) {
       console.error('Failed to save signaling URL:', error)
-      setSaveMessage('Failed to save')
+      toast('Failed to save')
     } finally {
       setIsSaving(false)
     }
@@ -160,14 +162,13 @@ export function ConnectionSettings() {
         if (status === 'connected') {
           setSaveMessage('Connection successful!')
         } else {
-          setSaveMessage('Connection failed - check URL and server')
+          toast('Connection failed - check URL and server')
         }
         setTimeout(() => setSaveMessage(''), 3000)
       }, 500)
     } catch (error) {
       console.error('Check failed:', error)
-      setSaveMessage('Connection failed')
-      setTimeout(() => setSaveMessage(''), 3000)
+      toast('Connection failed')
     } finally {
       setIsChecking(false)
     }
@@ -224,9 +225,7 @@ export function ConnectionSettings() {
             </Button>
           </div>
           {saveMessage && (
-            <p className={`text-xs font-light ${saveMessage.includes('success') ? 'text-green-500' : 'text-red-500'}`}>
-              {saveMessage}
-            </p>
+            <p className="text-xs font-light text-green-500">{saveMessage}</p>
           )}
           <p className="text-xs text-muted-foreground font-light">
             WebSocket URL (ws:// or wss://).

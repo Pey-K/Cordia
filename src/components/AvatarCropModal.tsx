@@ -1,6 +1,7 @@
 import Cropper from 'react-easy-crop'
 import { useEffect, useMemo, useState } from 'react'
 import { Button } from './ui/button'
+import { useToast } from '../contexts/ToastContext'
 import { Slider } from './ui/slider'
 import { cropToSquareWebpDataUrl, type PixelCrop } from '../lib/imageCrop'
 
@@ -13,11 +14,11 @@ export function AvatarCropModal({
   onCancel: () => void
   onSave: (dataUrl: string) => void
 }) {
+  const { toast } = useToast()
   const [crop, setCrop] = useState({ x: 0, y: 0 })
   const [zoom, setZoom] = useState(1)
   const [croppedAreaPixels, setCroppedAreaPixels] = useState<PixelCrop | null>(null)
   const [isSaving, setIsSaving] = useState(false)
-  const [error, setError] = useState('')
   const CROP_BOX = 160
 
   const canSave = Boolean(croppedAreaPixels) && !isSaving
@@ -36,7 +37,6 @@ export function AvatarCropModal({
   const handleSave = async () => {
     if (!croppedAreaPixels) return
     setIsSaving(true)
-    setError('')
     try {
       const dataUrl = await cropToSquareWebpDataUrl({
         imageSrc,
@@ -46,7 +46,7 @@ export function AvatarCropModal({
       })
       onSave(dataUrl)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to crop image')
+      toast(e instanceof Error ? e.message : 'Failed to crop image')
       setIsSaving(false)
     }
   }
@@ -90,8 +90,6 @@ export function AvatarCropModal({
           </div>
           <Slider min={1} max={3} step={0.01} value={zoom} onValueChange={setZoom} />
         </div>
-
-        {error && <p className="text-xs text-red-500 font-light">{error}</p>}
 
         <div className="flex gap-2 pt-1">
           <Button
