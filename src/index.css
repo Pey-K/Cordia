@@ -158,6 +158,20 @@
       transform: translate(-50%, 0);
     }
   }
+
+  .toast-slide-out {
+    animation: toast-slide-out 0.2s ease-in forwards;
+  }
+  @keyframes toast-slide-out {
+    from {
+      opacity: 1;
+      transform: translate(-50%, 0);
+    }
+    to {
+      opacity: 0;
+      transform: translate(-50%, 1rem);
+    }
+  }
 }
 
 /* Ensure window can be resized from all edges */

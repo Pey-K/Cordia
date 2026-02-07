@@ -11,6 +11,7 @@ type ToastContextType = {
 const ToastContext = createContext<ToastContextType | null>(null)
 
 const TOAST_DURATION_MS = 4000
+const TOAST_EXIT_MS = 200
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [message, setMessage] = useState<string | null>(null)
@@ -26,7 +27,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     timeoutRef.current = setTimeout(() => {
       timeoutRef.current = null
       setVisible(false)
-      setTimeout(() => setMessage(null), 200)
+      setTimeout(() => setMessage(null), TOAST_EXIT_MS)
     }, TOAST_DURATION_MS)
   }, [])
 
@@ -41,13 +42,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     if (timeoutRef.current) clearTimeout(timeoutRef.current)
     timeoutRef.current = null
     setVisible(false)
-    setTimeout(() => setMessage(null), 200)
+    setTimeout(() => setMessage(null), TOAST_EXIT_MS)
   }, [])
 
   const toastEl = message ? (
     <div
-      className={`fixed bottom-8 left-1/2 z-[9999] flex flex-col overflow-hidden w-max max-w-[min(28rem,calc(100vw-2rem))] mx-4 rounded-md bg-destructive text-white shadow-lg cursor-pointer transition-all duration-200 ${
-        visible ? 'toast-slide-in' : 'opacity-0 -translate-x-1/2 translate-y-4'
+      className={`fixed bottom-8 left-1/2 z-[9999] flex flex-col overflow-hidden w-max max-w-[min(28rem,calc(100vw-2rem))] mx-4 rounded-md bg-destructive text-white shadow-lg cursor-pointer ${
+        visible ? 'toast-slide-in' : 'toast-slide-out'
       }`}
       role="alert"
       onClick={dismissToast}
