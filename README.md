@@ -35,7 +35,7 @@ If you’re building from source, start with **[QUICKSTART.md](QUICKSTART.md)**.
 - **P2P voice**: low-latency peer-to-peer voice calls (WebRTC).
 - **Servers + voice chats**: organize hangouts into servers and voice chats.
 - **Presence**: see who’s online / active / in voice.
-- **Accounts**: multiple local accounts on one device, each with its own data directory.
+- **Accounts**: multiple local accounts on one device, each with its own data directory (key-based identity using **Ed25519**).
 - **Backup/restore**: export/import your account to a `.key` file.
 - **Optional Beacon**: improves discovery + presence and enables “multi-chat” servers when connected.
 
