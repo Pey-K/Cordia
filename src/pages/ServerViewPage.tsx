@@ -1,34 +1,39 @@
-import { useEffect, useState, useRef, type CSSProperties } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
-import { ArrowLeft, Copy, Check, PhoneOff, Plus, Trash2, Phone } from 'lucide-react'
+import { ArrowLeft, Copy, Check, PhoneOff, Phone } from 'lucide-react'
 import { Button } from '../components/ui/button'
-import { loadServer, addChat, removeChat, type Server, type Chat, fetchAndImportServerHintOpaque, publishServerHintOpaque, createTemporaryInvite, revokeActiveInvite } from '../lib/tauri'
+import { loadServer, type Server, fetchAndImportServerHintOpaque, createTemporaryInvite, revokeActiveInvite } from '../lib/tauri'
+import { UserProfileCard } from '../components/UserProfileCard'
+import { UserCard } from '../components/UserCard'
 import { useIdentity } from '../contexts/IdentityContext'
+import { useProfile } from '../contexts/ProfileContext'
+import { useRemoteProfiles } from '../contexts/RemoteProfilesContext'
+import { useFriends } from '../contexts/FriendsContext'
+import { useAccount } from '../contexts/AccountContext'
 import { useWebRTC } from '../contexts/WebRTCContext'
 import { BeaconStatus } from '../components/BeaconStatus'
 import { useBeacon } from '../contexts/BeaconContext'
 import { usePresence, type PresenceLevel } from '../contexts/PresenceContext'
 import { useVoicePresence } from '../contexts/VoicePresenceContext'
 import { useSpeaking } from '../contexts/SpeakingContext'
-import { useSidebarWidth } from '../contexts/SidebarWidthContext'
 import { useActiveServer } from '../contexts/ActiveServerContext'
 import { cn } from '../lib/utils'
-import { useToast } from '../contexts/ToastContext'
 
 function ServerViewPage() {
   const { serverId } = useParams<{ serverId: string }>()
   const navigate = useNavigate()
   const location = useLocation()
   const { identity } = useIdentity()
+  const { profile } = useProfile()
+  const remoteProfiles = useRemoteProfiles()
+  const { isFriend, hasPendingOutgoing, sendFriendRequest, removeFriend } = useFriends()
+  const { currentAccountId, accountInfoMap } = useAccount()
   const { getLevel } = usePresence()
   const { activeSigningPubkey } = useActiveServer()
   const voicePresence = useVoicePresence()
   const { isUserSpeaking } = useSpeaking()
   const { joinVoice, leaveVoice, isInVoice: webrtcIsInVoice, currentRoomId } = useWebRTC()
   const { beaconUrl, status: beaconStatus } = useBeacon()
-  const { width, setWidth, resetWidth } = useSidebarWidth()
-  const { toast } = useToast()
-
   /** For the current user, presence is instant from local state; for others, use signaling data. */
   const getMemberLevel = (signingPubkey: string, userId: string, isInVoiceForUser: boolean): PresenceLevel => {
     if (identity?.user_id === userId) {
@@ -39,21 +44,21 @@ function ServerViewPage() {
     }
     return getLevel(signingPubkey, userId, isInVoiceForUser)
   }
-  const roomPaneResizeHandleRef = useRef<HTMLDivElement>(null)
-  const [isResizing, setIsResizing] = useState(false)
   // Try to get server from navigation state first (preloaded from Home page)
   const [server, setServer] = useState<Server | null>((location.state as { server?: Server })?.server || null)
   const [copiedInvite, setCopiedInvite] = useState(false)
-  const [currentChat, setCurrentChat] = useState<Chat | null>(null)
-  const [hoveredChatId, setHoveredChatId] = useState<string | null>(null)
-  const [showCreateChatDialog, setShowCreateChatDialog] = useState(false)
-  const [chatName, setChatName] = useState('')
-  const [chatDescription, setChatDescription] = useState('')
-  const [isCreatingChat, setIsCreatingChat] = useState(false)
   const [isCreatingInvite, setIsCreatingInvite] = useState(false)
   const [isRevokingInvite, setIsRevokingInvite] = useState(false)
-  const [deleteChatTarget, setDeleteChatTarget] = useState<Chat | null>(null)
-  const [isDeletingChat, setIsDeletingChat] = useState(false)
+  const [profileCardUserId, setProfileCardUserId] = useState<string | null>(null)
+  const [profileCardAnchor, setProfileCardAnchor] = useState<DOMRect | null>(null)
+
+  // Single group chat per server (v1: no chat selector)
+  const groupChat = server?.chats?.[0] ?? null
+
+  const fallbackNameForUser = (userId: string) => {
+    const m = server?.members?.find(mm => mm.user_id === userId)
+    return m?.display_name ?? `User ${userId.slice(0, 8)}`
+  }
 
   const getInitials = (name: string) => {
     const cleaned = name.trim()
@@ -152,41 +157,6 @@ function ServerViewPage() {
     }
   }, [server?.signing_pubkey])
 
-  // Resize handler for room pane
-  useEffect(() => {
-    if (!isResizing) return
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const rootFontSize = parseFloat(getComputedStyle(document.documentElement).fontSize)
-      const newWidthEm = e.clientX / rootFontSize
-      setWidth(newWidthEm)
-    }
-
-    const handleMouseUp = () => {
-      setIsResizing(false)
-    }
-
-    document.addEventListener('mousemove', handleMouseMove)
-    document.addEventListener('mouseup', handleMouseUp)
-
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove)
-      document.removeEventListener('mouseup', handleMouseUp)
-    }
-  }, [isResizing, setWidth])
-
-  const handleResizeStart = (e: React.MouseEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setIsResizing(true)
-  }
-
-  const handleDoubleClick = (e: React.MouseEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    resetWidth()
-  }
-
   const loadServerData = async () => {
     if (!serverId) return
 
@@ -273,21 +243,11 @@ function ServerViewPage() {
     return () => window.removeEventListener('cordia:servers-updated', onServersUpdated)
   }, [serverId])
 
-  const handleSelectChat = (chat: Chat) => {
-    if (currentChat?.id === chat.id) return
-
-    // Don't leave voice when just viewing a different chat
-    // Voice will only be left if user explicitly clicks "Leave Voice" or joins a different chat
-    setCurrentChat(chat)
-    console.log('Opened chat:', chat.name)
-  }
-
-  const handleJoinVoice = async (chat: Chat) => {
-    if (!server || !identity) return
+  const handleJoinVoice = async () => {
+    if (!server || !identity || !groupChat) return
 
     try {
-      await joinVoice(chat.id, server.id, identity.user_id, server.signing_pubkey)
-      console.log('Joined voice in chat:', chat.name)
+      await joinVoice(groupChat.id, server.id, identity.user_id, server.signing_pubkey)
     } catch (error) {
       console.error('Failed to join voice:', error)
     }
@@ -295,71 +255,6 @@ function ServerViewPage() {
 
   const handleLeaveVoice = () => {
     leaveVoice()
-    console.log('Left voice')
-  }
-
-  const handleCreateChat = async () => {
-    if (!serverId || !chatName.trim()) return
-
-    setIsCreatingChat(true)
-    try {
-      const updatedServer = await addChat(
-        serverId,
-        chatName.trim(),
-        chatDescription.trim() || null
-      )
-      setServer(updatedServer)
-
-      // Publish updated hint (chats changed)
-      if (beaconStatus === 'connected' && beaconUrl) {
-        publishServerHintOpaque(beaconUrl, updatedServer.id).catch(e => console.warn('Failed to publish server hint:', e))
-      }
-
-      setShowCreateChatDialog(false)
-      setChatName('')
-      setChatDescription('')
-    } catch (error) {
-      console.error('Failed to create chat:', error)
-    } finally {
-      setIsCreatingChat(false)
-    }
-  }
-
-  const handleDeleteChatClick = (e: React.MouseEvent, chat: Chat) => {
-    e.stopPropagation()
-    setDeleteChatTarget(chat)
-  }
-
-  const confirmDeleteChat = async () => {
-    if (!serverId || !server || !deleteChatTarget) return
-    setIsDeletingChat(true)
-
-    try {
-      // If we're currently in this chat's voice channel, disconnect first.
-      if (currentChat?.id === deleteChatTarget.id && webrtcIsInVoice) {
-        leaveVoice()
-      }
-
-      const updatedServer = await removeChat(serverId, deleteChatTarget.id)
-      setServer(updatedServer)
-
-      if (currentChat?.id === deleteChatTarget.id) {
-        setCurrentChat(null)
-      }
-
-      // Publish updated hint (chats changed) so WS subscribers refresh.
-      if (beaconStatus === 'connected' && beaconUrl) {
-        publishServerHintOpaque(beaconUrl, updatedServer.id).catch(e => console.warn('Failed to publish server hint:', e))
-      }
-
-      setDeleteChatTarget(null)
-      window.dispatchEvent(new Event('cordia:servers-updated'))
-    } catch (e) {
-      console.error('Failed to delete chat:', e)
-      toast('Failed to delete chat. Please try again.')
-    } finally {
-      setIsDeletingChat(false)
-    }
   }
 
   if (!server) {
@@ -386,296 +281,120 @@ function ServerViewPage() {
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <BeaconStatus />
+            <UserCard
+              variant="header"
+              onAvatarClick={(rect) => {
+                setProfileCardUserId(identity?.user_id ?? null)
+                setProfileCardAnchor(rect)
+              }}
+            />
           </div>
         </div>
       </header>
 
       <div className="flex-1 flex overflow-hidden">
-        {/* Sidebar - Rooms List */}
-        <div className="shrink-0 border-r-2 border-border bg-card/50 flex flex-col relative" style={{ width: `${width}em` }}>
-          {/* Resize handle */}
-          <div
-            ref={roomPaneResizeHandleRef}
-            onMouseDown={handleResizeStart}
-            onDoubleClick={handleDoubleClick}
-            className="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-primary/50 transition-colors z-10"
-            title="Drag to resize, double-click to reset"
-          >
-            <div className="absolute inset-0 -right-1 w-2" />
-          </div>
-          <div className="p-4 flex flex-col h-full">
-            <div className="space-y-2">
-              <div className="flex items-center justify-between px-2">
-                <h2 className="text-xs font-light tracking-wider uppercase text-muted-foreground">
-                  Chats
-                </h2>
-                <button
-                  onClick={() => setShowCreateChatDialog(true)}
-                  className="p-1 rounded transition-colors hover:bg-accent/50 text-muted-foreground hover:text-foreground"
-                  title="Create new chat"
-                >
-                  <Plus className="h-3 w-3" />
-                </button>
-              </div>
-              <div className="space-y-1">
-                {(server.chats ?? []).map((chat) => {
-                  const voiceParticipants = voicePresence.getVoiceParticipants(server.signing_pubkey, chat.id)
-                  // Include self if in voice in this chat
-                  const allParticipants = identity && webrtcIsInVoice && currentRoomId === chat.id && !voiceParticipants.includes(identity.user_id)
-                    ? [identity.user_id, ...voiceParticipants]
-                    : voiceParticipants
-                  const isSelected = currentChat?.id === chat.id
-
-                  return (
-                    <div key={chat.id}>
-                      <div
-                        onClick={() => handleSelectChat(chat)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault()
-                            handleSelectChat(chat)
-                          }
-                        }}
-                        onMouseEnter={() => setHoveredChatId(chat.id)}
-                        onMouseLeave={() => setHoveredChatId(null)}
-                        role="button"
-                        tabIndex={0}
-                        className={`w-full px-3 py-2 rounded-md transition-colors text-left group min-w-0 overflow-hidden ${
-                          isSelected
-                            ? 'bg-primary text-primary-foreground'
-                            : 'hover:bg-accent/50'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between min-w-0">
-                          <div className="flex items-center gap-2 min-w-0 flex-1">
-                            <span className="text-lg shrink-0">#</span>
-                            <span className="text-sm font-light truncate">{chat.name}</span>
-                          </div>
-                          {(() => {
-                            const inThisChat = webrtcIsInVoice && currentRoomId === chat.id
-                            const showJoin = !inThisChat && hoveredChatId === chat.id
-                            const isHovered = hoveredChatId === chat.id
-                            const showIcons = inThisChat || showJoin || isHovered
-                            return (
-                              <div className={`flex items-center gap-2 transition-all duration-200 ${
-                                showIcons ? 'w-auto' : 'w-0 overflow-hidden'
-                              }`}>
-                                {/* Phone icon for joining/leaving voice - visible when in call, hover-only otherwise */}
-                                <button
-                                  type="button"
-                                  title={inThisChat ? "Leave voice" : "Join voice"}
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    if (inThisChat) {
-                                      handleLeaveVoice()
-                                    } else {
-                                      handleJoinVoice(chat)
-                                    }
-                                  }}
-                                  className={`p-1 rounded transition-colors shrink-0 ${
-                                    isSelected
-                                      ? 'hover:bg-primary-foreground/10 text-primary-foreground/80 hover:text-primary-foreground'
-                                      : 'hover:bg-accent/70 text-muted-foreground hover:text-foreground'
-                                  }`}
-                                >
-                                  {inThisChat ? <PhoneOff className="h-3 w-3" /> : <Phone className="h-3 w-3" />}
-                                </button>
-                                <button
-                                  type="button"
-                                  title="Delete chat"
-                                  onClick={(e) => handleDeleteChatClick(e, chat)}
-                                  className={`p-1 rounded transition-colors shrink-0 ${
-                                    isSelected
-                                      ? 'hover:bg-primary-foreground/10 text-primary-foreground/80 hover:text-primary-foreground'
-                                      : 'hover:bg-destructive/20 text-destructive'
-                                  }`}
-                                >
-                                  <Trash2 className="h-3 w-3" />
-                                </button>
-                              </div>
-                            )
-                          })()}
-                        </div>
-                      </div>
-
-                      {/* Voice Participants */}
-                      {allParticipants.length > 0 && (
-                        <div className={`px-3 pb-2 ${isSelected ? 'pt-1' : 'pt-0'}`}>
-                          {isSelected ? (
-                            // Expanded view for selected chat
-                            <div className="space-y-1">
-                              {allParticipants.map((userId) => {
-                                const member = (server.members ?? []).find(m => m.user_id === userId)
-                                const displayName = member?.display_name || (userId === identity?.user_id ? identity.display_name : `User ${userId.slice(0, 8)}`)
-                                const isSelf = userId === identity?.user_id
-                                const level = getMemberLevel(
-                                  server.signing_pubkey,
-                                  userId,
-                                  voicePresence.isUserInVoice(server.signing_pubkey, userId)
-                                )
-                                const isSpeaking = isUserSpeaking(userId)
-
-                                return (
-                                  <div key={userId} className="flex items-center gap-2 px-2 py-1 rounded hover:bg-accent/30 transition-colors">
-                                    <div className="relative">
-                                      <div
-                                        className={cn(
-                                          "w-6 h-6 grid place-items-center rounded-none text-[10px] font-mono tracking-wider ring-2 transition-all",
-                                          isSpeaking ? "ring-green-500 ring-2" : "ring-background"
-                                        )}
-                                        style={avatarStyleForUser(userId)}
-                                        title={displayName}
-                                      >
-                                        {getInitials(displayName)}
-                                      </div>
-                                      <div className="absolute left-0 top-1/2 -translate-x-1/2 -translate-y-1/2">
-                                        <PresenceSquare level={level} size="small" />
-                                      </div>
-                                    </div>
-                                    <span className="text-xs font-light truncate">
-                                      {displayName}{isSelf ? ' (you)' : ''}
-                                    </span>
-                                  </div>
-                                )
-                              })}
-                            </div>
-                          ) : (
-                            // Stacked view for non-selected chats
-                            (() => {
-                              const maxVisible = 6
-                              const avatarPx = 20 // h-5/w-5
-                              const stepPx = 14   // overlap step
-                              const visible = allParticipants.slice(0, maxVisible)
-                              const extraCount = Math.max(0, allParticipants.length - maxVisible)
-                              const itemCount = visible.length + (extraCount > 0 ? 1 : 0)
-                              const widthPx = itemCount > 0 ? avatarPx + (itemCount - 1) * stepPx : avatarPx
-
-                              return (
-                                <div
-                                  className="relative h-5 isolation-isolate"
-                                  style={{ width: widthPx }}
-                                >
-                                  {visible.map((userId, i) => {
-                                    const member = (server.members ?? []).find(m => m.user_id === userId)
-                                    const displayName = member?.display_name || (userId === identity?.user_id ? identity?.display_name : `User ${userId.slice(0, 8)}`)
-                                    const level = getMemberLevel(
-                                      server.signing_pubkey,
-                                      userId,
-                                      voicePresence.isUserInVoice(server.signing_pubkey, userId)
-                                    )
-                                    const isSpeaking = isUserSpeaking(userId)
-
-                                    return (
-                                      <div
-                                        key={userId}
-                                        className="absolute top-0 z-[var(--z)]"
-                                        style={{ left: i * stepPx, ['--z' as any]: i }}
-                                      >
-                                        <div className="relative">
-                                          <div
-                                            className={cn(
-                                              "h-5 w-5 grid place-items-center rounded-none ring-2 transition-all",
-                                              isSpeaking ? "ring-green-500 ring-2" : "ring-background"
-                                            )}
-                                            style={avatarStyleForUser(userId)}
-                                            title={displayName}
-                                          >
-                                            <span className="text-[8px] font-mono tracking-wider">{getInitials(displayName)}</span>
-                                          </div>
-                                          <div className="absolute -top-0.5 left-1/2 -translate-x-1/2">
-                                            <PresenceSquare level={level} size="small" />
-                                          </div>
-                                        </div>
-                                      </div>
-                                    )
-                                  })}
-                                  {extraCount > 0 && (
-                                    <div
-                                      className="absolute top-0 z-[var(--z)]"
-                                      style={{ left: visible.length * stepPx, ['--z' as any]: visible.length }}
-                                    >
-                                      <div className="h-5 w-5 grid place-items-center rounded-none ring-2 ring-background bg-muted text-muted-foreground">
-                                        <span className="text-[8px] font-mono">+{extraCount}</span>
-                                      </div>
-                                    </div>
-                                  )}
-                                </div>
-                              )
-                            })()
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-
-          </div>
-        </div>
-
-        {/* Main Content - Text Chat + Optional Voice */}
-        <div className="flex-1 flex flex-col">
-          {!currentChat ? (
-            <div className="flex-1 flex items-center justify-center p-8">
-              <div className="max-w-md w-full space-y-6 text-center">
-                <div className="w-12 h-px bg-foreground/20 mx-auto"></div>
-                <h2 className="text-xl font-light tracking-tight">Select a chat</h2>
-                <p className="text-muted-foreground text-sm leading-relaxed font-light">
-                  Choose a chat from the sidebar to start chatting with your members.
-                </p>
-              </div>
-            </div>
-          ) : (
+        {/* Main Content - Group Chat */}
+        <div className="flex-1 flex flex-col min-w-0">
+          {groupChat ? (
             <>
-              {/* Chat Header */}
+              {/* Group Chat Header with Voice */}
               <div className="border-b-2 border-border p-4">
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <span className="text-2xl font-light">#</span>
-                    <div className="space-y-1">
-                      <h2 className="text-lg font-light tracking-tight">{currentChat.name}</h2>
-                      {currentChat.description && (
-                        <p className="text-xs text-muted-foreground">{currentChat.description}</p>
-                      )}
-                    </div>
-                  </div>
-                  {/* Join Voice button removed - now in sidebar on hover */}
+                  <h2 className="text-lg font-light tracking-tight">{server.name}</h2>
+                  <Button
+                    variant={webrtcIsInVoice && currentRoomId === groupChat.id ? "default" : "outline"}
+                    size="sm"
+                    className="h-9 font-light gap-2"
+                    onClick={webrtcIsInVoice && currentRoomId === groupChat.id ? handleLeaveVoice : handleJoinVoice}
+                  >
+                    {webrtcIsInVoice && currentRoomId === groupChat.id ? (
+                      <>
+                        <PhoneOff className="h-4 w-4" />
+                        Leave voice
+                      </>
+                    ) : (
+                      <>
+                        <Phone className="h-4 w-4" />
+                        Join voice
+                      </>
+                    )}
+                  </Button>
                 </div>
+                {/* Voice participants in header */}
+                {groupChat && (() => {
+                  const voiceParticipants = voicePresence.getVoiceParticipants(server.signing_pubkey, groupChat.id)
+                  const allParticipants = identity && webrtcIsInVoice && currentRoomId === groupChat.id && !voiceParticipants.includes(identity.user_id)
+                    ? [identity.user_id, ...voiceParticipants]
+                    : voiceParticipants
+                  if (allParticipants.length === 0) return null
+                  return (
+                    <div className="flex items-center gap-2 mt-2">
+                      {allParticipants.map((userId) => {
+                        const member = (server.members ?? []).find(m => m.user_id === userId)
+                        const displayName = member?.display_name || (userId === identity?.user_id ? identity?.display_name : `User ${userId.slice(0, 8)}`)
+                        const isSpeaking = isUserSpeaking(userId)
+                        const level = getMemberLevel(server.signing_pubkey, userId, voicePresence.isUserInVoice(server.signing_pubkey, userId))
+                        return (
+                          <button
+                            key={userId}
+                            type="button"
+                            className={cn(
+                              "relative h-6 w-6 shrink-0 grid place-items-center rounded-none ring-2 will-change-transform transition-all duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.06] focus:outline-none group/avatar",
+                              isSpeaking ? "ring-green-500" : "ring-background"
+                            )}
+                            style={avatarStyleForUser(userId)}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setProfileCardUserId(userId)
+                              setProfileCardAnchor((e.currentTarget as HTMLElement).getBoundingClientRect())
+                            }}
+                            aria-label={displayName}
+                            title={`${displayName}${userId === identity?.user_id ? ' (you)' : ''}`}
+                          >
+                            <span className="text-[9px] font-mono tracking-wider">{getInitials(displayName)}</span>
+                            <div className="absolute -top-1 left-1/2 -translate-x-1/2">
+                              <PresenceSquare level={level} />
+                            </div>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )
+                })()}
               </div>
 
               {/* Text Chat Area */}
               <div className="flex-1 flex flex-col overflow-hidden">
-                {/* Messages */}
                 <div className="flex-1 overflow-y-auto p-4">
                   <div className="max-w-4xl mx-auto space-y-4">
-                    {/* Welcome Message */}
                     <div className="p-4 border-2 border-border rounded-lg bg-card/50">
                       <p className="text-sm text-muted-foreground font-light">
-                        Welcome to <span className="text-foreground font-normal">#{currentChat.name}</span>
-                        {currentChat.description && ` — ${currentChat.description}`}
+                        Welcome to <span className="text-foreground font-normal">{server.name}</span> — your group chat.
                       </p>
                     </div>
-                    {/* TODO: Actual messages will go here */}
+                    {/* TODO: Messages in v2 */}
                   </div>
                 </div>
 
-                {/* Message Input */}
                 <div className="border-t-2 border-border p-4 bg-card/50">
                   <div className="max-w-4xl mx-auto">
                     <input
                       type="text"
-                      placeholder={`Message #${currentChat.name}`}
+                      placeholder="Message (coming in v2)"
                       className="w-full px-4 py-3 bg-background border border-border rounded-lg text-sm font-light focus:outline-none focus:ring-2 focus:ring-primary"
                       disabled
                     />
                     <p className="text-xs text-muted-foreground mt-2">
-                      Text chat coming soon. Voice chat is the priority!
+                      Voice chat is ready. Text chat coming in v2!
                     </p>
                   </div>
                 </div>
               </div>
             </>
+          ) : (
+            <div className="flex-1 flex items-center justify-center p-8">
+              <p className="text-muted-foreground text-sm font-light">Loading…</p>
+            </div>
           )}
         </div>
 
@@ -768,92 +487,61 @@ function ServerViewPage() {
         </div>
       </div>
 
-      {/* Create Chat Dialog */}
-      {showCreateChatDialog && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-card border-2 border-border rounded-lg p-6 max-w-md w-full mx-4">
-            <h2 className="text-lg font-light mb-4">Create New Chat</h2>
-
-            <div className="space-y-4">
-              <div>
-                <label className="text-sm font-light block mb-2">Chat Name</label>
-                <input
-                  type="text"
-                  value={chatName}
-                  onChange={(e) => setChatName(e.target.value)}
-                  maxLength={25}
-                  className="w-full px-3 py-2 bg-background border border-border rounded-md text-sm"
-                  placeholder="general, voice-chat, etc."
-                  autoFocus
-                />
-              </div>
-
-              <div>
-                <label className="text-sm font-light block mb-2">Description (optional)</label>
-                <input
-                  type="text"
-                  value={chatDescription}
-                  onChange={(e) => setChatDescription(e.target.value)}
-                  className="w-full px-3 py-2 bg-background border border-border rounded-md text-sm"
-                  placeholder="What's this chat for?"
-                />
-              </div>
-            </div>
-
-            <div className="flex gap-2 mt-6">
-              <Button
-                onClick={() => {
-                  setShowCreateChatDialog(false)
-                  setChatName('')
-                  setChatDescription('')
-                }}
-                variant="outline"
-                className="flex-1"
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={handleCreateChat}
-                disabled={!chatName.trim() || isCreatingChat}
-                className="flex-1"
-              >
-                {isCreatingChat ? 'Creating...' : 'Create Chat'}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Delete Chat Modal */}
-      {deleteChatTarget && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-          <div className="w-full max-w-md border-2 border-border bg-background rounded-lg p-6 space-y-4">
-            <div className="space-y-2">
-              <h2 className="text-lg font-light tracking-tight">Delete chat?</h2>
-              <p className="text-sm text-muted-foreground font-light leading-relaxed">
-                This will remove <span className="text-foreground font-normal">#{deleteChatTarget.name}</span> for everyone in this server.
-              </p>
-            </div>
-            <div className="flex gap-3 pt-2">
-              <Button
-                variant="outline"
-                className="flex-1 h-10 font-light"
-                onClick={() => setDeleteChatTarget(null)}
-                disabled={isDeletingChat}
-              >
-                Cancel
-              </Button>
-              <Button
-                className="flex-1 h-10 font-light bg-red-600 hover:bg-red-700 text-white"
-                onClick={confirmDeleteChat}
-                disabled={isDeletingChat}
-              >
-                {isDeletingChat ? 'Deleting…' : 'Delete'}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      <UserProfileCard
+        open={Boolean(profileCardUserId)}
+        anchorRect={profileCardAnchor}
+        onClose={() => {
+          setProfileCardUserId(null)
+          setProfileCardAnchor(null)
+        }}
+        avatarDataUrl={
+          profileCardUserId
+            ? identity?.user_id === profileCardUserId
+              ? profile.avatar_data_url
+              : remoteProfiles.getProfile(profileCardUserId)?.avatar_data_url ?? null
+            : null
+        }
+        fallbackColorStyle={profileCardUserId ? avatarStyleForUser(profileCardUserId) : undefined}
+        initials={getInitials(
+          profileCardUserId
+            ? identity?.user_id === profileCardUserId
+              ? profile.display_name ?? identity?.display_name ?? ''
+              : remoteProfiles.getProfile(profileCardUserId)?.display_name ?? fallbackNameForUser(profileCardUserId)
+            : ''
+        )}
+        displayName={
+          profileCardUserId
+            ? identity?.user_id === profileCardUserId
+              ? profile.display_name ?? identity?.display_name ?? ''
+              : remoteProfiles.getProfile(profileCardUserId)?.display_name ?? fallbackNameForUser(profileCardUserId)
+            : ''
+        }
+        secondaryName={
+          profileCardUserId
+            ? identity?.user_id === profileCardUserId
+              ? profile.show_real_name ? profile.real_name : null
+              : remoteProfiles.getProfile(profileCardUserId)?.show_secondary
+                ? remoteProfiles.getProfile(profileCardUserId)?.secondary_name ?? null
+                : null
+            : null
+        }
+        accountCreatedAt={
+          profileCardUserId
+            ? identity?.user_id === profileCardUserId && currentAccountId
+              ? accountInfoMap[currentAccountId]?.created_at ?? null
+              : remoteProfiles.getProfile(profileCardUserId)?.account_created_at ?? null
+            : null
+        }
+        isSelf={identity?.user_id === profileCardUserId}
+        isFriend={profileCardUserId ? isFriend(profileCardUserId) : false}
+        isPendingOutgoing={profileCardUserId ? hasPendingOutgoing(profileCardUserId) : false}
+        onSendFriendRequest={
+          profileCardUserId && !isFriend(profileCardUserId) && !hasPendingOutgoing(profileCardUserId)
+            ? () => sendFriendRequest(profileCardUserId, profile?.display_name ?? identity?.display_name)
+            : undefined
+        }
+        onRemoveFriend={profileCardUserId ? () => removeFriend(profileCardUserId) : undefined}
+      />
     </div>
   )
 }

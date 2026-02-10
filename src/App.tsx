@@ -11,12 +11,14 @@ import { WebRTCProvider } from './contexts/WebRTCContext'
 import { ServersProvider } from './contexts/ServersContext'
 import { FriendsProvider } from './contexts/FriendsContext'
 import { ToastProvider } from './contexts/ToastContext'
-import { SidebarWidthProvider, useSidebarWidth } from './contexts/SidebarWidthContext'
+import { SidebarWidthProvider } from './contexts/SidebarWidthContext'
 import { ActiveServerProvider } from './contexts/ActiveServerContext'
+import { SettingsModalProvider } from './contexts/SettingsModalContext'
 import TitleBar from './components/TitleBar'
+import { WindowResizeHandles } from './components/WindowResizeHandles'
 import { ServerSyncBootstrap } from './components/ServerSyncBootstrap'
 import { AppUpdater } from './components/AppUpdater'
-import { UserCard } from './components/UserCard'
+import { SettingsModal } from './components/SettingsModal'
 import SplashPage from './pages/SplashPage'
 import AccountSelectPage from './pages/AccountSelectPage'
 import AccountSetupPage from './pages/AccountSetupPage'
@@ -55,15 +57,6 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
-function UserCardWrapper() {
-  const { width } = useSidebarWidth()
-  return (
-    <div className="absolute bottom-0 left-0 z-10" style={{ width: `${width}em` }}>
-      <UserCard />
-    </div>
-  )
-}
-
 function App() {
   return (
     <IdentityProvider>
@@ -80,9 +73,11 @@ function App() {
                         <ToastProvider>
                         <SidebarWidthProvider>
                           <ActiveServerProvider>
-                            <ServerSyncBootstrap />
-                            <Router>
+                            <SettingsModalProvider>
+                              <ServerSyncBootstrap />
+                              <Router>
                     <div className="flex flex-col h-screen overflow-hidden border-2 border-foreground/20 relative">
+                      <WindowResizeHandles />
                       <AppUpdater />
                       <TitleBar />
                       <div className="flex-1 overflow-auto min-h-0">
@@ -120,10 +115,10 @@ function App() {
                           />
                         </Routes>
                       </div>
-                      {/* Fixed UserCard at bottom left - same size on all pages */}
-                      <UserCardWrapper />
+                      <SettingsModal />
                     </div>
-                            </Router>
+                              </Router>
+                            </SettingsModalProvider>
                           </ActiveServerProvider>
                         </SidebarWidthProvider>
                         </ToastProvider>

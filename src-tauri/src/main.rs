@@ -759,30 +759,6 @@ fn join_server(server_id: String, user_id: String, display_name: String) -> Resu
 }
 
 #[tauri::command]
-fn add_chat(server_id: String, name: String, description: Option<String>) -> Result<ServerInfo, String> {
-    // GUARDED: Requires active session
-    require_session()?;
-    
-    let manager = ServerManager::new()
-        .map_err(|e| format!("Failed to initialize server manager: {}", e))?;
-    let srv = manager.add_chat_to_server(&server_id, name, description)
-        .map_err(|e| format!("Failed to add chat: {}", e))?;
-    Ok(srv.to_info())
-}
-
-#[tauri::command]
-fn remove_chat(server_id: String, chat_id: String) -> Result<ServerInfo, String> {
-    // GUARDED: Requires active session
-    require_session()?;
-    
-    let manager = ServerManager::new()
-        .map_err(|e| format!("Failed to initialize server manager: {}", e))?;
-    let server = manager.remove_chat_from_server(&server_id, &chat_id)
-        .map_err(|e| format!("Failed to remove chat: {}", e))?;
-    Ok(server.to_info())
-}
-
-#[tauri::command]
 fn import_server_hint(server: ServerInfo) -> Result<(), String> {
     // GUARDED: Requires active session (joining a server is a usage action)
     require_session()?;
@@ -1455,8 +1431,6 @@ fn main() {
             delete_server,
             find_server_by_invite,
             join_server,
-            add_chat,
-            remove_chat,
             import_server_hint,
             register_server_hint,
             get_server_hint,

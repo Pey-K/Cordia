@@ -35,13 +35,6 @@ function TitleBar() {
 
   return (
     <div className="h-8 bg-background flex items-center select-none flex-shrink-0 relative z-50">
-      {/* Top-left resize handle */}
-      <div
-        id="resize-top-left"
-        className="absolute top-0 left-0 w-3 h-3 cursor-nwse-resize z-50"
-        style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-      />
-
       {/* Draggable area - entire left side */}
       <div
         data-tauri-drag-region

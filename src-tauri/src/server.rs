@@ -418,23 +418,14 @@ impl Server {
         self.members.push(member);
     }
 
-    pub fn add_chat(&mut self, name: String, description: Option<String>) -> Chat {
-        let chat = Chat {
-            id: Uuid::new_v4().to_string(),
-            name,
-            description,
-        };
-        self.chats.push(chat.clone());
-        chat
-    }
-
-    pub fn remove_chat(&mut self, chat_id: &str) -> bool {
-        if let Some(pos) = self.chats.iter().position(|r| r.id == chat_id) {
-            self.chats.remove(pos);
-            true
-        } else {
-            false
-        }
+    /// Returns the single group chat for this server (v1: one implicit chat per server).
+    /// For backward compat, we use the first chat if present; otherwise a default.
+    fn get_single_chat(&self) -> Chat {
+        self.chats.first().cloned().unwrap_or_else(|| Chat {
+            id: self.id.clone(),
+            name: "Group".to_string(),
+            description: None,
+        })
     }
 
     /// Convert to storage format for serialization
@@ -593,7 +584,7 @@ impl Server {
             id: self.id.clone(),
             name: self.name.clone(),
             created_at: self.created_at,
-            chats: self.chats.clone(),
+            chats: vec![self.get_single_chat()],
             members: self.members.clone(),
             signing_pubkey: self.signing_pubkey.clone(),
             invite_uri: self.invite_uri.clone(),
@@ -1102,13 +1093,6 @@ impl ServerManager {
         Ok(server)
     }
 
-    pub fn add_chat_to_server(&self, server_id: &str, name: String, description: Option<String>) -> Result<Server, ServerError> {
-        let mut server = self.load_server(server_id)?;
-        server.add_chat(name, description);
-        self.save_server(&server)?;
-        Ok(server)
-    }
-
     pub fn set_active_invite(
         &self,
         server_id: &str,
@@ -1132,17 +1116,6 @@ impl ServerManager {
             }
         }
         Ok(None)
-    }
-
-    pub fn remove_chat_from_server(&self, server_id: &str, chat_id: &str) -> Result<Server, ServerError> {
-        let mut server = self.load_server(server_id)?;
-
-        if !server.remove_chat(chat_id) {
-            return Err(ServerError::NotFound(format!("Chat {} not found", chat_id)));
-        }
-
-        self.save_server(&server)?;
-        Ok(server)
     }
 
     /// Import a server "hint" (metadata-only) into this account's local storage.

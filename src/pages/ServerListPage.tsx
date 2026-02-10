@@ -8,6 +8,7 @@ import { FriendsDrawerPanel } from '../components/FriendsDrawer'
 import { useBeacon } from '../contexts/BeaconContext'
 import { BeaconStatus } from '../components/BeaconStatus'
 import { UserProfileCard } from '../components/UserProfileCard'
+import { UserCard } from '../components/UserCard'
 import { createServer, deleteServer, type Server, parseInviteUri, publishServerHintOpaque, publishServerHintMemberLeft, redeemTemporaryInvite, readClipboardText } from '../lib/tauri'
 import { useIdentity } from '../contexts/IdentityContext'
 import { usePresence, type PresenceLevel } from '../contexts/PresenceContext'
@@ -713,12 +714,20 @@ function ServerListPage() {
   return (
     <div className="h-full bg-background flex flex-col overflow-hidden">
       <header className="border-b-2 border-border shrink-0">
-        <div className="w-full flex h-16 items-center justify-between px-6">
-          <div className="flex items-center gap-4">
-            <div className="w-px h-6 bg-foreground/20"></div>
+        <div className="w-full flex h-16 items-center pl-8 pr-3">
+          <div className="flex-1 min-w-0 flex items-center gap-4">
+            <div className="w-px h-6 bg-foreground/20 shrink-0"></div>
             <h1 className="text-sm font-light tracking-wider uppercase">Home</h1>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex gap-6 items-center shrink-0 min-w-[12rem] max-w-[12.25rem] w-[12.25rem]">
+            <UserCard
+              variant="header"
+              alignWithFriends
+              onAvatarClick={(rect) => {
+                setProfileCardUserId(identity?.user_id ?? null)
+                setProfileCardAnchor(rect)
+              }}
+            />
             <BeaconStatus />
           </div>
         </div>
@@ -1581,7 +1590,7 @@ function ServerListPage() {
               return (
                 <>
                   {!isDrawerMode && (
-                    <aside className="h-full min-h-0 flex flex-col flex-[0_1_25rem] min-w-[11rem] max-w-[11.75rem]">
+                    <aside className="h-full min-h-0 flex flex-col flex-[0_1_25rem] min-w-[12rem] max-w-[12.25rem]">
                       <div className="border-2 border-border bg-card/50 rounded-lg p-4 flex flex-col min-h-0 h-full">
                         {friendsPaneInner}
                       </div>

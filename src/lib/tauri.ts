@@ -120,15 +120,6 @@ export async function joinServer(serverId: string, userId: string, displayName: 
   return await invoke('join_server', { serverId, userId, displayName })
 }
 
-export async function addChat(serverId: string, name: string, description: string | null): Promise<Server> {
-  return await invoke('add_chat', { serverId, name, description })
-}
-
-export async function removeChat(serverId: string, chatId: string): Promise<Server> {
-  return await invoke('remove_chat', { serverId, chatId })
-}
-
-
 export async function importServerHint(server: Server): Promise<void> {
   return await invoke('import_server_hint', { server })
 }

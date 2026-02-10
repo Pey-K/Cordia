@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, type ReactNode, type CSSProperties } from 
 import { Bell, Users } from 'lucide-react'
 
 const DRAWER_CLOSED_WIDTH = 48 // px - matches PFP strip
-const DRAWER_OPEN_WIDTH = 188 // 11.75rem
+const DRAWER_OPEN_WIDTH = 196 // 12.25rem
 const HOVER_OPEN_DELAY_MS = 120
 const RESIZE_SUPPRESS_MS = 250
 
@@ -130,7 +130,7 @@ export function FriendsDrawer({ stripHeader, stripContent, children, stayOpen = 
           className={`flex-1 min-h-0 flex flex-col overflow-visible pt-3 px-4 pb-4 transition-opacity duration-150
           [&_h3]:text-foreground/60
           [&>div:nth-child(2)]:!mt-2 [&>div:nth-child(2)]:pt-1.5 [&>div:nth-child(2)]:pb-1 ${
-            isOpen ? 'opacity-100 z-10' : 'opacity-0 pointer-events-none absolute inset-0'
+            isOpen ? 'opacity-100 z-10' : 'opacity-0 pointer-events-none'
           }`}
         >
           {children}
