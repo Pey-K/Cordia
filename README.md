@@ -47,7 +47,7 @@ If you’re building from source, start with **[QUICKSTART.md](QUICKSTART.md)**.
   - Sensitive server state is encrypted client-side before it ever reaches the Beacon.
   - The Beacon still necessarily sees **some** routing metadata (e.g. user IDs, presence updates, server IDs) to do its job.
 
-When the Beacon is unavailable, Cordia can fall back to limited functionality (for example, one default chat per server).
+Cordia v1 servers behave like **single-channel group chats**. Multi-channel servers will come later, likely requiring a hosted server so the Beacon stays lightweight.
 
 ## Self-hosting (optional)
 
