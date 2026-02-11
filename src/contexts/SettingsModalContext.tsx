@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
 
-export type SettingsTab = 'account' | 'audio' | 'connections' | 'info'
+export type SettingsTab = 'account' | 'audio' | 'connections' | 'messages' | 'info'
 
 type SettingsModalContextType = {
   isOpen: boolean

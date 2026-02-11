@@ -34,7 +34,7 @@ function ServerViewPage() {
   const voicePresence = useVoicePresence()
   const { isUserSpeaking } = useSpeaking()
   const { joinVoice, leaveVoice, isInVoice: webrtcIsInVoice, currentRoomId } = useWebRTC()
-  const { getMessages, sendMessage } = useEphemeralMessages()
+  const { getMessages, sendMessage, markMessagesRead } = useEphemeralMessages()
   const { beaconUrl, status: beaconStatus } = useBeacon()
   /** For the current user, presence is instant from local state; for others, use signaling data. */
   const getMemberLevel = (signingPubkey: string, userId: string, isInVoiceForUser: boolean): PresenceLevel => {
@@ -280,6 +280,15 @@ function ServerViewPage() {
     }
   }
 
+  useEffect(() => {
+    if (!server || !groupChat || !identity) return
+    const unreadFromOthers = chatMessages
+      .filter((m) => m.from_user_id !== identity.user_id && !(m.read_by ?? []).includes(identity.user_id))
+      .map((m) => m.id)
+    if (unreadFromOthers.length === 0) return
+    markMessagesRead(server.signing_pubkey, groupChat.id, unreadFromOthers)
+  }, [server?.signing_pubkey, groupChat?.id, identity?.user_id, chatMessages, markMessagesRead])
+
   if (!server) {
     return (
       <div className="h-full bg-background flex items-center justify-center">
@@ -398,6 +407,13 @@ function ServerViewPage() {
                     {chatMessages.map((msg) => {
                       const mine = msg.from_user_id === identity?.user_id
                       const name = mine ? 'You' : fallbackNameForUser(msg.from_user_id)
+                      const readBy = (msg.read_by ?? []).filter((uid) => uid !== identity?.user_id)
+                      const deliveredBy = (msg.delivered_by ?? []).filter((uid) => uid !== identity?.user_id)
+                      const statusLabel = msg.delivery_status === 'read'
+                        ? `Read ${readBy.length > 0 ? readBy.length : ''}`.trim()
+                        : msg.delivery_status === 'delivered'
+                          ? 'Delivered'
+                          : 'Pending'
                       const time = new Date(msg.sent_at).toLocaleTimeString([], {
                         hour: '2-digit',
                         minute: '2-digit',
@@ -420,6 +436,34 @@ function ServerViewPage() {
                               <span className="text-[10px] text-muted-foreground">{time}</span>
                             </div>
                             <p className="text-sm whitespace-pre-wrap break-words">{msg.text}</p>
+                            {mine && (
+                              <div className="mt-1 text-[10px] text-muted-foreground relative group/receipt">
+                                <span>{statusLabel}</span>
+                                {readBy.length > 0 && (
+                                  <div className="absolute right-0 bottom-full mb-1 hidden group-hover/receipt:flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 shadow-lg z-20">
+                                    {readBy.slice(0, 8).map((uid, idx) => {
+                                      const dn = fallbackNameForUser(uid)
+                                      return (
+                                        <div
+                                          key={uid}
+                                          className="-ml-1 first:ml-0 h-4 w-4 rounded-none ring-1 ring-background text-[8px] grid place-items-center"
+                                          style={{ ...avatarStyleForUser(uid), zIndex: 20 - idx }}
+                                          title={dn}
+                                        >
+                                          {getInitials(dn)}
+                                        </div>
+                                      )
+                                    })}
+                                    {readBy.length > 8 && (
+                                      <span className="text-[9px] text-muted-foreground">+{readBy.length - 8}</span>
+                                    )}
+                                  </div>
+                                )}
+                                {msg.delivery_status !== 'read' && deliveredBy.length > 0 && (
+                                  <span className="ml-1 text-[9px] text-muted-foreground">({deliveredBy.length} online)</span>
+                                )}
+                              </div>
+                            )}
                           </div>
                         </div>
                       )

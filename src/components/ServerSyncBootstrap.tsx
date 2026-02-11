@@ -360,8 +360,25 @@ export function ServerSyncBootstrap() {
                 detail: {
                   signing_pubkey: String(msg.signing_pubkey),
                   chat_id: String(msg.chat_id),
+                  message_id: String(msg.message_id),
                   from_user_id: String(msg.from_user_id),
                   encrypted_payload: String(msg.encrypted_payload),
+                  sent_at: String(msg.sent_at ?? new Date().toISOString()),
+                },
+              })
+            )
+            return
+          }
+
+          if (msg.type === 'EphemeralReceiptIncoming') {
+            window.dispatchEvent(
+              new CustomEvent('cordia:ephemeral-receipt-incoming', {
+                detail: {
+                  signing_pubkey: String(msg.signing_pubkey),
+                  chat_id: String(msg.chat_id),
+                  message_id: String(msg.message_id),
+                  from_user_id: String(msg.from_user_id),
+                  receipt_type: String(msg.receipt_type),
                   sent_at: String(msg.sent_at ?? new Date().toISOString()),
                 },
               })
@@ -571,19 +588,47 @@ export function ServerSyncBootstrap() {
         const detail = (ev as CustomEvent<{
           signing_pubkey?: string
           chat_id?: string
+          message_id?: string
           encrypted_payload?: string
         }>).detail
         const signing_pubkey = detail?.signing_pubkey?.trim()
         const chat_id = detail?.chat_id?.trim()
+        const message_id = detail?.message_id?.trim()
         const encrypted_payload = detail?.encrypted_payload?.trim()
-        if (!signing_pubkey || !chat_id || !encrypted_payload) return
+        if (!signing_pubkey || !chat_id || !message_id || !encrypted_payload) return
         if (ws.readyState !== WebSocket.OPEN) return
         ws.send(
           JSON.stringify({
             type: 'EphemeralChatSend',
             signing_pubkey,
             chat_id,
+            message_id,
             encrypted_payload,
+          })
+        )
+      }
+
+      const onSendEphemeralReceipt = (ev: Event) => {
+        const detail = (ev as CustomEvent<{
+          signing_pubkey?: string
+          chat_id?: string
+          message_id?: string
+          receipt_type?: string
+        }>).detail
+        const signing_pubkey = detail?.signing_pubkey?.trim()
+        const chat_id = detail?.chat_id?.trim()
+        const message_id = detail?.message_id?.trim()
+        const receipt_type = detail?.receipt_type?.trim()
+        if (!signing_pubkey || !chat_id || !message_id || !receipt_type) return
+        if (receipt_type !== 'delivered' && receipt_type !== 'read') return
+        if (ws.readyState !== WebSocket.OPEN) return
+        ws.send(
+          JSON.stringify({
+            type: 'EphemeralReceiptSend',
+            signing_pubkey,
+            chat_id,
+            message_id,
+            receipt_type,
           })
         )
       }
@@ -624,6 +669,7 @@ export function ServerSyncBootstrap() {
       window.addEventListener('cordia:profile-updated', onProfileUpdated as any)
       window.addEventListener('cordia:active-server-changed', onActiveServerChanged as any)
       window.addEventListener('cordia:send-ephemeral-chat', onSendEphemeralChat as EventListener)
+      window.addEventListener('cordia:send-ephemeral-receipt', onSendEphemeralReceipt as EventListener)
 
       // Ensure listeners are cleaned up when the WS is replaced.
       const cleanupListeners = () => {
@@ -633,6 +679,7 @@ export function ServerSyncBootstrap() {
         window.removeEventListener('cordia:profile-updated', onProfileUpdated as any)
         window.removeEventListener('cordia:active-server-changed', onActiveServerChanged as any)
         window.removeEventListener('cordia:send-ephemeral-chat', onSendEphemeralChat as EventListener)
+        window.removeEventListener('cordia:send-ephemeral-receipt', onSendEphemeralReceipt as EventListener)
       }
       ws.addEventListener('close', cleanupListeners, { once: true })
       ws.addEventListener('error', cleanupListeners, { once: true })

@@ -371,7 +371,7 @@ pub async fn handle_message(
             }
             Ok(())
         }
-        SignalingMessage::EphemeralChatSend { signing_pubkey, chat_id, encrypted_payload } => {
+        SignalingMessage::EphemeralChatSend { signing_pubkey, chat_id, message_id, encrypted_payload } => {
             // PresenceHello registers conn -> user mapping. Enforce it so user_id cannot be spoofed.
             let from_user_id = match state.friends.read().await.get_user_id_for_conn(conn_id) {
                 Some(uid) => uid,
@@ -380,6 +380,9 @@ pub async fn handle_message(
             if chat_id.trim().is_empty() {
                 return Err("EphemeralChatSend requires chat_id".to_string());
             }
+            if message_id.trim().is_empty() {
+                return Err("EphemeralChatSend requires message_id".to_string());
+            }
             if encrypted_payload.trim().is_empty() {
                 return Err("EphemeralChatSend requires encrypted_payload".to_string());
             }
@@ -387,8 +390,37 @@ pub async fn handle_message(
             let outgoing = SignalingMessage::EphemeralChatIncoming {
                 signing_pubkey: signing_pubkey.clone(),
                 chat_id,
+                message_id,
                 from_user_id,
                 encrypted_payload,
+                sent_at: chrono::Utc::now().to_rfc3339(),
+            };
+
+            let signaling = state.signaling.read().await;
+            signaling.broadcast_ephemeral_chat_message(&signing_pubkey, &outgoing, Some(conn_id));
+            Ok(())
+        }
+        SignalingMessage::EphemeralReceiptSend { signing_pubkey, chat_id, message_id, receipt_type } => {
+            let from_user_id = match state.friends.read().await.get_user_id_for_conn(conn_id) {
+                Some(uid) => uid,
+                None => return Err("EphemeralReceiptSend requires PresenceHello first".to_string()),
+            };
+            if chat_id.trim().is_empty() {
+                return Err("EphemeralReceiptSend requires chat_id".to_string());
+            }
+            if message_id.trim().is_empty() {
+                return Err("EphemeralReceiptSend requires message_id".to_string());
+            }
+            if receipt_type != "delivered" && receipt_type != "read" {
+                return Err("EphemeralReceiptSend requires valid receipt_type".to_string());
+            }
+
+            let outgoing = SignalingMessage::EphemeralReceiptIncoming {
+                signing_pubkey: signing_pubkey.clone(),
+                chat_id,
+                message_id,
+                from_user_id,
+                receipt_type,
                 sent_at: chrono::Utc::now().to_rfc3339(),
             };
 

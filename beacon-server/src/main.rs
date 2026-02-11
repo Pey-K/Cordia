@@ -137,6 +137,7 @@ pub enum SignalingMessage {
     EphemeralChatSend {
         signing_pubkey: SigningPubkey,
         chat_id: String,
+        message_id: String,
         encrypted_payload: String,
     },
 
@@ -144,8 +145,27 @@ pub enum SignalingMessage {
     EphemeralChatIncoming {
         signing_pubkey: SigningPubkey,
         chat_id: String,
+        message_id: String,
         from_user_id: String,
         encrypted_payload: String,
+        sent_at: String,
+    },
+
+    /// Client sends delivery/read receipt for an ephemeral message.
+    EphemeralReceiptSend {
+        signing_pubkey: SigningPubkey,
+        chat_id: String,
+        message_id: String,
+        receipt_type: String, // "delivered" | "read"
+    },
+
+    /// Beacon relays delivery/read receipt.
+    EphemeralReceiptIncoming {
+        signing_pubkey: SigningPubkey,
+        chat_id: String,
+        message_id: String,
+        from_user_id: String,
+        receipt_type: String, // "delivered" | "read"
         sent_at: String,
     },
 

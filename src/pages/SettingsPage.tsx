@@ -10,7 +10,12 @@ function SettingsPage() {
   useEffect(() => {
     const tabParam = searchParams.get('tab')
     const tab: SettingsTab =
-      tabParam === 'audio' || tabParam === 'connections' || tabParam === 'info' ? tabParam : 'account'
+      tabParam === 'audio' ||
+      tabParam === 'connections' ||
+      tabParam === 'messages' ||
+      tabParam === 'info'
+        ? tabParam
+        : 'account'
 
     openSettings(tab)
 
