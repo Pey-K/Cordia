@@ -163,7 +163,7 @@ export function ServerSyncBootstrap() {
         }
       }
 
-      /** Push profile (including PFP) to friends (and optionally extra user IDs, e.g. redeemers) via signaling */
+      /** Push profile (including PFP) to online peers we care about (friends + server members + optional extras) via signaling */
       const sendProfilePush = async (
         override?: {
           display_name?: string | null
@@ -179,17 +179,20 @@ export function ServerSyncBootstrap() {
         const { profile: p, identity: id, accountInfoMap: am, currentAccountId: cid } = profilePushRef.current
         if (!id?.user_id) return
         try {
-          const friends = await listFriends()
+          const [friends, servers] = await Promise.all([listFriends(), listServers()])
+          const serverMemberIds = servers.flatMap((s) => (s.members ?? []).map((m) => m.user_id).filter(Boolean))
+          const baseRecipients = [...friends, ...serverMemberIds]
           const toUserIds = extraToUserIds?.length
-            ? [...new Set([...friends, ...extraToUserIds])]
-            : friends
-          if (toUserIds.length === 0) return
+            ? [...new Set([...baseRecipients, ...extraToUserIds])]
+            : [...new Set(baseRecipients)]
+          const filteredRecipients = toUserIds.filter((uid) => uid && uid !== id.user_id).slice(0, 1000)
+          if (filteredRecipients.length === 0) return
           const rev = override?.updated_at != null ? Date.parse(override.updated_at) : (p?.updated_at ? Date.parse(p.updated_at) : 0)
           const accountCreatedAt = cid && am[cid]?.created_at ? am[cid].created_at : null
           ws.send(
             JSON.stringify({
               type: 'ProfilePush',
-              to_user_ids: toUserIds,
+              to_user_ids: filteredRecipients,
               display_name: override?.display_name ?? p?.display_name ?? id?.display_name ?? null,
               real_name: override?.show_real_name ? (override?.real_name ?? p?.real_name ?? null) : (p?.show_real_name ? (p?.real_name ?? null) : null),
               show_real_name: override?.show_real_name ?? Boolean(p?.show_real_name),
@@ -251,6 +254,7 @@ export function ServerSyncBootstrap() {
           await sendPresenceHello('subscribeMissingServers')
           sendProfileAnnounce()
           sendProfileHello()
+          sendProfilePush()
         } catch (e) {
           console.warn('[ServerSyncBootstrap] Failed to resubscribe after server list change:', e)
         }
@@ -534,6 +538,22 @@ export function ServerSyncBootstrap() {
             )
             return
           }
+          if (msg.type === 'FriendMutualCheckIncoming') {
+            window.dispatchEvent(
+              new CustomEvent('cordia:friend-mutual-check-incoming', {
+                detail: { from_user_id: msg.from_user_id },
+              })
+            )
+            return
+          }
+          if (msg.type === 'FriendMutualCheckReplyIncoming') {
+            window.dispatchEvent(
+              new CustomEvent('cordia:friend-mutual-check-reply-incoming', {
+                detail: { from_user_id: msg.from_user_id, accepted: Boolean(msg.accepted) },
+              })
+            )
+            return
+          }
         } catch (e) {
           // Ignore malformed/unrelated messages
         }
@@ -633,6 +653,33 @@ export function ServerSyncBootstrap() {
         )
       }
 
+      const onSendFriendMutualCheck = (ev: Event) => {
+        const detail = (ev as CustomEvent<{ to_user_id?: string }>).detail
+        const to_user_id = detail?.to_user_id?.trim()
+        if (!to_user_id) return
+        if (ws.readyState !== WebSocket.OPEN) return
+        ws.send(
+          JSON.stringify({
+            type: 'FriendMutualCheck',
+            to_user_id,
+          })
+        )
+      }
+
+      const onSendFriendMutualReply = (ev: Event) => {
+        const detail = (ev as CustomEvent<{ to_user_id?: string; accepted?: boolean }>).detail
+        const to_user_id = detail?.to_user_id?.trim()
+        if (!to_user_id) return
+        if (ws.readyState !== WebSocket.OPEN) return
+        ws.send(
+          JSON.stringify({
+            type: 'FriendMutualCheckReply',
+            to_user_id,
+            accepted: Boolean(detail?.accepted),
+          })
+        )
+      }
+
       window.addEventListener('cordia:server-removed', onServerRemoved)
       window.addEventListener('cordia:servers-updated', onServersUpdated)
       const onFriendsUpdated = () => {
@@ -670,6 +717,8 @@ export function ServerSyncBootstrap() {
       window.addEventListener('cordia:active-server-changed', onActiveServerChanged as any)
       window.addEventListener('cordia:send-ephemeral-chat', onSendEphemeralChat as EventListener)
       window.addEventListener('cordia:send-ephemeral-receipt', onSendEphemeralReceipt as EventListener)
+      window.addEventListener('cordia:send-friend-mutual-check', onSendFriendMutualCheck as EventListener)
+      window.addEventListener('cordia:send-friend-mutual-reply', onSendFriendMutualReply as EventListener)
 
       // Ensure listeners are cleaned up when the WS is replaced.
       const cleanupListeners = () => {
@@ -680,6 +729,8 @@ export function ServerSyncBootstrap() {
         window.removeEventListener('cordia:active-server-changed', onActiveServerChanged as any)
         window.removeEventListener('cordia:send-ephemeral-chat', onSendEphemeralChat as EventListener)
         window.removeEventListener('cordia:send-ephemeral-receipt', onSendEphemeralReceipt as EventListener)
+        window.removeEventListener('cordia:send-friend-mutual-check', onSendFriendMutualCheck as EventListener)
+        window.removeEventListener('cordia:send-friend-mutual-reply', onSendFriendMutualReply as EventListener)
       }
       ws.addEventListener('close', cleanupListeners, { once: true })
       ws.addEventListener('error', cleanupListeners, { once: true })

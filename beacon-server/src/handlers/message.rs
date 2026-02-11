@@ -734,6 +734,47 @@ pub async fn handle_message(
             Ok(())
         }
 
+        SignalingMessage::FriendMutualCheck { to_user_id } => {
+            if to_user_id.trim().is_empty() {
+                return Err("FriendMutualCheck requires to_user_id".to_string());
+            }
+            let from_user_id = match state.friends.read().await.get_user_id_for_conn(conn_id) {
+                Some(uid) => uid,
+                None => return Err("FriendMutualCheck requires PresenceHello first".to_string()),
+            };
+            if from_user_id == to_user_id {
+                return Ok(());
+            }
+            let incoming = SignalingMessage::FriendMutualCheckIncoming { from_user_id };
+            let json = serde_json::to_string(&incoming)
+                .map_err(|e| format!("Failed to serialize FriendMutualCheckIncoming: {}", e))?;
+            let friends = state.friends.read().await;
+            friends.send_to_user(&to_user_id, &json);
+            Ok(())
+        }
+
+        SignalingMessage::FriendMutualCheckReply { to_user_id, accepted } => {
+            if to_user_id.trim().is_empty() {
+                return Err("FriendMutualCheckReply requires to_user_id".to_string());
+            }
+            let from_user_id = match state.friends.read().await.get_user_id_for_conn(conn_id) {
+                Some(uid) => uid,
+                None => return Err("FriendMutualCheckReply requires PresenceHello first".to_string()),
+            };
+            if from_user_id == to_user_id {
+                return Ok(());
+            }
+            let incoming = SignalingMessage::FriendMutualCheckReplyIncoming {
+                from_user_id,
+                accepted,
+            };
+            let json = serde_json::to_string(&incoming)
+                .map_err(|e| format!("Failed to serialize FriendMutualCheckReplyIncoming: {}", e))?;
+            let friends = state.friends.read().await;
+            friends.send_to_user(&to_user_id, &json);
+            Ok(())
+        }
+
         SignalingMessage::ProfilePush { to_user_ids, display_name, real_name, show_real_name, rev, avatar_data_url, avatar_rev, account_created_at } => {
             const MAX_PROFILE_PUSH_RECIPIENTS: usize = 500;
             let from_user_id = match state.friends.read().await.get_user_id_for_conn(conn_id) {

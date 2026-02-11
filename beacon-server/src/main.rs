@@ -409,6 +409,28 @@ pub enum SignalingMessage {
         from_user_id: String,
     },
 
+    /// Client asks a friend to revalidate mutual friendship state.
+    FriendMutualCheck {
+        to_user_id: String,
+    },
+
+    /// Delivered to recipient of FriendMutualCheck.
+    FriendMutualCheckIncoming {
+        from_user_id: String,
+    },
+
+    /// Reply to a mutual-check request.
+    FriendMutualCheckReply {
+        to_user_id: String,
+        accepted: bool,
+    },
+
+    /// Delivered to requester for a FriendMutualCheckReply.
+    FriendMutualCheckReplyIncoming {
+        from_user_id: String,
+        accepted: bool,
+    },
+
     /// Client asks server to forward profile (including PFP) to specific users. Server does not store; relay only.
     ProfilePush {
         to_user_ids: Vec<String>,

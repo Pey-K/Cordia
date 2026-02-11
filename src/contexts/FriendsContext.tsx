@@ -52,12 +52,13 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
   const [redemptions, setRedemptions] = useState<CodeRedemptionItem[]>([])
   const [myFriendCode, setMyFriendCode] = useState<string | null>(null)
   const { currentAccountId, accountInfoMap } = useAccount()
-  const { beaconUrl } = useBeacon()
+  const { beaconUrl, status: beaconStatus } = useBeacon()
   const { identity } = useIdentity()
   const { applyUpdate: applyRemoteProfile } = useRemoteProfiles()
   const identityUserIdRef = useRef<string | null>(null)
   const recentlyCancelledOutgoingRef = useRef<Set<string>>(new Set())
   const recentlyCancelledTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  const lastMutualCheckByFriendRef = useRef<Map<string, number>>(new Map())
 
   useEffect(() => {
     identityUserIdRef.current = identity?.user_id ?? null
@@ -248,6 +249,26 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
     [beaconUrl]
   )
 
+  const sendMutualChecks = useCallback(
+    (force = false) => {
+      if (beaconStatus !== 'connected') return
+      const now = Date.now()
+      const COOLDOWN_MS = 30_000
+      for (const friendId of friends) {
+        if (!friendId || friendId === identityUserIdRef.current) continue
+        const last = lastMutualCheckByFriendRef.current.get(friendId) ?? 0
+        if (!force && now - last < COOLDOWN_MS) continue
+        lastMutualCheckByFriendRef.current.set(friendId, now)
+        window.dispatchEvent(
+          new CustomEvent('cordia:send-friend-mutual-check', {
+            detail: { to_user_id: friendId },
+          })
+        )
+      }
+    },
+    [friends, beaconStatus]
+  )
+
   // Subscribe to friend WebSocket events (dispatched by ServerSyncBootstrap)
   useEffect(() => {
     const onPendingSnapshot = (e: Event) => {
@@ -400,6 +421,33 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
       }
     }
 
+    const onFriendMutualCheckIncoming = (e: Event) => {
+      const ev = e as CustomEvent<{ from_user_id: string }>
+      const fromUserId = ev.detail?.from_user_id
+      if (!fromUserId || fromUserId === identityUserIdRef.current) return
+      const accepted = friends.includes(fromUserId)
+      window.dispatchEvent(
+        new CustomEvent('cordia:send-friend-mutual-reply', {
+          detail: { to_user_id: fromUserId, accepted },
+        })
+      )
+      if (!accepted) {
+        // Ensure our own local stale friend entry is removed too.
+        removeFriendTauri(fromUserId).then(() => refreshFriends()).catch(() => {})
+      }
+    }
+
+    const onFriendMutualCheckReplyIncoming = (e: Event) => {
+      const ev = e as CustomEvent<{ from_user_id: string; accepted: boolean }>
+      const fromUserId = ev.detail?.from_user_id
+      const accepted = Boolean(ev.detail?.accepted)
+      if (!fromUserId || accepted) return
+      removeFriendTauri(fromUserId)
+        .then(() => refreshFriends())
+        .then(() => window.dispatchEvent(new Event('cordia:friends-updated')))
+        .catch(() => {})
+    }
+
     window.addEventListener('cordia:friend-pending-snapshot', onPendingSnapshot)
     window.addEventListener('cordia:friend-request-incoming', onRequestIncoming)
     window.addEventListener('cordia:friend-request-accepted', onRequestAccepted)
@@ -410,6 +458,8 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
     window.addEventListener('cordia:friend-code-redemption-declined', onRedemptionDeclined)
     window.addEventListener('cordia:friend-code-redemption-cancelled', onFriendCodeRedemptionCancelled)
     window.addEventListener('cordia:friend-removed', onFriendRemoved)
+    window.addEventListener('cordia:friend-mutual-check-incoming', onFriendMutualCheckIncoming)
+    window.addEventListener('cordia:friend-mutual-check-reply-incoming', onFriendMutualCheckReplyIncoming)
     return () => {
       window.removeEventListener('cordia:friend-pending-snapshot', onPendingSnapshot)
       window.removeEventListener('cordia:friend-request-incoming', onRequestIncoming)
@@ -421,8 +471,17 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
       window.removeEventListener('cordia:friend-code-redemption-declined', onRedemptionDeclined)
       window.removeEventListener('cordia:friend-code-redemption-cancelled', onFriendCodeRedemptionCancelled)
       window.removeEventListener('cordia:friend-removed', onFriendRemoved)
+      window.removeEventListener('cordia:friend-mutual-check-incoming', onFriendMutualCheckIncoming)
+      window.removeEventListener('cordia:friend-mutual-check-reply-incoming', onFriendMutualCheckReplyIncoming)
     }
-  }, [addFriend, refreshFriends, applyRemoteProfile])
+  }, [addFriend, refreshFriends, applyRemoteProfile, friends])
+
+  useEffect(() => {
+    // Fast background revalidation after login/friends updates; does not block initial local load.
+    sendMutualChecks(true)
+    const interval = setInterval(() => sendMutualChecks(false), 30000)
+    return () => clearInterval(interval)
+  }, [sendMutualChecks])
 
   const value: FriendsContextType = {
     friends,
