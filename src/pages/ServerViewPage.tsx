@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
-import { ArrowLeft, Copy, Check, PhoneOff, Phone } from 'lucide-react'
+import { ArrowLeft, Copy, Check, PhoneOff, Phone, Send } from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { loadServer, type Server, fetchAndImportServerHintOpaque, createTemporaryInvite, revokeActiveInvite } from '../lib/tauri'
 import { UserProfileCard } from '../components/UserProfileCard'
@@ -17,6 +17,7 @@ import { usePresence, type PresenceLevel } from '../contexts/PresenceContext'
 import { useVoicePresence } from '../contexts/VoicePresenceContext'
 import { useSpeaking } from '../contexts/SpeakingContext'
 import { useActiveServer } from '../contexts/ActiveServerContext'
+import { useEphemeralMessages } from '../contexts/EphemeralMessagesContext'
 import { cn } from '../lib/utils'
 
 function ServerViewPage() {
@@ -33,6 +34,7 @@ function ServerViewPage() {
   const voicePresence = useVoicePresence()
   const { isUserSpeaking } = useSpeaking()
   const { joinVoice, leaveVoice, isInVoice: webrtcIsInVoice, currentRoomId } = useWebRTC()
+  const { getMessages, sendMessage } = useEphemeralMessages()
   const { beaconUrl, status: beaconStatus } = useBeacon()
   /** For the current user, presence is instant from local state; for others, use signaling data. */
   const getMemberLevel = (signingPubkey: string, userId: string, isInVoiceForUser: boolean): PresenceLevel => {
@@ -51,9 +53,12 @@ function ServerViewPage() {
   const [isRevokingInvite, setIsRevokingInvite] = useState(false)
   const [profileCardUserId, setProfileCardUserId] = useState<string | null>(null)
   const [profileCardAnchor, setProfileCardAnchor] = useState<DOMRect | null>(null)
+  const [messageDraft, setMessageDraft] = useState('')
 
   // Single group chat per server (v1: no chat selector)
   const groupChat = server?.chats?.[0] ?? null
+  const chatMessages = groupChat ? getMessages(server?.signing_pubkey ?? '', groupChat.id) : []
+  const canSendMessages = Boolean(groupChat && server?.connection_mode === 'Signaling' && beaconStatus === 'connected')
 
   const fallbackNameForUser = (userId: string) => {
     const m = server?.members?.find(mm => mm.user_id === userId)
@@ -257,6 +262,24 @@ function ServerViewPage() {
     leaveVoice()
   }
 
+  const handleSendMessage = async () => {
+    if (!server || !groupChat || !identity) return
+    const text = messageDraft.trim()
+    if (!text || !canSendMessages) return
+    try {
+      await sendMessage({
+        serverId: server.id,
+        signingPubkey: server.signing_pubkey,
+        chatId: groupChat.id,
+        fromUserId: identity.user_id,
+        text,
+      })
+      setMessageDraft('')
+    } catch (error) {
+      console.warn('Failed to send message:', error)
+    }
+  }
+
   if (!server) {
     return (
       <div className="h-full bg-background flex items-center justify-center">
@@ -372,22 +395,75 @@ function ServerViewPage() {
                         Welcome to <span className="text-foreground font-normal">{server.name}</span> — your group chat.
                       </p>
                     </div>
-                    {/* TODO: Messages in v2 */}
+                    {chatMessages.map((msg) => {
+                      const mine = msg.from_user_id === identity?.user_id
+                      const name = mine ? 'You' : fallbackNameForUser(msg.from_user_id)
+                      const time = new Date(msg.sent_at).toLocaleTimeString([], {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })
+                      return (
+                        <div
+                          key={msg.id}
+                          className={cn('flex', mine ? 'justify-end' : 'justify-start')}
+                        >
+                          <div
+                            className={cn(
+                              'max-w-[80%] rounded-lg border px-3 py-2',
+                              mine
+                                ? 'bg-primary/15 border-primary/30'
+                                : 'bg-card/70 border-border'
+                            )}
+                          >
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-xs font-medium">{name}</span>
+                              <span className="text-[10px] text-muted-foreground">{time}</span>
+                            </div>
+                            <p className="text-sm whitespace-pre-wrap break-words">{msg.text}</p>
+                          </div>
+                        </div>
+                      )
+                    })}
                   </div>
                 </div>
 
                 <div className="border-t-2 border-border p-4 bg-card/50">
-                  <div className="max-w-4xl mx-auto">
-                    <input
-                      type="text"
-                      placeholder="Message (coming in v2)"
-                      className="w-full px-4 py-3 bg-background border border-border rounded-lg text-sm font-light focus:outline-none focus:ring-2 focus:ring-primary"
-                      disabled
-                    />
+                  <form
+                    className="max-w-4xl mx-auto"
+                    onSubmit={(e) => {
+                      e.preventDefault()
+                      handleSendMessage()
+                    }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={messageDraft}
+                        onChange={(e) => setMessageDraft(e.target.value)}
+                        placeholder={
+                          canSendMessages
+                            ? 'Message (live-only)'
+                            : beaconStatus !== 'connected'
+                              ? 'Beacon disconnected - messages unavailable'
+                              : 'Messaging unavailable for this connection mode'
+                        }
+                        className="w-full px-4 py-3 bg-background border border-border rounded-lg text-sm font-light focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-60"
+                        disabled={!canSendMessages}
+                      />
+                      <Button
+                        type="submit"
+                        size="sm"
+                        className="h-11 px-4 gap-2"
+                        disabled={!canSendMessages || messageDraft.trim().length === 0}
+                      >
+                        <Send className="h-4 w-4" />
+                        Send
+                      </Button>
+                    </div>
                     <p className="text-xs text-muted-foreground mt-2">
-                      Voice chat is ready. Text chat coming in v2!
+                      Live-only encrypted messages: online delivery only, no history after restart.
                     </p>
-                  </div>
+                  </form>
                 </div>
               </div>
             </>

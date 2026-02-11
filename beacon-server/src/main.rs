@@ -132,6 +132,23 @@ pub enum SignalingMessage {
         last_updated: DateTime<Utc>,
     },
 
+    /// Client sends a live-only encrypted chat message for a server chat.
+    /// Beacon relays the envelope only; payload remains opaque.
+    EphemeralChatSend {
+        signing_pubkey: SigningPubkey,
+        chat_id: String,
+        encrypted_payload: String,
+    },
+
+    /// Beacon relays live-only encrypted chat message to subscribed peers.
+    EphemeralChatIncoming {
+        signing_pubkey: SigningPubkey,
+        chat_id: String,
+        from_user_id: String,
+        encrypted_payload: String,
+        sent_at: String,
+    },
+
     // ============================
     // Presence (online/offline + active server)
     // ============================

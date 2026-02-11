@@ -10,6 +10,7 @@ import { RemoteProfilesProvider } from './contexts/RemoteProfilesContext'
 import { WebRTCProvider } from './contexts/WebRTCContext'
 import { ServersProvider } from './contexts/ServersContext'
 import { FriendsProvider } from './contexts/FriendsContext'
+import { EphemeralMessagesProvider } from './contexts/EphemeralMessagesContext'
 import { ToastProvider } from './contexts/ToastContext'
 import { SidebarWidthProvider } from './contexts/SidebarWidthContext'
 import { ActiveServerProvider } from './contexts/ActiveServerContext'
@@ -70,12 +71,13 @@ function App() {
                     <WebRTCProvider>
                       <ServersProvider>
                         <FriendsProvider>
-                        <ToastProvider>
-                        <SidebarWidthProvider>
-                          <ActiveServerProvider>
-                            <SettingsModalProvider>
-                              <ServerSyncBootstrap />
-                              <Router>
+                        <EphemeralMessagesProvider>
+                          <ToastProvider>
+                          <SidebarWidthProvider>
+                            <ActiveServerProvider>
+                              <SettingsModalProvider>
+                                <ServerSyncBootstrap />
+                                <Router>
                     <div className="flex flex-col h-screen overflow-hidden border-2 border-foreground/20 relative">
                       <WindowResizeHandles />
                       <AppUpdater />
@@ -117,11 +119,12 @@ function App() {
                       </div>
                       <SettingsModal />
                     </div>
-                              </Router>
-                            </SettingsModalProvider>
-                          </ActiveServerProvider>
-                        </SidebarWidthProvider>
-                        </ToastProvider>
+                                </Router>
+                              </SettingsModalProvider>
+                            </ActiveServerProvider>
+                          </SidebarWidthProvider>
+                          </ToastProvider>
+                        </EphemeralMessagesProvider>
                         </FriendsProvider>
                       </ServersProvider>
                     </WebRTCProvider>

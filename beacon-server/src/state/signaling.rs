@@ -167,4 +167,37 @@ impl SignalingState {
             }
         }
     }
+
+    pub fn broadcast_ephemeral_chat_message(
+        &self,
+        signing_pubkey: &SigningPubkey,
+        msg: &SignalingMessage,
+        exclude_conn_id: Option<&ConnId>,
+    ) {
+        let Some(peers) = self.signing_servers.get(signing_pubkey) else {
+            return;
+        };
+
+        let Ok(json) = serde_json::to_string(msg) else {
+            return;
+        };
+
+        // A single websocket connection can have multiple peer_ids; fan-out once per conn_id.
+        let mut sent_conn_ids: HashSet<&str> = HashSet::new();
+
+        for peer_id in peers {
+            let Some(peer) = self.peers.get(peer_id) else {
+                continue;
+            };
+            if exclude_conn_id.is_some_and(|cid| peer.conn_id == *cid) {
+                continue;
+            }
+            if !sent_conn_ids.insert(peer.conn_id.as_str()) {
+                continue;
+            }
+            if let Some(sender) = self.peer_senders.get(peer_id) {
+                let _ = sender.send(Message::Text(json.clone()));
+            }
+        }
+    }
 }

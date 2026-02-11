@@ -108,6 +108,21 @@ export async function loadServer(serverId: string): Promise<Server> {
   return await invoke('load_server', { serverId })
 }
 
+export async function encryptEphemeralChatMessage(serverId: string, plaintext: string): Promise<string> {
+  return await invoke('encrypt_ephemeral_chat_message', { serverId, plaintext })
+}
+
+export async function decryptEphemeralChatMessage(serverId: string, encryptedPayloadB64: string): Promise<string> {
+  return await invoke('decrypt_ephemeral_chat_message', { serverId, encryptedPayloadB64 })
+}
+
+export async function decryptEphemeralChatMessageBySigningPubkey(
+  signingPubkey: string,
+  encryptedPayloadB64: string
+): Promise<string> {
+  return await invoke('decrypt_ephemeral_chat_message_by_signing_pubkey', { signingPubkey, encryptedPayloadB64 })
+}
+
 export async function deleteServer(serverId: string): Promise<void> {
   return await invoke('delete_server', { serverId })
 }

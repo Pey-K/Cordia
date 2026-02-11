@@ -354,6 +354,21 @@ export function ServerSyncBootstrap() {
             return
           }
 
+          if (msg.type === 'EphemeralChatIncoming') {
+            window.dispatchEvent(
+              new CustomEvent('cordia:ephemeral-chat-incoming', {
+                detail: {
+                  signing_pubkey: String(msg.signing_pubkey),
+                  chat_id: String(msg.chat_id),
+                  from_user_id: String(msg.from_user_id),
+                  encrypted_payload: String(msg.encrypted_payload),
+                  sent_at: String(msg.sent_at ?? new Date().toISOString()),
+                },
+              })
+            )
+            return
+          }
+
           if (msg.type === 'ProfilePushIncoming') {
             remoteProfiles.applyUpdate({
               user_id: String(msg.from_user_id),
@@ -552,6 +567,27 @@ export function ServerSyncBootstrap() {
         )
       }
 
+      const onSendEphemeralChat = (ev: Event) => {
+        const detail = (ev as CustomEvent<{
+          signing_pubkey?: string
+          chat_id?: string
+          encrypted_payload?: string
+        }>).detail
+        const signing_pubkey = detail?.signing_pubkey?.trim()
+        const chat_id = detail?.chat_id?.trim()
+        const encrypted_payload = detail?.encrypted_payload?.trim()
+        if (!signing_pubkey || !chat_id || !encrypted_payload) return
+        if (ws.readyState !== WebSocket.OPEN) return
+        ws.send(
+          JSON.stringify({
+            type: 'EphemeralChatSend',
+            signing_pubkey,
+            chat_id,
+            encrypted_payload,
+          })
+        )
+      }
+
       window.addEventListener('cordia:server-removed', onServerRemoved)
       window.addEventListener('cordia:servers-updated', onServersUpdated)
       const onFriendsUpdated = () => {
@@ -587,6 +623,7 @@ export function ServerSyncBootstrap() {
       }
       window.addEventListener('cordia:profile-updated', onProfileUpdated as any)
       window.addEventListener('cordia:active-server-changed', onActiveServerChanged as any)
+      window.addEventListener('cordia:send-ephemeral-chat', onSendEphemeralChat as EventListener)
 
       // Ensure listeners are cleaned up when the WS is replaced.
       const cleanupListeners = () => {
@@ -595,6 +632,7 @@ export function ServerSyncBootstrap() {
         window.removeEventListener('cordia:friends-updated', onFriendsUpdated)
         window.removeEventListener('cordia:profile-updated', onProfileUpdated as any)
         window.removeEventListener('cordia:active-server-changed', onActiveServerChanged as any)
+        window.removeEventListener('cordia:send-ephemeral-chat', onSendEphemeralChat as EventListener)
       }
       ws.addEventListener('close', cleanupListeners, { once: true })
       ws.addEventListener('error', cleanupListeners, { once: true })

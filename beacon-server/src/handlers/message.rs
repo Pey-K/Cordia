@@ -371,6 +371,31 @@ pub async fn handle_message(
             }
             Ok(())
         }
+        SignalingMessage::EphemeralChatSend { signing_pubkey, chat_id, encrypted_payload } => {
+            // PresenceHello registers conn -> user mapping. Enforce it so user_id cannot be spoofed.
+            let from_user_id = match state.friends.read().await.get_user_id_for_conn(conn_id) {
+                Some(uid) => uid,
+                None => return Err("EphemeralChatSend requires PresenceHello first".to_string()),
+            };
+            if chat_id.trim().is_empty() {
+                return Err("EphemeralChatSend requires chat_id".to_string());
+            }
+            if encrypted_payload.trim().is_empty() {
+                return Err("EphemeralChatSend requires encrypted_payload".to_string());
+            }
+
+            let outgoing = SignalingMessage::EphemeralChatIncoming {
+                signing_pubkey: signing_pubkey.clone(),
+                chat_id,
+                from_user_id,
+                encrypted_payload,
+                sent_at: chrono::Utc::now().to_rfc3339(),
+            };
+
+            let signaling = state.signaling.read().await;
+            signaling.broadcast_ephemeral_chat_message(&signing_pubkey, &outgoing, Some(conn_id));
+            Ok(())
+        }
         SignalingMessage::Offer { from_peer, to_peer, sdp } => {
             info!("Forwarding offer from {} to {}", from_peer, to_peer);
 

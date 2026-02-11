@@ -724,6 +724,63 @@ fn load_server(server_id: String) -> Result<ServerInfo, String> {
 }
 
 #[tauri::command]
+fn encrypt_ephemeral_chat_message(server_id: String, plaintext: String) -> Result<String, String> {
+    // GUARDED: Requires active session
+    require_session()?;
+
+    let manager = ServerManager::new()
+        .map_err(|e| format!("Failed to initialize server manager: {}", e))?;
+    let server = manager.load_server(&server_id)
+        .map_err(|e| format!("Failed to load server: {}", e))?;
+
+    let encrypted = server
+        .encrypt(plaintext.as_bytes())
+        .map_err(|e| format!("Failed to encrypt ephemeral message: {}", e))?;
+    Ok(base64::encode(encrypted))
+}
+
+#[tauri::command]
+fn decrypt_ephemeral_chat_message(server_id: String, encrypted_payload_b64: String) -> Result<String, String> {
+    // GUARDED: Requires active session
+    require_session()?;
+
+    let manager = ServerManager::new()
+        .map_err(|e| format!("Failed to initialize server manager: {}", e))?;
+    let server = manager.load_server(&server_id)
+        .map_err(|e| format!("Failed to load server: {}", e))?;
+
+    let encrypted = base64::decode(encrypted_payload_b64)
+        .map_err(|e| format!("Failed to decode encrypted payload: {}", e))?;
+    let plaintext = server
+        .decrypt(&encrypted)
+        .map_err(|e| format!("Failed to decrypt ephemeral message: {}", e))?;
+    String::from_utf8(plaintext).map_err(|e| format!("Invalid UTF-8 message payload: {}", e))
+}
+
+#[tauri::command]
+fn decrypt_ephemeral_chat_message_by_signing_pubkey(signing_pubkey: String, encrypted_payload_b64: String) -> Result<String, String> {
+    // GUARDED: Requires active session
+    require_session()?;
+
+    let manager = ServerManager::new()
+        .map_err(|e| format!("Failed to initialize server manager: {}", e))?;
+    let server_id = manager
+        .find_server_id_by_signing_pubkey(&signing_pubkey)
+        .map_err(|e| format!("Failed to resolve signing pubkey: {}", e))?
+        .ok_or_else(|| "No local server for signing pubkey".to_string())?;
+    let server = manager
+        .load_server(&server_id)
+        .map_err(|e| format!("Failed to load server: {}", e))?;
+
+    let encrypted = base64::decode(encrypted_payload_b64)
+        .map_err(|e| format!("Failed to decode encrypted payload: {}", e))?;
+    let plaintext = server
+        .decrypt(&encrypted)
+        .map_err(|e| format!("Failed to decrypt ephemeral message: {}", e))?;
+    String::from_utf8(plaintext).map_err(|e| format!("Invalid UTF-8 message payload: {}", e))
+}
+
+#[tauri::command]
 fn delete_server(server_id: String) -> Result<(), String> {
     // GUARDED: Requires active session
     require_session()?;
@@ -1428,6 +1485,9 @@ fn main() {
             create_server,
             list_servers,
             load_server,
+            encrypt_ephemeral_chat_message,
+            decrypt_ephemeral_chat_message,
+            decrypt_ephemeral_chat_message_by_signing_pubkey,
             delete_server,
             find_server_by_invite,
             join_server,
