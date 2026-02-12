@@ -15,11 +15,13 @@ import { ToastProvider } from './contexts/ToastContext'
 import { SidebarWidthProvider } from './contexts/SidebarWidthContext'
 import { ActiveServerProvider } from './contexts/ActiveServerContext'
 import { SettingsModalProvider } from './contexts/SettingsModalContext'
+import { TransferCenterModalProvider } from './contexts/TransferCenterModalContext'
 import TitleBar from './components/TitleBar'
 import { WindowResizeHandles } from './components/WindowResizeHandles'
 import { ServerSyncBootstrap } from './components/ServerSyncBootstrap'
 import { AppUpdater } from './components/AppUpdater'
 import { SettingsModal } from './components/SettingsModal'
+import { TransferCenterModal } from './components/TransferCenterModal'
 import SplashPage from './pages/SplashPage'
 import AccountSelectPage from './pages/AccountSelectPage'
 import AccountSetupPage from './pages/AccountSetupPage'
@@ -76,6 +78,7 @@ function App() {
                           <SidebarWidthProvider>
                             <ActiveServerProvider>
                               <SettingsModalProvider>
+                                <TransferCenterModalProvider>
                                 <ServerSyncBootstrap />
                                 <Router>
                     <div className="flex flex-col h-screen overflow-hidden border-2 border-foreground/20 relative">
@@ -118,8 +121,10 @@ function App() {
                         </Routes>
                       </div>
                       <SettingsModal />
+                      <TransferCenterModal />
                     </div>
                                 </Router>
+                                </TransferCenterModalProvider>
                               </SettingsModalProvider>
                             </ActiveServerProvider>
                           </SidebarWidthProvider>

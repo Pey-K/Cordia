@@ -29,6 +29,13 @@ export function ServerSyncBootstrap() {
   const micPermissionRequestedRef = useRef(false)
   const isSyncingRef = useRef(false)
   const wsRef = useRef<WebSocket | null>(null)
+  const reconnectAttemptRef = useRef(0)
+  const reconnectTimerRef = useRef<number | null>(null)
+  const lastPongAtRef = useRef<number>(Date.now())
+  const lastMessageAtRef = useRef<number>(Date.now())
+  const heartbeatTimerRef = useRef<number | null>(null)
+  const watchdogTimerRef = useRef<number | null>(null)
+  const lastConnectStartAtRef = useRef<number>(0)
   const subscribedSigningPubkeysRef = useRef<Set<string>>(new Set())
   const activeSigningPubkeyRef = useRef<string | null>(null)
   const profilePushRef = useRef({ profile, identity, accountInfoMap, currentAccountId })
@@ -79,16 +86,35 @@ export function ServerSyncBootstrap() {
 
     // WS subscription for real-time updates
     const connectWs = async () => {
+      // Prevent tight loops if something is repeatedly failing instantly.
+      const now = Date.now()
+      if (now - lastConnectStartAtRef.current < 500) return
+      lastConnectStartAtRef.current = now
+
       // Clean up any previous connection
       if (wsRef.current) {
         wsRef.current.close()
         wsRef.current = null
+      }
+      if (reconnectTimerRef.current != null) {
+        window.clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = null
+      }
+      if (heartbeatTimerRef.current != null) {
+        window.clearInterval(heartbeatTimerRef.current)
+        heartbeatTimerRef.current = null
+      }
+      if (watchdogTimerRef.current != null) {
+        window.clearInterval(watchdogTimerRef.current)
+        watchdogTimerRef.current = null
       }
 
       const base = beaconUrl.replace(/\/$/, '')
       const wsUrl = base.endsWith('/ws') ? base : base + '/ws'
       const ws = new WebSocket(wsUrl)
       wsRef.current = ws
+      lastPongAtRef.current = Date.now()
+      lastMessageAtRef.current = Date.now()
 
       const sendProfileAnnounce = async (override?: {
         display_name: string | null
@@ -261,6 +287,7 @@ export function ServerSyncBootstrap() {
       }
 
       ws.onopen = async () => {
+        reconnectAttemptRef.current = 0
         try {
           const servers = await listServers()
           const nextSet = new Set<string>()
@@ -285,11 +312,43 @@ export function ServerSyncBootstrap() {
         } catch (e) {
           console.warn('[ServerSyncBootstrap] Failed to subscribe servers over WS:', e)
         }
+
+        // Heartbeat: keep idle WS alive and detect dead peers.
+        if (heartbeatTimerRef.current != null) window.clearInterval(heartbeatTimerRef.current)
+        heartbeatTimerRef.current = window.setInterval(() => {
+          try {
+            if (ws.readyState !== WebSocket.OPEN) return
+            ws.send(JSON.stringify({ type: 'Ping' }))
+          } catch {
+            // ignore
+          }
+        }, 25000)
+
+        // Watchdog: if no pong/messages for a while, force reconnect.
+        if (watchdogTimerRef.current != null) window.clearInterval(watchdogTimerRef.current)
+        watchdogTimerRef.current = window.setInterval(() => {
+          if (cancelled) return
+          const now = Date.now()
+          const sincePong = now - lastPongAtRef.current
+          const sinceMsg = now - lastMessageAtRef.current
+          const stale = sincePong > 70000 || sinceMsg > 120000
+          if (!stale) return
+          try {
+            ws.close()
+          } catch {
+            // ignore
+          }
+        }, 5000)
       }
 
       ws.onmessage = async (event) => {
         try {
           const msg = JSON.parse(event.data)
+          lastMessageAtRef.current = Date.now()
+          if (msg.type === 'Pong') {
+            lastPongAtRef.current = Date.now()
+            return
+          }
           if (msg.type === 'ServerHintUpdated') {
             const signingPubkey: string = msg.signing_pubkey
 
@@ -597,16 +656,38 @@ export function ServerSyncBootstrap() {
 
       ws.onerror = (e) => {
         console.warn('[ServerSyncBootstrap] WS error:', e)
+        // Force close so onclose reconnect path always runs.
+        try {
+          if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+            ws.close()
+          }
+        } catch {
+          // ignore
+        }
       }
 
       ws.onclose = () => {
+        if (heartbeatTimerRef.current != null) {
+          window.clearInterval(heartbeatTimerRef.current)
+          heartbeatTimerRef.current = null
+        }
+        if (watchdogTimerRef.current != null) {
+          window.clearInterval(watchdogTimerRef.current)
+          watchdogTimerRef.current = null
+        }
+
         // Best-effort reconnect while logged in
         if (!cancelled) {
-          setTimeout(() => {
+          const attempt = reconnectAttemptRef.current
+          reconnectAttemptRef.current = attempt + 1
+          const baseDelay = Math.min(30000, 1000 * Math.pow(2, attempt))
+          const jitter = Math.floor(Math.random() * 250)
+          const delay = Math.max(1000, baseDelay + jitter)
+          reconnectTimerRef.current = window.setTimeout(() => {
             if (!cancelled && beaconStatus === 'connected' && beaconUrl) {
               connectWs()
             }
-          }, 2000)
+          }, delay)
         }
       }
 
@@ -652,7 +733,11 @@ export function ServerSyncBootstrap() {
         const message_id = detail?.message_id?.trim()
         const encrypted_payload = detail?.encrypted_payload?.trim()
         if (!signing_pubkey || !chat_id || !message_id || !encrypted_payload) return
-        if (ws.readyState !== WebSocket.OPEN) return
+        if (ws.readyState !== WebSocket.OPEN) {
+          // If we try to send while disconnected, kick a reconnect.
+          if (!cancelled && beaconStatus === 'connected' && beaconUrl) connectWs()
+          return
+        }
         ws.send(
           JSON.stringify({
             type: 'EphemeralChatSend',
@@ -677,7 +762,10 @@ export function ServerSyncBootstrap() {
         const receipt_type = detail?.receipt_type?.trim()
         if (!signing_pubkey || !chat_id || !message_id || !receipt_type) return
         if (receipt_type !== 'delivered' && receipt_type !== 'read') return
-        if (ws.readyState !== WebSocket.OPEN) return
+        if (ws.readyState !== WebSocket.OPEN) {
+          if (!cancelled && beaconStatus === 'connected' && beaconUrl) connectWs()
+          return
+        }
         ws.send(
           JSON.stringify({
             type: 'EphemeralReceiptSend',
@@ -693,7 +781,10 @@ export function ServerSyncBootstrap() {
         const detail = (ev as CustomEvent<{ to_user_id?: string }>).detail
         const to_user_id = detail?.to_user_id?.trim()
         if (!to_user_id) return
-        if (ws.readyState !== WebSocket.OPEN) return
+        if (ws.readyState !== WebSocket.OPEN) {
+          if (!cancelled && beaconStatus === 'connected' && beaconUrl) connectWs()
+          return
+        }
         ws.send(
           JSON.stringify({
             type: 'FriendMutualCheck',
@@ -706,7 +797,10 @@ export function ServerSyncBootstrap() {
         const detail = (ev as CustomEvent<{ to_user_id?: string; accepted?: boolean }>).detail
         const to_user_id = detail?.to_user_id?.trim()
         if (!to_user_id) return
-        if (ws.readyState !== WebSocket.OPEN) return
+        if (ws.readyState !== WebSocket.OPEN) {
+          if (!cancelled && beaconStatus === 'connected' && beaconUrl) connectWs()
+          return
+        }
         ws.send(
           JSON.stringify({
             type: 'FriendMutualCheckReply',
@@ -722,7 +816,10 @@ export function ServerSyncBootstrap() {
         const request_id = detail?.request_id?.trim()
         const attachment_id = detail?.attachment_id?.trim()
         if (!to_user_id || !request_id || !attachment_id) return
-        if (ws.readyState !== WebSocket.OPEN) return
+        if (ws.readyState !== WebSocket.OPEN) {
+          if (!cancelled && beaconStatus === 'connected' && beaconUrl) connectWs()
+          return
+        }
         ws.send(
           JSON.stringify({
             type: 'AttachmentTransferRequest',
@@ -738,7 +835,10 @@ export function ServerSyncBootstrap() {
         const to_user_id = detail?.to_user_id?.trim()
         const request_id = detail?.request_id?.trim()
         if (!to_user_id || !request_id) return
-        if (ws.readyState !== WebSocket.OPEN) return
+        if (ws.readyState !== WebSocket.OPEN) {
+          if (!cancelled && beaconStatus === 'connected' && beaconUrl) connectWs()
+          return
+        }
         ws.send(
           JSON.stringify({
             type: 'AttachmentTransferResponse',
@@ -755,7 +855,10 @@ export function ServerSyncBootstrap() {
         const request_id = detail?.request_id?.trim()
         const signal = detail?.signal?.trim()
         if (!to_user_id || !request_id || !signal) return
-        if (ws.readyState !== WebSocket.OPEN) return
+        if (ws.readyState !== WebSocket.OPEN) {
+          if (!cancelled && beaconStatus === 'connected' && beaconUrl) connectWs()
+          return
+        }
         ws.send(
           JSON.stringify({
             type: 'AttachmentTransferSignal',
@@ -832,6 +935,18 @@ export function ServerSyncBootstrap() {
 
     return () => {
       cancelled = true
+      if (reconnectTimerRef.current != null) {
+        window.clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = null
+      }
+      if (heartbeatTimerRef.current != null) {
+        window.clearInterval(heartbeatTimerRef.current)
+        heartbeatTimerRef.current = null
+      }
+      if (watchdogTimerRef.current != null) {
+        window.clearInterval(watchdogTimerRef.current)
+        watchdogTimerRef.current = null
+      }
       if (wsRef.current) {
         wsRef.current.close()
         wsRef.current = null

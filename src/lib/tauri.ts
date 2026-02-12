@@ -139,6 +139,18 @@ export interface AttachmentRegistrationResult {
   storage_mode: 'current_path' | 'program_copy' | string
 }
 
+export interface SharedAttachmentItem {
+  attachment_id: string
+  sha256: string
+  file_name: string
+  extension: string
+  size_bytes: number
+  storage_mode: 'current_path' | 'program_copy' | string
+  source_path?: string | null
+  created_at: string
+  can_share_now: boolean
+}
+
 export async function registerAttachmentFromPath(
   path: string,
   storageMode: 'current_path' | 'program_copy'
@@ -150,6 +162,14 @@ export async function getAttachmentRecord(attachmentId: string): Promise<Attachm
   return await invoke('get_attachment_record', { attachmentId })
 }
 
+export async function listSharedAttachments(): Promise<SharedAttachmentItem[]> {
+  return await invoke('list_shared_attachments')
+}
+
+export async function unshareAttachment(attachmentId: string): Promise<boolean> {
+  return await invoke('unshare_attachment', { attachmentId })
+}
+
 export async function readAttachmentBytes(attachmentId: string): Promise<Uint8Array> {
   const data = await invoke<number[]>('read_attachment_bytes', { attachmentId })
   return new Uint8Array(data)
@@ -158,12 +178,14 @@ export async function readAttachmentBytes(attachmentId: string): Promise<Uint8Ar
 export async function saveDownloadedAttachment(
   fileName: string,
   bytes: Uint8Array,
-  sha256?: string | null
+  sha256?: string | null,
+  targetDir?: string | null
 ): Promise<string> {
   return await invoke('save_downloaded_attachment', {
     fileName,
     bytes: Array.from(bytes),
     sha256: sha256 ?? null,
+    targetDir: targetDir ?? null,
   })
 }
 
@@ -352,6 +374,10 @@ export async function getFriendAuthHeaders(
 /** Prefer when in Tauri app to avoid webview "Allow this site to read from your clipboard?" prompt. */
 export async function readClipboardText(): Promise<string> {
   return await invoke<string>('read_clipboard_text')
+}
+
+export async function openPathInFileExplorer(path: string): Promise<void> {
+  return await invoke('open_path_in_file_explorer', { path })
 }
 
 export async function registerKeyFileAssociation(): Promise<void> {

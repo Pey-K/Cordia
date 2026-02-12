@@ -13,6 +13,7 @@ function SettingsPage() {
       tabParam === 'audio' ||
       tabParam === 'connections' ||
       tabParam === 'messages' ||
+      tabParam === 'downloads' ||
       tabParam === 'info'
         ? tabParam
         : 'account'

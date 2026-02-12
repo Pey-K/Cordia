@@ -9,6 +9,7 @@ import { useBeacon } from '../contexts/BeaconContext'
 import { BeaconStatus } from '../components/BeaconStatus'
 import { UserProfileCard } from '../components/UserProfileCard'
 import { UserCard } from '../components/UserCard'
+import { TransferCenterButton } from '../components/TransferCenterButton'
 import { createServer, deleteServer, type Server, parseInviteUri, publishServerHintOpaque, publishServerHintMemberLeft, redeemTemporaryInvite, readClipboardText } from '../lib/tauri'
 import { useIdentity } from '../contexts/IdentityContext'
 import { usePresence, type PresenceLevel } from '../contexts/PresenceContext'
@@ -719,7 +720,8 @@ function ServerListPage() {
             <div className="w-px h-6 bg-foreground/20 shrink-0"></div>
             <h1 className="text-sm font-light tracking-wider uppercase">Home</h1>
           </div>
-          <div className="flex gap-6 items-center shrink-0 min-w-[12rem] max-w-[12.25rem] w-[12.25rem]">
+          <div className="flex gap-3 items-center shrink-0 min-w-[14rem] max-w-[14.5rem] w-[14.5rem]">
+            <TransferCenterButton />
             <UserCard
               variant="header"
               alignWithFriends

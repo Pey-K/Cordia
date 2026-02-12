@@ -1,8 +1,11 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   getAttachmentRecord,
+  listSharedAttachments,
   readAttachmentBytes,
   saveDownloadedAttachment,
+  type SharedAttachmentItem,
+  unshareAttachment,
   decryptEphemeralChatMessageBySigningPubkey,
   encryptEphemeralChatMessage,
   encryptEphemeralChatMessageBySigningPubkey,
@@ -14,6 +17,11 @@ import {
   getMessageStorageSettings,
   type MessageStorageSettings,
 } from '../lib/messageSettings'
+import {
+  DEFAULT_DOWNLOAD_SETTINGS,
+  getDownloadSettings,
+  type DownloadSettings,
+} from '../lib/downloadSettings'
 import { addIceCandidate, createAnswer, createOffer, createPeerConnection, handleAnswer } from '../lib/webrtc'
 import { confirm as confirmDialog } from '@tauri-apps/api/dialog'
 
@@ -80,6 +88,10 @@ interface EphemeralMessagesContextType {
   sendAttachmentMessage: (input: SendEphemeralAttachmentInput) => Promise<void>
   requestAttachmentDownload: (msg: EphemeralChatMessage) => Promise<void>
   attachmentTransfers: AttachmentTransferState[]
+  transferHistory: TransferHistoryEntry[]
+  sharedAttachments: SharedAttachmentItem[]
+  refreshSharedAttachments: () => Promise<void>
+  unshareAttachmentById: (attachmentId: string) => Promise<void>
   markMessagesRead: (signingPubkey: string, chatId: string, messageIds: string[]) => void
 }
 
@@ -97,10 +109,27 @@ export interface AttachmentTransferState {
   error?: string
 }
 
+export interface TransferHistoryEntry {
+  request_id: string
+  message_id: string
+  attachment_id: string
+  file_name: string
+  size_bytes?: number
+  from_user_id: string
+  to_user_id: string
+  direction: 'upload' | 'download'
+  status: AttachmentTransferState['status']
+  progress: number
+  saved_path?: string
+  created_at: string
+  updated_at: string
+}
+
 const EphemeralMessagesContext = createContext<EphemeralMessagesContextType | null>(null)
 
 type MessageBuckets = Record<string, EphemeralChatMessage[]>
 const PERSIST_KEY_PREFIX = 'cordia:ephemeral-messages'
+const TRANSFER_HISTORY_KEY_PREFIX = 'cordia:attachment-transfer-history'
 
 function bucketKey(signingPubkey: string, chatId: string): string {
   return `${signingPubkey}::${chatId}`
@@ -119,6 +148,10 @@ function appendMessage(
 
 function persistKeyForAccount(accountId: string | null): string {
   return accountId ? `${PERSIST_KEY_PREFIX}:${accountId}` : PERSIST_KEY_PREFIX
+}
+
+function transferHistoryKeyForAccount(accountId: string | null): string {
+  return accountId ? `${TRANSFER_HISTORY_KEY_PREFIX}:${accountId}` : TRANSFER_HISTORY_KEY_PREFIX
 }
 
 function storageBytes(input: string): number {
@@ -180,14 +213,18 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   const { currentAccountId } = useAccount()
   const { identity } = useIdentity()
   const [settings, setSettings] = useState<MessageStorageSettings>(DEFAULT_MESSAGE_STORAGE_SETTINGS)
+  const [downloadSettings, setDownloadSettingsState] = useState<DownloadSettings>(DEFAULT_DOWNLOAD_SETTINGS)
   const [messagesByBucket, setMessagesByBucket] = useState<MessageBuckets>({})
   const [attachmentTransfers, setAttachmentTransfers] = useState<AttachmentTransferState[]>([])
+  const [transferHistory, setTransferHistory] = useState<TransferHistoryEntry[]>([])
+  const [sharedAttachments, setSharedAttachments] = useState<SharedAttachmentItem[]>([])
   const [hydrated, setHydrated] = useState(false)
   const transferPeersRef = useRef<Map<string, RTCPeerConnection>>(new Map())
   const transferBuffersRef = useRef<Map<string, Uint8Array[]>>(new Map())
   const transferExpectedSizeRef = useRef<Map<string, number>>(new Map())
   const attachmentTransfersRef = useRef<AttachmentTransferState[]>([])
   const messagesByBucketRef = useRef<MessageBuckets>({})
+  const transferHistoryRef = useRef<TransferHistoryEntry[]>([])
 
   const upsertTransfer = (requestId: string, updater: (prev?: AttachmentTransferState) => AttachmentTransferState) => {
     setAttachmentTransfers((prev) => {
@@ -209,6 +246,16 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     transferExpectedSizeRef.current.delete(requestId)
   }
 
+  const upsertHistory = (requestId: string, updater: (prev?: TransferHistoryEntry) => TransferHistoryEntry) => {
+    setTransferHistory((prev) => {
+      const idx = prev.findIndex((h) => h.request_id === requestId)
+      if (idx < 0) return [updater(undefined), ...prev].slice(0, 300)
+      const next = [...prev]
+      next[idx] = updater(prev[idx])
+      return next
+    })
+  }
+
   useEffect(() => {
     attachmentTransfersRef.current = attachmentTransfers
   }, [attachmentTransfers])
@@ -217,14 +264,42 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     messagesByBucketRef.current = messagesByBucket
   }, [messagesByBucket])
 
+  useEffect(() => {
+    transferHistoryRef.current = transferHistory
+  }, [transferHistory])
+
+  useEffect(() => {
+    const now = new Date().toISOString()
+    for (const t of attachmentTransfers) {
+      upsertHistory(t.request_id, (prev) => ({
+        request_id: t.request_id,
+        message_id: t.message_id || prev?.message_id || '',
+        attachment_id: t.attachment_id,
+        file_name: t.file_name || prev?.file_name || 'attachment.bin',
+        size_bytes: prev?.size_bytes,
+        from_user_id: t.from_user_id || prev?.from_user_id || '',
+        to_user_id: t.to_user_id || prev?.to_user_id || '',
+        direction: t.direction || prev?.direction || 'download',
+        status: t.status,
+        progress: t.progress,
+        saved_path: t.saved_path ?? prev?.saved_path,
+        created_at: prev?.created_at || now,
+        updated_at: now,
+      }))
+    }
+  }, [attachmentTransfers])
+
   // Hydrate cache + settings on account change.
   useEffect(() => {
     setHydrated(false)
     const nextSettings = getMessageStorageSettings(currentAccountId)
     setSettings(nextSettings)
+    setDownloadSettingsState(getDownloadSettings(currentAccountId))
 
     if (!currentAccountId) {
       setMessagesByBucket({})
+      setTransferHistory([])
+      setSharedAttachments([])
       setHydrated(true)
       return
     }
@@ -244,6 +319,22 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     } finally {
       setHydrated(true)
     }
+
+    try {
+      const raw = window.localStorage.getItem(transferHistoryKeyForAccount(currentAccountId))
+      if (!raw) {
+        setTransferHistory([])
+      } else {
+        const parsed = JSON.parse(raw) as TransferHistoryEntry[]
+        setTransferHistory(Array.isArray(parsed) ? parsed.slice(0, 300) : [])
+      }
+    } catch {
+      setTransferHistory([])
+    }
+
+    listSharedAttachments()
+      .then((list) => setSharedAttachments(list))
+      .catch(() => setSharedAttachments([]))
   }, [currentAccountId])
 
   useEffect(() => {
@@ -261,6 +352,18 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   }, [])
 
   useEffect(() => {
+    const onChanged = (e: Event) => {
+      const detail = (e as CustomEvent<DownloadSettings>).detail
+      if (!detail) return
+      setDownloadSettingsState(detail)
+    }
+    window.addEventListener('cordia:download-settings-changed', onChanged as EventListener)
+    return () => {
+      window.removeEventListener('cordia:download-settings-changed', onChanged as EventListener)
+    }
+  }, [])
+
+  useEffect(() => {
     if (!hydrated || !currentAccountId) return
     const pruned = pruneBuckets(messagesByBucket, settings, Date.now())
     const json = JSON.stringify(pruned)
@@ -274,6 +377,18 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       setMessagesByBucket(pruned)
     }
   }, [messagesByBucket, settings, hydrated, currentAccountId])
+
+  useEffect(() => {
+    if (!currentAccountId) return
+    try {
+      window.localStorage.setItem(
+        transferHistoryKeyForAccount(currentAccountId),
+        JSON.stringify(transferHistory.slice(0, 300))
+      )
+    } catch {
+      // ignore local storage write failures
+    }
+  }, [transferHistory, currentAccountId])
 
   useEffect(() => {
     let cancelled = false
@@ -594,7 +709,12 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
                   offset += c.byteLength
                 }
                 const transfer = attachmentTransfersRef.current.find((t) => t.request_id === requestId)
-                const savePath = await saveDownloadedAttachment(transfer?.file_name ?? 'attachment.bin', merged, undefined)
+                const savePath = await saveDownloadedAttachment(
+                  transfer?.file_name ?? 'attachment.bin',
+                  merged,
+                  undefined,
+                  downloadSettings.preferred_dir
+                )
                 upsertTransfer(requestId, (prev) => ({
                   ...(prev as AttachmentTransferState),
                   status: 'completed',
@@ -653,7 +773,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       window.removeEventListener('cordia:attachment-transfer-response-incoming', onIncomingResponse as EventListener)
       window.removeEventListener('cordia:attachment-transfer-signal-incoming', onIncomingSignal as EventListener)
     }
-  }, [identity?.user_id])
+  }, [identity?.user_id, downloadSettings.preferred_dir])
 
   const getMessages = (signingPubkey: string, chatId: string): EphemeralChatMessage[] => {
     if (!signingPubkey || !chatId) return []
@@ -746,10 +866,22 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       const next = appendMessage(prev, signingPubkey, chatId, localMessage)
       return pruneBuckets(next, settings, Date.now())
     })
+    listSharedAttachments()
+      .then((list) => setSharedAttachments(list))
+      .catch(() => {})
   }
 
   const requestAttachmentDownload: EphemeralMessagesContextType['requestAttachmentDownload'] = async (msg) => {
     if (!identity?.user_id || !msg.attachment?.attachment_id || !msg.from_user_id || msg.from_user_id === identity.user_id) return
+    const duplicateActive = attachmentTransfersRef.current.some(
+      (t) =>
+        t.direction === 'download' &&
+        (t.message_id === msg.id || t.attachment_id === msg.attachment?.attachment_id) &&
+        t.status !== 'completed' &&
+        t.status !== 'failed' &&
+        t.status !== 'rejected'
+    )
+    if (duplicateActive) return
     const request_id = `${identity.user_id}:${Date.now()}:${Math.random().toString(36).slice(2)}`
     upsertTransfer(request_id, () => ({
       request_id,
@@ -762,6 +894,21 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       status: 'requesting',
       progress: 0,
     }))
+    const now = new Date().toISOString()
+    upsertHistory(request_id, () => ({
+      request_id,
+      message_id: msg.id,
+      attachment_id: msg.attachment!.attachment_id,
+      file_name: msg.attachment!.file_name,
+      size_bytes: msg.attachment!.size_bytes,
+      from_user_id: msg.from_user_id,
+      to_user_id: identity.user_id,
+      direction: 'download',
+      status: 'requesting',
+      progress: 0,
+      created_at: now,
+      updated_at: now,
+    }))
     window.dispatchEvent(
       new CustomEvent('cordia:send-attachment-transfer-request', {
         detail: {
@@ -771,6 +918,25 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         },
       })
     )
+  }
+
+  const refreshSharedAttachments: EphemeralMessagesContextType['refreshSharedAttachments'] = async () => {
+    try {
+      const list = await listSharedAttachments()
+      setSharedAttachments(list)
+    } catch {
+      setSharedAttachments([])
+    }
+  }
+
+  const unshareAttachmentById: EphemeralMessagesContextType['unshareAttachmentById'] = async (attachmentId) => {
+    if (!attachmentId) return
+    try {
+      await unshareAttachment(attachmentId)
+      await refreshSharedAttachments()
+    } catch {
+      // ignore for now
+    }
   }
 
   const markMessagesRead: EphemeralMessagesContextType['markMessagesRead'] = (signingPubkey, chatId, messageIds) => {
@@ -824,9 +990,13 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       sendAttachmentMessage,
       requestAttachmentDownload,
       attachmentTransfers,
+      transferHistory,
+      sharedAttachments,
+      refreshSharedAttachments,
+      unshareAttachmentById,
       markMessagesRead,
     }),
-    [messagesByBucket, identity?.user_id, attachmentTransfers]
+    [messagesByBucket, identity?.user_id, attachmentTransfers, transferHistory, sharedAttachments]
   )
 
   return <EphemeralMessagesContext.Provider value={value}>{children}</EphemeralMessagesContext.Provider>

@@ -14,6 +14,7 @@ import { useAccount } from '../contexts/AccountContext'
 import { useWebRTC } from '../contexts/WebRTCContext'
 import { BeaconStatus } from '../components/BeaconStatus'
 import { useBeacon } from '../contexts/BeaconContext'
+import { TransferCenterButton } from '../components/TransferCenterButton'
 import { usePresence, type PresenceLevel } from '../contexts/PresenceContext'
 import { useVoicePresence } from '../contexts/VoicePresenceContext'
 import { useSpeaking } from '../contexts/SpeakingContext'
@@ -342,6 +343,7 @@ function ServerViewPage() {
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <BeaconStatus />
+            <TransferCenterButton />
             <UserCard
               variant="header"
               onAvatarClick={(rect) => {
@@ -494,14 +496,26 @@ function ServerViewPage() {
                                 {attachmentTransferRows.length > 0 && (
                                   <div className="mt-2 space-y-1">
                                     {attachmentTransferRows.slice(-2).map((t) => (
-                                      <div key={t.request_id} className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
-                                        <span className="truncate">{t.direction === 'upload' ? 'Upload' : 'Download'}</span>
-                                        <span>
-                                          {t.status === 'transferring' ? `${Math.round(t.progress * 100)}%` : t.status}
-                                        </span>
+                                      <div key={t.request_id} className="text-[10px] text-muted-foreground">
+                                        <div className="flex items-center justify-between gap-2">
+                                          <span className="truncate">{t.direction === 'upload' ? 'Upload' : 'Download'}</span>
+                                          <span>
+                                            {t.status === 'transferring' ? `${Math.round(t.progress * 100)}%` : t.status}
+                                          </span>
+                                        </div>
+                                        {t.direction === 'download' && t.status === 'completed' && t.saved_path && (
+                                          <div className="truncate" title={t.saved_path}>
+                                            Saved: {t.saved_path}
+                                          </div>
+                                        )}
                                       </div>
                                     ))}
                                   </div>
+                                )}
+                                {!mine && (
+                                  <p className="mt-1 text-[10px] text-muted-foreground">
+                                    Download saves to your system Downloads folder by default. Change it in Settings - Downloads.
+                                  </p>
                                 )}
                               </div>
                             ) : (

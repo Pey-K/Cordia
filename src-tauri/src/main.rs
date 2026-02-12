@@ -94,6 +94,19 @@ struct AttachmentRegistrationResult {
     storage_mode: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SharedAttachmentItem {
+    attachment_id: String,
+    sha256: String,
+    file_name: String,
+    extension: String,
+    size_bytes: u64,
+    storage_mode: String,
+    source_path: Option<String>,
+    created_at: String,
+    can_share_now: bool,
+}
+
 fn account_attachment_dir(account_id: &str) -> Result<PathBuf, String> {
     let account_manager = AccountManager::new()
         .map_err(|e| format!("Failed to access account manager: {}", e))?;
@@ -254,14 +267,92 @@ fn read_attachment_bytes(attachment_id: String) -> Result<Vec<u8>, String> {
 }
 
 #[tauri::command]
-fn save_downloaded_attachment(file_name: String, bytes: Vec<u8>, sha256: Option<String>) -> Result<String, String> {
+fn list_shared_attachments() -> Result<Vec<SharedAttachmentItem>, String> {
     let account_id = require_session()?;
     let base = account_attachment_dir(&account_id)?;
-    let downloads_dir = base.join("downloads");
+    let index = load_attachment_index(&base);
+    let mut out: Vec<SharedAttachmentItem> = index
+        .records
+        .values()
+        .map(|rec| {
+            let can_share_now = if let Some(cache_name) = &rec.cached_file_name {
+                base.join("cache").join(cache_name).exists()
+            } else if let Some(src) = &rec.source_path {
+                PathBuf::from(src).exists()
+            } else {
+                false
+            };
+            SharedAttachmentItem {
+                attachment_id: rec.attachment_id.clone(),
+                sha256: rec.sha256.clone(),
+                file_name: rec.file_name.clone(),
+                extension: rec.extension.clone(),
+                size_bytes: rec.size_bytes,
+                storage_mode: match rec.storage_mode {
+                    AttachmentStorageMode::CurrentPath => "current_path".to_string(),
+                    AttachmentStorageMode::ProgramCopy => "program_copy".to_string(),
+                },
+                source_path: rec.source_path.clone(),
+                created_at: rec.created_at.clone(),
+                can_share_now,
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    Ok(out)
+}
+
+#[tauri::command]
+fn unshare_attachment(attachment_id: String) -> Result<bool, String> {
+    let account_id = require_session()?;
+    let base = account_attachment_dir(&account_id)?;
+    let mut index = load_attachment_index(&base);
+    let removed = index.records.remove(&attachment_id);
+    let Some(rec) = removed else {
+        return Ok(false);
+    };
+
+    if let Some(cache_name) = rec.cached_file_name.clone() {
+        let still_used = index
+            .records
+            .values()
+            .any(|r| r.cached_file_name.as_ref() == Some(&cache_name));
+        if !still_used {
+            let cache_path = base.join("cache").join(&cache_name);
+            let _ = std::fs::remove_file(cache_path);
+            index.sha_to_cached_file_name.remove(&rec.sha256);
+        }
+    }
+
+    save_attachment_index(&base, &index)?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn save_downloaded_attachment(
+    file_name: String,
+    bytes: Vec<u8>,
+    sha256: Option<String>,
+    target_dir: Option<String>,
+) -> Result<String, String> {
     let mut safe_name = file_name.trim().to_string();
     if safe_name.is_empty() {
         safe_name = "download.bin".to_string();
     }
+
+    let downloads_dir = if let Some(dir) = target_dir.as_ref().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        let p = PathBuf::from(dir);
+        std::fs::create_dir_all(&p).map_err(|e| format!("Failed to create download directory: {}", e))?;
+        p
+    } else if let Some(p) = tauri::api::path::download_dir() {
+        std::fs::create_dir_all(&p).map_err(|e| format!("Failed to create OS Downloads directory: {}", e))?;
+        p
+    } else {
+        let account_id = require_session()?;
+        let base = account_attachment_dir(&account_id)?;
+        base.join("downloads")
+    };
+
     let target = if let Some(hash) = sha256.filter(|s| !s.trim().is_empty()) {
         let ext = PathBuf::from(&safe_name)
             .extension()
@@ -270,7 +361,29 @@ fn save_downloaded_attachment(file_name: String, bytes: Vec<u8>, sha256: Option<
             .unwrap_or_default();
         downloads_dir.join(format!("{}{}", hash, ext))
     } else {
-        downloads_dir.join(safe_name)
+        let desired = downloads_dir.join(&safe_name);
+        if !desired.exists() {
+            desired
+        } else {
+            let stem = PathBuf::from(&safe_name)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("download")
+                .to_string();
+            let ext = PathBuf::from(&safe_name)
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| format!(".{}", s))
+                .unwrap_or_default();
+            let mut i = 1;
+            loop {
+                let candidate = downloads_dir.join(format!("{} ({}){}", stem, i, ext));
+                if !candidate.exists() {
+                    break candidate;
+                }
+                i += 1;
+            }
+        }
     };
     std::fs::write(&target, bytes).map_err(|e| format!("Failed to save downloaded attachment: {}", e))?;
     Ok(target.to_string_lossy().to_string())
@@ -1505,6 +1618,45 @@ fn read_clipboard_text() -> Result<String, String> {
     clipboard.get_text().map_err(|e| format!("Clipboard read failed: {}", e))
 }
 
+#[tauri::command]
+fn open_path_in_file_explorer(path: String) -> Result<(), String> {
+    let target = path.trim();
+    if target.is_empty() {
+        return Err("Path is empty".to_string());
+    }
+    let p = std::path::PathBuf::from(target);
+    if !p.exists() {
+        return Err("Path does not exist".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(target)
+            .spawn()
+            .map_err(|e| format!("Failed to open in explorer: {}", e))?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(target)
+            .spawn()
+            .map_err(|e| format!("Failed to open in Finder: {}", e))?;
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(target)
+            .spawn()
+            .map_err(|e| format!("Failed to open in file manager: {}", e))?;
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err("Unsupported OS".to_string())
+}
+
 #[cfg(windows)]
 #[tauri::command]
 fn register_key_file_association_command() -> Result<(), String> {
@@ -1735,6 +1887,8 @@ fn main() {
             register_attachment_from_path,
             get_attachment_record,
             read_attachment_bytes,
+            list_shared_attachments,
+            unshare_attachment,
             save_downloaded_attachment,
             delete_server,
             find_server_by_invite,
@@ -1754,7 +1908,8 @@ fn main() {
             get_default_beacon,
             get_beacon_url,
             set_beacon_url,
-            read_clipboard_text
+            read_clipboard_text,
+            open_path_in_file_explorer
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
