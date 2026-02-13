@@ -1,10 +1,13 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
+  beginDownloadStream,
+  cancelDownloadStream,
+  finishDownloadStream,
   getAttachmentRecord,
   listSharedAttachments,
   pathExists,
-  readAttachmentBytes,
-  saveDownloadedAttachment,
+  readAttachmentChunk,
+  writeDownloadStreamChunk,
   type SharedAttachmentItem,
   unshareAttachment,
   decryptEphemeralChatMessageBySigningPubkey,
@@ -98,6 +101,7 @@ interface EphemeralMessagesContextType {
   hasAccessibleCompletedDownload: (attachmentId: string | null | undefined) => boolean
   refreshTransferHistoryAccessibility: () => Promise<void>
   removeTransferHistoryEntry: (requestId: string) => void
+  cancelTransferRequest: (requestId: string) => void
   sharedAttachments: SharedAttachmentItem[]
   refreshSharedAttachments: () => Promise<void>
   unshareAttachmentById: (attachmentId: string) => Promise<void>
@@ -232,9 +236,24 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   const transferPeersRef = useRef<Map<string, RTCPeerConnection>>(new Map())
   const transferBuffersRef = useRef<Map<string, Uint8Array[]>>(new Map())
   const transferExpectedSizeRef = useRef<Map<string, number>>(new Map())
+  const downloadStreamStateRef = useRef<
+    Map<
+      string,
+      {
+        expected: number
+        written: number
+        pending: Uint8Array[]
+        pendingBytes: number
+        chain: Promise<void>
+        started: boolean
+      }
+    >
+  >(new Map())
+  const transferProgressThrottleRef = useRef<Map<string, { at: number; progress: number }>>(new Map())
   const attachmentTransfersRef = useRef<AttachmentTransferState[]>([])
   const messagesByBucketRef = useRef<MessageBuckets>({})
   const transferHistoryRef = useRef<TransferHistoryEntry[]>([])
+  const previousAccountIdRef = useRef<string | null>(null)
 
   const upsertTransfer = (requestId: string, updater: (prev?: AttachmentTransferState) => AttachmentTransferState) => {
     setAttachmentTransfers((prev) => {
@@ -246,8 +265,32 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     })
   }
 
+  const setTransferProgressThrottled = (requestId: string, progress: number, force?: boolean) => {
+    const now = Date.now()
+    const map = transferProgressThrottleRef.current
+    const prev = map.get(requestId)
+    const nextProgress = Number.isFinite(progress) ? Math.max(0, Math.min(1, progress)) : 0
+    const should =
+      force ||
+      !prev ||
+      now - prev.at > 125 ||
+      Math.abs(nextProgress - prev.progress) >= 0.02 ||
+      nextProgress === 0 ||
+      nextProgress === 1
+    if (!should) return
+    map.set(requestId, { at: now, progress: nextProgress })
+    upsertTransfer(requestId, (p) => ({ ...(p as AttachmentTransferState), progress: nextProgress }))
+  }
+
   const removeTransferHistoryEntry = (requestId: string) => {
     if (!requestId) return
+    setTransferHistory((prev) => prev.filter((h) => h.request_id !== requestId))
+  }
+
+  const cancelTransferRequest = (requestId: string) => {
+    if (!requestId) return
+    cleanupTransferPeer(requestId)
+    setAttachmentTransfers((prev) => prev.filter((t) => t.request_id !== requestId))
     setTransferHistory((prev) => prev.filter((h) => h.request_id !== requestId))
   }
 
@@ -298,6 +341,11 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     }
     transferBuffersRef.current.delete(requestId)
     transferExpectedSizeRef.current.delete(requestId)
+    const st = downloadStreamStateRef.current.get(requestId)
+    if (st?.started) {
+      cancelDownloadStream(requestId).catch(() => {})
+    }
+    downloadStreamStateRef.current.delete(requestId)
   }
 
   const upsertHistory = (
@@ -408,6 +456,25 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     listSharedAttachments()
       .then((list) => setSharedAttachments(list))
       .catch(() => setSharedAttachments([]))
+  }, [currentAccountId])
+
+  // On logout, prune inaccessible entries from the previous account's persisted history.
+  useEffect(() => {
+    const prev = previousAccountIdRef.current
+    if (!currentAccountId && prev) {
+      try {
+        const key = transferHistoryKeyForAccount(prev)
+        const raw = window.localStorage.getItem(key)
+        if (raw) {
+          const parsed = JSON.parse(raw) as TransferHistoryEntry[]
+          const pruned = (Array.isArray(parsed) ? parsed : []).filter((h) => h.is_inaccessible !== true).slice(0, 300)
+          window.localStorage.setItem(key, JSON.stringify(pruned))
+        }
+      } catch {
+        // ignore local storage read/write failures
+      }
+    }
+    previousAccountIdRef.current = currentAccountId
   }, [currentAccountId])
 
   useEffect(() => {
@@ -733,20 +800,25 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       dc.onopen = async () => {
         try {
           upsertTransfer(requestId, (prev) => ({ ...(prev as AttachmentTransferState), status: 'transferring' }))
-          const bytes = await readAttachmentBytes(attachmentId)
-          const total = bytes.byteLength
+          const total = Number(attachment.size_bytes ?? 0)
           dc.send(JSON.stringify({ type: 'meta', file_name: attachment.file_name, size_bytes: total, sha256: attachment.sha256 }))
           let sent = 0
-          const chunkSize = 64 * 1024
+          const chunkSize = 1024 * 1024
           while (sent < total) {
-            while (dc.bufferedAmount > 512 * 1024) {
+            while (dc.bufferedAmount > 2 * 1024 * 1024) {
               await new Promise((r) => setTimeout(r, 20))
             }
             const next = Math.min(total, sent + chunkSize)
-            dc.send(bytes.slice(sent, next))
+            const bytes = await readAttachmentChunk(attachmentId, sent, next - sent)
+            // Ensure this view is ArrayBuffer-backed (not SharedArrayBuffer) for TS + runtime compatibility.
+            const out = new Uint8Array(bytes.byteLength)
+            out.set(bytes)
+            dc.send(out)
             sent = next
             const progress = total > 0 ? Math.min(1, sent / total) : 1
-            upsertTransfer(requestId, (prev) => ({ ...(prev as AttachmentTransferState), progress }))
+            setTransferProgressThrottled(requestId, progress)
+            // Yield so UI stays responsive during large sends.
+            await new Promise((r) => setTimeout(r, 0))
           }
           dc.send(JSON.stringify({ type: 'done' }))
           upsertTransfer(requestId, (prev) => ({ ...(prev as AttachmentTransferState), status: 'completed', progress: 1 }))
@@ -766,6 +838,8 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       const fromUserId = detail?.from_user_id?.trim()
       const requestId = detail?.request_id?.trim()
       if (!fromUserId || !requestId) return
+      const existing = attachmentTransfersRef.current.find((t) => t.request_id === requestId)
+      if (!existing || existing.direction !== 'download') return
       if (!detail?.accepted) {
         upsertTransfer(requestId, (prev) => ({ ...(prev as AttachmentTransferState), status: 'rejected' }))
         cleanupTransferPeer(requestId)
@@ -786,8 +860,25 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
             try {
               const control = JSON.parse(m.data) as { type?: string; file_name?: string; size_bytes?: number; sha256?: string }
               if (control.type === 'meta') {
-                transferBuffersRef.current.set(requestId, [])
                 transferExpectedSizeRef.current.set(requestId, Number(control.size_bytes ?? 0))
+                downloadStreamStateRef.current.set(requestId, {
+                  expected: Number(control.size_bytes ?? 0),
+                  written: 0,
+                  pending: [],
+                  pendingBytes: 0,
+                  chain: Promise.resolve(),
+                  started: true,
+                })
+                const fileName = control.file_name || (attachmentTransfersRef.current.find((t) => t.request_id === requestId)?.file_name ?? 'attachment.bin')
+                beginDownloadStream(requestId, fileName, control.sha256 ?? null, downloadSettings.preferred_dir)
+                  .catch(() => {
+                    upsertTransfer(requestId, (prev) => ({
+                      ...(prev as AttachmentTransferState),
+                      status: 'failed',
+                      error: 'Failed to start download stream',
+                    }))
+                    cleanupTransferPeer(requestId)
+                  })
                 upsertTransfer(requestId, (prev) => ({
                   ...(prev as AttachmentTransferState),
                   file_name: control.file_name || (prev?.file_name ?? 'attachment.bin'),
@@ -796,21 +887,34 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
                 }))
               }
               if (control.type === 'done') {
-                const chunks = transferBuffersRef.current.get(requestId) ?? []
-                const total = chunks.reduce((acc, c) => acc + c.byteLength, 0)
-                const merged = new Uint8Array(total)
-                let offset = 0
-                for (const c of chunks) {
-                  merged.set(c, offset)
-                  offset += c.byteLength
+                const st = downloadStreamStateRef.current.get(requestId)
+                if (!st?.started) {
+                  upsertTransfer(requestId, (prev) => ({
+                    ...(prev as AttachmentTransferState),
+                    status: 'failed',
+                    error: 'Download stream missing',
+                  }))
+                  cleanupTransferPeer(requestId)
+                  return
                 }
-                const transfer = attachmentTransfersRef.current.find((t) => t.request_id === requestId)
-                const savePath = await saveDownloadedAttachment(
-                  transfer?.file_name ?? 'attachment.bin',
-                  merged,
-                  undefined,
-                  downloadSettings.preferred_dir
-                )
+                const flush = async () => {
+                  const cur = downloadStreamStateRef.current.get(requestId)
+                  if (!cur || cur.pendingBytes <= 0) return
+                  const out = new Uint8Array(cur.pendingBytes)
+                  let off = 0
+                  for (const c of cur.pending) {
+                    out.set(c, off)
+                    off += c.byteLength
+                  }
+                  cur.pending = []
+                  cur.pendingBytes = 0
+                  cur.chain = cur.chain.then(() => writeDownloadStreamChunk(requestId, out))
+                  downloadStreamStateRef.current.set(requestId, cur)
+                }
+                // Flush any remaining pending bytes then finalize.
+                await flush()
+                await st.chain
+                const savePath = await finishDownloadStream(requestId)
                 upsertTransfer(requestId, (prev) => ({
                   ...(prev as AttachmentTransferState),
                   status: 'completed',
@@ -825,15 +929,35 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
             return
           }
           const chunk = new Uint8Array(m.data as ArrayBuffer)
-          const current = transferBuffersRef.current.get(requestId) ?? []
-          current.push(chunk)
-          transferBuffersRef.current.set(requestId, current)
           const expected = transferExpectedSizeRef.current.get(requestId) ?? 0
-          const got = current.reduce((acc, c) => acc + c.byteLength, 0)
-          upsertTransfer(requestId, (prev) => ({
-            ...(prev as AttachmentTransferState),
-            progress: expected > 0 ? Math.min(1, got / expected) : 0,
-          }))
+          const st = downloadStreamStateRef.current.get(requestId)
+          if (!st?.started) return
+          st.pending.push(chunk)
+          st.pendingBytes += chunk.byteLength
+          st.written += chunk.byteLength
+          const flushThreshold = 256 * 1024
+          if (st.pendingBytes >= flushThreshold) {
+            const out = new Uint8Array(st.pendingBytes)
+            let off = 0
+            for (const c of st.pending) {
+              out.set(c, off)
+              off += c.byteLength
+            }
+            st.pending = []
+            st.pendingBytes = 0
+            st.chain = st.chain
+              .then(() => writeDownloadStreamChunk(requestId, out))
+              .catch(() => {
+                upsertTransfer(requestId, (prev) => ({
+                  ...(prev as AttachmentTransferState),
+                  status: 'failed',
+                  error: 'Failed writing download chunk',
+                }))
+                cleanupTransferPeer(requestId)
+              })
+          }
+          downloadStreamStateRef.current.set(requestId, st)
+          setTransferProgressThrottled(requestId, expected > 0 ? Math.min(1, st.written / expected) : 0)
         }
       }
     }
@@ -1115,6 +1239,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       hasAccessibleCompletedDownload,
       refreshTransferHistoryAccessibility,
       removeTransferHistoryEntry,
+      cancelTransferRequest,
       sharedAttachments,
       refreshSharedAttachments,
       unshareAttachmentById,

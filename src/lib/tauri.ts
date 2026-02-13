@@ -177,6 +177,15 @@ export async function readAttachmentBytes(attachmentId: string): Promise<Uint8Ar
   return new Uint8Array(data)
 }
 
+export async function readAttachmentChunk(attachmentId: string, offset: number, length: number): Promise<Uint8Array> {
+  const data = await invoke<number[]>('read_attachment_chunk', {
+    attachmentId,
+    offset: Math.max(0, Math.floor(offset)),
+    length: Math.max(0, Math.floor(length)),
+  })
+  return new Uint8Array(data)
+}
+
 export async function saveDownloadedAttachment(
   fileName: string,
   bytes: Uint8Array,
@@ -189,6 +198,35 @@ export async function saveDownloadedAttachment(
     sha256: sha256 ?? null,
     targetDir: targetDir ?? null,
   })
+}
+
+export async function beginDownloadStream(
+  requestId: string,
+  fileName: string,
+  sha256?: string | null,
+  targetDir?: string | null
+): Promise<string> {
+  return await invoke('begin_download_stream', {
+    requestId,
+    fileName,
+    sha256: sha256 ?? null,
+    targetDir: targetDir ?? null,
+  })
+}
+
+export async function writeDownloadStreamChunk(requestId: string, bytes: Uint8Array): Promise<void> {
+  return await invoke('write_download_stream_chunk', {
+    requestId,
+    bytes: Array.from(bytes),
+  })
+}
+
+export async function finishDownloadStream(requestId: string): Promise<string> {
+  return await invoke('finish_download_stream', { requestId })
+}
+
+export async function cancelDownloadStream(requestId: string): Promise<void> {
+  return await invoke('cancel_download_stream', { requestId })
 }
 
 export async function deleteServer(serverId: string): Promise<void> {

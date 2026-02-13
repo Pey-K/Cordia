@@ -38,6 +38,7 @@ export function TransferCenterModal() {
     refreshSharedAttachments,
     refreshTransferHistoryAccessibility,
     removeTransferHistoryEntry,
+    cancelTransferRequest,
     unshareAttachmentById,
   } = useEphemeralMessages()
 
@@ -167,6 +168,8 @@ export function TransferCenterModal() {
                 )}
                 {downloadRows.map((row) => {
                   const inaccessible = row.is_inaccessible === true
+                  const canCancel =
+                    row.status === 'requesting' || row.status === 'connecting' || row.status === 'transferring'
                   return (
                   <div
                     key={row.request_id}
@@ -204,6 +207,18 @@ export function TransferCenterModal() {
                         title={row.saved_path}
                       >
                         <FolderOpen className="h-3.5 w-3.5 mr-1" />
+                      </Button>
+                    )}
+                    {canCancel && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 text-amber-300 hover:text-amber-200 opacity-0 group-hover:opacity-100 transition-opacity"
+                        onClick={() => cancelTransferRequest(row.request_id)}
+                        title="Cancel and remove transfer"
+                      >
+                        <X className="h-3.5 w-3.5" />
                       </Button>
                     )}
                     {inaccessible && (

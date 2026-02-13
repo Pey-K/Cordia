@@ -20,8 +20,11 @@ use sha2::{Digest, Sha256};
 use chacha20poly1305::{XChaCha20Poly1305, aead::{Aead, KeyInit, AeadCore}};
 use rand::RngCore;
 use std::collections::HashMap;
+use std::io::Write;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct EncryptedServerHint {
@@ -152,6 +155,75 @@ fn sha256_file(path: &PathBuf) -> Result<String, String> {
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     Ok(hex::encode(hasher.finalize()))
+}
+
+#[derive(Debug)]
+struct DownloadStreamState {
+    temp_path: PathBuf,
+    target_path: PathBuf,
+    file: std::fs::File,
+}
+
+static DOWNLOAD_STREAMS: OnceLock<Mutex<HashMap<String, DownloadStreamState>>> = OnceLock::new();
+
+fn download_streams() -> &'static Mutex<HashMap<String, DownloadStreamState>> {
+    DOWNLOAD_STREAMS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn resolve_downloads_dir(target_dir: Option<String>) -> Result<PathBuf, String> {
+    if let Some(dir) = target_dir
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        let p = PathBuf::from(dir);
+        std::fs::create_dir_all(&p).map_err(|e| format!("Failed to create download directory: {}", e))?;
+        return Ok(p);
+    }
+    if let Some(p) = tauri::api::path::download_dir() {
+        std::fs::create_dir_all(&p).map_err(|e| format!("Failed to create OS Downloads directory: {}", e))?;
+        return Ok(p);
+    }
+    let account_id = require_session()?;
+    let base = account_attachment_dir(&account_id)?;
+    Ok(base.join("downloads"))
+}
+
+fn resolve_download_target(downloads_dir: &PathBuf, file_name: &str, sha256: &Option<String>) -> PathBuf {
+    let mut safe_name = file_name.trim().to_string();
+    if safe_name.is_empty() {
+        safe_name = "download.bin".to_string();
+    }
+    if let Some(hash) = sha256.as_ref().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        let ext = PathBuf::from(&safe_name)
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| format!(".{}", s))
+            .unwrap_or_default();
+        return downloads_dir.join(format!("{}{}", hash, ext));
+    }
+    let desired = downloads_dir.join(&safe_name);
+    if !desired.exists() {
+        return desired;
+    }
+    let stem = PathBuf::from(&safe_name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("download")
+        .to_string();
+    let ext = PathBuf::from(&safe_name)
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| format!(".{}", s))
+        .unwrap_or_default();
+    let mut i = 1;
+    loop {
+        let candidate = downloads_dir.join(format!("{} ({}){}", stem, i, ext));
+        if !candidate.exists() {
+            return candidate;
+        }
+        i += 1;
+    }
 }
 
 fn is_video_ext(ext: &str) -> bool {
@@ -324,6 +396,39 @@ fn read_attachment_bytes(attachment_id: String) -> Result<Vec<u8>, String> {
 }
 
 #[tauri::command]
+fn read_attachment_chunk(attachment_id: String, offset: u64, length: u32) -> Result<Vec<u8>, String> {
+    let account_id = require_session()?;
+    let base = account_attachment_dir(&account_id)?;
+    let index = load_attachment_index(&base);
+    let rec = index
+        .records
+        .get(&attachment_id)
+        .ok_or_else(|| "Attachment not found".to_string())?;
+
+    let path = if let Some(cache_name) = &rec.cached_file_name {
+        base.join("cache").join(cache_name)
+    } else if let Some(src) = &rec.source_path {
+        PathBuf::from(src)
+    } else {
+        return Err("Attachment has no readable source".to_string());
+    };
+
+    let file_len = rec.size_bytes;
+    if offset >= file_len {
+        return Ok(Vec::new());
+    }
+    let max_len = std::cmp::min(length as u64, file_len - offset) as usize;
+
+    let mut f = std::fs::File::open(&path).map_err(|e| format!("Failed to open attachment: {}", e))?;
+    f.seek(SeekFrom::Start(offset))
+        .map_err(|e| format!("Failed to seek attachment: {}", e))?;
+    let mut buf = vec![0u8; max_len];
+    f.read_exact(&mut buf)
+        .map_err(|e| format!("Failed to read attachment chunk: {}", e))?;
+    Ok(buf)
+}
+
+#[tauri::command]
 fn list_shared_attachments() -> Result<Vec<SharedAttachmentItem>, String> {
     let account_id = require_session()?;
     let base = account_attachment_dir(&account_id)?;
@@ -409,53 +514,100 @@ fn save_downloaded_attachment(
         safe_name = "download.bin".to_string();
     }
 
-    let downloads_dir = if let Some(dir) = target_dir.as_ref().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
-        let p = PathBuf::from(dir);
-        std::fs::create_dir_all(&p).map_err(|e| format!("Failed to create download directory: {}", e))?;
-        p
-    } else if let Some(p) = tauri::api::path::download_dir() {
-        std::fs::create_dir_all(&p).map_err(|e| format!("Failed to create OS Downloads directory: {}", e))?;
-        p
-    } else {
-        let account_id = require_session()?;
-        let base = account_attachment_dir(&account_id)?;
-        base.join("downloads")
-    };
-
-    let target = if let Some(hash) = sha256.filter(|s| !s.trim().is_empty()) {
-        let ext = PathBuf::from(&safe_name)
-            .extension()
-            .and_then(|s| s.to_str())
-            .map(|s| format!(".{}", s))
-            .unwrap_or_default();
-        downloads_dir.join(format!("{}{}", hash, ext))
-    } else {
-        let desired = downloads_dir.join(&safe_name);
-        if !desired.exists() {
-            desired
-        } else {
-            let stem = PathBuf::from(&safe_name)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("download")
-                .to_string();
-            let ext = PathBuf::from(&safe_name)
-                .extension()
-                .and_then(|s| s.to_str())
-                .map(|s| format!(".{}", s))
-                .unwrap_or_default();
-            let mut i = 1;
-            loop {
-                let candidate = downloads_dir.join(format!("{} ({}){}", stem, i, ext));
-                if !candidate.exists() {
-                    break candidate;
-                }
-                i += 1;
-            }
-        }
-    };
+    let downloads_dir = resolve_downloads_dir(target_dir)?;
+    let target = resolve_download_target(&downloads_dir, &safe_name, &sha256);
     std::fs::write(&target, bytes).map_err(|e| format!("Failed to save downloaded attachment: {}", e))?;
     Ok(target.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn begin_download_stream(
+    request_id: String,
+    file_name: String,
+    sha256: Option<String>,
+    target_dir: Option<String>,
+) -> Result<String, String> {
+    let rid = request_id.trim().to_string();
+    if rid.is_empty() {
+        return Err("request_id is empty".to_string());
+    }
+    let safe_name = file_name.trim().to_string();
+    let downloads_dir = resolve_downloads_dir(target_dir)?;
+    let target_path = resolve_download_target(&downloads_dir, &safe_name, &sha256);
+    let temp_name = format!(
+        "{}.part",
+        target_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("download.bin")
+    );
+    let temp_path = target_path.with_file_name(temp_name);
+
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&temp_path)
+        .map_err(|e| format!("Failed to create temp download file: {}", e))?;
+
+    let mut map = download_streams().lock().map_err(|_| "Download stream lock poisoned".to_string())?;
+    // If an old one exists (e.g. retry), overwrite it.
+    map.insert(
+        rid.clone(),
+        DownloadStreamState {
+            temp_path,
+            target_path,
+            file,
+        },
+    );
+
+    Ok(rid)
+}
+
+#[tauri::command]
+fn write_download_stream_chunk(request_id: String, bytes: Vec<u8>) -> Result<(), String> {
+    let rid = request_id.trim().to_string();
+    if rid.is_empty() {
+        return Err("request_id is empty".to_string());
+    }
+    let mut map = download_streams().lock().map_err(|_| "Download stream lock poisoned".to_string())?;
+    let st = map
+        .get_mut(&rid)
+        .ok_or_else(|| "Download stream not found (begin_download_stream missing?)".to_string())?;
+    st.file
+        .write_all(&bytes)
+        .map_err(|e| format!("Failed to write download chunk: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn finish_download_stream(request_id: String) -> Result<String, String> {
+    let rid = request_id.trim().to_string();
+    if rid.is_empty() {
+        return Err("request_id is empty".to_string());
+    }
+    let mut map = download_streams().lock().map_err(|_| "Download stream lock poisoned".to_string())?;
+    let st = map
+        .remove(&rid)
+        .ok_or_else(|| "Download stream not found".to_string())?;
+    // Ensure data is flushed before rename.
+    let _ = st.file.sync_all();
+    std::fs::rename(&st.temp_path, &st.target_path)
+        .map_err(|e| format!("Failed to finalize download file: {}", e))?;
+    Ok(st.target_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn cancel_download_stream(request_id: String) -> Result<(), String> {
+    let rid = request_id.trim().to_string();
+    if rid.is_empty() {
+        return Ok(());
+    }
+    let mut map = download_streams().lock().map_err(|_| "Download stream lock poisoned".to_string())?;
+    if let Some(st) = map.remove(&rid) {
+        let _ = std::fs::remove_file(&st.temp_path);
+    }
+    Ok(())
 }
 
 fn derive_invite_key(code: &str) -> [u8; 32] {
@@ -1965,9 +2117,14 @@ fn main() {
             register_attachment_from_path,
             get_attachment_record,
             read_attachment_bytes,
+            read_attachment_chunk,
             list_shared_attachments,
             unshare_attachment,
             save_downloaded_attachment,
+            begin_download_stream,
+            write_download_stream_chunk,
+            finish_download_stream,
+            cancel_download_stream,
             delete_server,
             find_server_by_invite,
             join_server,
