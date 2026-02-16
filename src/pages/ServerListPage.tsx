@@ -22,6 +22,7 @@ import { useRemoteProfiles } from '../contexts/RemoteProfilesContext'
 import { useServers } from '../contexts/ServersContext'
 import { useFriends } from '../contexts/FriendsContext'
 import { useToast } from '../contexts/ToastContext'
+import { useEphemeralMessages } from '../contexts/EphemeralMessagesContext'
 
 /** Strip to raw 8-char code (no dash). Used so dash is never part of stored/copied value. */
 function normalizeFriendCode(code: string): string {
@@ -58,6 +59,7 @@ function ServerListPage() {
     myFriendCode,
   } = useFriends()
   const { toast } = useToast()
+  const { getUnreadCount } = useEphemeralMessages()
   const [isCreating, setIsCreating] = useState(false)
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<Server | null>(null)
@@ -944,6 +946,7 @@ function ServerListPage() {
                       (() => {
                         const isFav = favoriteServerIds.has(server.id)
                         const cardBorder = isFav ? 'border-amber-500/70' : 'border-border'
+                        const unread = getUnreadCount(server.id)
                         return (
                       <div key={server.id} className="relative group/card min-w-0">
                         <div
@@ -979,7 +982,14 @@ function ServerListPage() {
                         >
                           <div className="relative flex items-center justify-between gap-6 min-w-0">
                             <div className="space-y-1 min-w-0 flex-1">
-                              <h3 className="text-lg font-light tracking-tight truncate">{server.name}</h3>
+                              <div className="flex items-center gap-2 min-w-0">
+                                <h3 className="text-lg font-light tracking-tight truncate">{server.name}</h3>
+                                {unread > 0 && (
+                                  <span className="shrink-0 text-[10px] px-1.5 py-0.5 bg-primary/20 border border-primary/30">
+                                    {unread}
+                                  </span>
+                                )}
+                              </div>
                               <div className="flex items-center gap-4 text-xs text-muted-foreground">
                                 <span className="flex items-center gap-1">
                                   <Users className="h-3 w-3" />

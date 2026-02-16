@@ -40,12 +40,13 @@ function ServerViewPage() {
   const { joinVoice, leaveVoice, isInVoice: webrtcIsInVoice, currentRoomId } = useWebRTC()
   const {
     getMessages,
+    openServerChat,
     sendMessage,
     sendAttachmentMessage,
     requestAttachmentDownload,
     attachmentTransfers,
+    sharedAttachments,
     hasAccessibleCompletedDownload,
-    markMessagesRead,
   } = useEphemeralMessages()
   const { beaconUrl, status: beaconStatus } = useBeacon()
   /** For the current user, presence is instant from local state; for others, use signaling data. */
@@ -325,13 +326,10 @@ function ServerViewPage() {
   }
 
   useEffect(() => {
-    if (!server || !groupChat || !identity) return
-    const unreadFromOthers = chatMessages
-      .filter((m) => m.from_user_id !== identity.user_id && !(m.read_by ?? []).includes(identity.user_id))
-      .map((m) => m.id)
-    if (unreadFromOthers.length === 0) return
-    markMessagesRead(server.signing_pubkey, groupChat.id, unreadFromOthers)
-  }, [server?.signing_pubkey, groupChat?.id, identity?.user_id, chatMessages, markMessagesRead])
+    if (!server || !groupChat) return
+    openServerChat(server.id, server.signing_pubkey, groupChat.id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [server?.id, server?.signing_pubkey, groupChat?.id])
 
   if (!server) {
     return (
@@ -467,17 +465,29 @@ function ServerViewPage() {
                           t.status !== 'rejected'
                       )
                       const name = mine ? 'You' : fallbackNameForUser(msg.from_user_id)
-                      const readBy = (msg.read_by ?? []).filter((uid) => uid !== identity?.user_id)
                       const deliveredBy = (msg.delivered_by ?? []).filter((uid) => uid !== identity?.user_id)
-                      const statusLabel = msg.delivery_status === 'read'
-                        ? `Read ${readBy.length > 0 ? readBy.length : ''}`.trim()
-                        : msg.delivery_status === 'delivered'
-                          ? 'Delivered'
-                          : 'Pending'
+                      const statusLabel = msg.delivery_status === 'delivered' ? 'Delivered' : 'Pending'
                       const time = new Date(msg.sent_at).toLocaleTimeString([], {
                         hour: '2-digit',
                         minute: '2-digit',
                       })
+                      const hostOnlineForAttachment = msg.kind === 'attachment'
+                        ? getLevel(server.signing_pubkey, msg.from_user_id, voicePresence.isUserInVoice(server.signing_pubkey, msg.from_user_id)) !== 'offline'
+                        : false
+                      const senderSharedReady = msg.kind === 'attachment' && msg.attachment
+                        ? sharedAttachments.some((s) => s.attachment_id === msg.attachment?.attachment_id && s.can_share_now)
+                        : false
+                      const attachmentStateLabel = msg.kind === 'attachment' && msg.attachment
+                        ? alreadyDownloadedAccessible
+                          ? 'Cached'
+                          : mine
+                            ? senderSharedReady
+                              ? 'Available'
+                              : 'Unavailable'
+                            : hostOnlineForAttachment
+                              ? 'Available'
+                              : 'Unavailable'
+                        : null
                       return (
                         <div
                           key={msg.id}
@@ -503,9 +513,10 @@ function ServerViewPage() {
                                     <p className="text-[10px] text-muted-foreground">
                                       {formatBytes(msg.attachment.size_bytes)}
                                       {msg.attachment.extension ? ` • .${msg.attachment.extension}` : ''}
+                                      {attachmentStateLabel && <span className="ml-1">• {attachmentStateLabel}</span>}
                                     </p>
                                   </div>
-                                  {!mine && !alreadyDownloadedAccessible && !hasActiveDownload && (
+                                  {!mine && !alreadyDownloadedAccessible && !hasActiveDownload && attachmentStateLabel === 'Available' && (
                                     <Button
                                       type="button"
                                       variant="outline"
@@ -548,28 +559,16 @@ function ServerViewPage() {
                             )}
                             {mine && (
                               <div className="mt-1 text-[10px] text-muted-foreground relative group/receipt">
-                                <span>{statusLabel}</span>
-                                {readBy.length > 0 && (
-                                  <div className="absolute right-0 bottom-full mb-1 hidden group-hover/receipt:flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 shadow-lg z-20">
-                                    {readBy.slice(0, 8).map((uid, idx) => {
-                                      const dn = fallbackNameForUser(uid)
-                                      return (
-                                        <div
-                                          key={uid}
-                                          className="-ml-1 first:ml-0 h-4 w-4 rounded-none ring-1 ring-background text-[8px] grid place-items-center"
-                                          style={{ ...avatarStyleForUser(uid), zIndex: 20 - idx }}
-                                          title={dn}
-                                        >
-                                          {getInitials(dn)}
-                                        </div>
-                                      )
-                                    })}
-                                    {readBy.length > 8 && (
-                                      <span className="text-[9px] text-muted-foreground">+{readBy.length - 8}</span>
-                                    )}
-                                  </div>
-                                )}
-                                {msg.delivery_status !== 'read' && deliveredBy.length > 0 && (
+                                <span
+                                  title={
+                                    msg.delivery_status === 'delivered'
+                                      ? 'Someone has opened this server and read or saved this message'
+                                      : 'Waiting to be sent or read by another user'
+                                  }
+                                >
+                                  {statusLabel}
+                                </span>
+                                {msg.delivery_status !== 'delivered' && deliveredBy.length > 0 && (
                                   <span className="ml-1 text-[9px] text-muted-foreground">({deliveredBy.length} online)</span>
                                 )}
                               </div>

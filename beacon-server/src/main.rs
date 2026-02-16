@@ -151,21 +151,21 @@ pub enum SignalingMessage {
         sent_at: String,
     },
 
-    /// Client sends delivery/read receipt for an ephemeral message.
+    /// Client sends delivered receipt for an ephemeral message.
     EphemeralReceiptSend {
         signing_pubkey: SigningPubkey,
         chat_id: String,
         message_id: String,
-        receipt_type: String, // "delivered" | "read"
+        receipt_type: String, // "delivered"
     },
 
-    /// Beacon relays delivery/read receipt.
+    /// Beacon relays delivered receipt.
     EphemeralReceiptIncoming {
         signing_pubkey: SigningPubkey,
         chat_id: String,
         message_id: String,
         from_user_id: String,
-        receipt_type: String, // "delivered" | "read"
+        receipt_type: String, // "delivered"
         sent_at: String,
     },
 

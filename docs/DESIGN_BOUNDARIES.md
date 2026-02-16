@@ -21,3 +21,12 @@ Cordia is designed with clear boundaries. This document spells out what the proj
 ---
 
 These boundaries are intentional. Cordia prioritizes privacy, simplicity, and functionality over scale and business models.
+
+## Chat guarantees
+
+- **Ephemeral-first messaging** — Beacon relays live traffic and does not persist chat messages.
+- **Local persistence is optional convenience** — Message history durability is a per-server local setting (`persistent` or `ephemeral`), not a network guarantee.
+- **No offline backfill promise** — Messages missed while offline are not guaranteed to exist.
+- **Unread is local event state** — Unread counters represent events this client has seen since last open, not global truth.
+- **Delivered-only receipts** — Cordia tracks delivery acknowledgements and does not implement read receipts.
+- **Attachment honesty** — Attachment metadata can persist in history, while file availability is opportunistic (`Available`, `Unavailable`, `Cached`) depending on host presence and local cache.

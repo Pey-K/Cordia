@@ -411,8 +411,8 @@ pub async fn handle_message(
             if message_id.trim().is_empty() {
                 return Err("EphemeralReceiptSend requires message_id".to_string());
             }
-            if receipt_type != "delivered" && receipt_type != "read" {
-                return Err("EphemeralReceiptSend requires valid receipt_type".to_string());
+            if receipt_type != "delivered" {
+                return Err("EphemeralReceiptSend only supports delivered receipts".to_string());
             }
 
             let outgoing = SignalingMessage::EphemeralReceiptIncoming {

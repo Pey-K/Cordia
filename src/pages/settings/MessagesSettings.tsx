@@ -3,6 +3,8 @@ import { Label } from '../../components/ui/label'
 import { Input } from '../../components/ui/input'
 import { Select } from '../../components/ui/select'
 import { useAccount } from '../../contexts/AccountContext'
+import { useActiveServer } from '../../contexts/ActiveServerContext'
+import { useServers } from '../../contexts/ServersContext'
 import {
   DEFAULT_MESSAGE_STORAGE_SETTINGS,
   getMessageStorageSettings,
@@ -10,34 +12,31 @@ import {
   type MessageStorageSettings,
 } from '../../lib/messageSettings'
 
-type RetentionPreset = '24h' | '72h' | '168h' | '720h' | 'custom'
-
-function retentionPresetFor(hours: number): RetentionPreset {
-  if (hours === 24) return '24h'
-  if (hours === 72) return '72h'
-  if (hours === 168) return '168h'
-  if (hours === 720) return '720h'
-  return 'custom'
-}
-
 export function MessagesSettings() {
   const { currentAccountId } = useAccount()
+  const { activeSigningPubkey } = useActiveServer()
+  const { servers } = useServers()
   const [settings, setSettings] = useState<MessageStorageSettings>(DEFAULT_MESSAGE_STORAGE_SETTINGS)
-  const [retentionPreset, setRetentionPreset] = useState<RetentionPreset>('72h')
+
+  const activeServer = servers.find((s) => s.signing_pubkey === activeSigningPubkey)
+  const canEdit = Boolean(activeSigningPubkey)
 
   useEffect(() => {
-    const loaded = getMessageStorageSettings(currentAccountId)
+    if (!activeSigningPubkey) {
+      setSettings({ ...DEFAULT_MESSAGE_STORAGE_SETTINGS })
+      return
+    }
+    const loaded = getMessageStorageSettings(currentAccountId, activeSigningPubkey)
     setSettings(loaded)
-    setRetentionPreset(retentionPresetFor(loaded.retention_hours))
-  }, [currentAccountId])
+  }, [currentAccountId, activeSigningPubkey])
 
   const applySettings = (next: MessageStorageSettings) => {
     setSettings(next)
-    setMessageStorageSettings(currentAccountId, next)
+    if (!activeSigningPubkey) return
+    setMessageStorageSettings(currentAccountId, activeSigningPubkey, next)
   }
 
   const resetToRecommended = () => {
-    setRetentionPreset(retentionPresetFor(DEFAULT_MESSAGE_STORAGE_SETTINGS.retention_hours))
     applySettings({ ...DEFAULT_MESSAGE_STORAGE_SETTINGS })
   }
 
@@ -47,7 +46,7 @@ export function MessagesSettings() {
         <div className="space-y-1">
           <h2 className="text-lg font-light tracking-tight">Messages</h2>
           <p className="text-xs text-muted-foreground">
-            These settings only affect local message cache on this device/account.
+            These settings only affect local message cache on this device and server.
           </p>
         </div>
         <button
@@ -60,90 +59,56 @@ export function MessagesSettings() {
       </div>
 
       <div className="space-y-4">
-        <div className="border border-border/50 rounded-md p-3 space-y-3">
-          <Label htmlFor="msg-retention-preset" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            Retention timeframe
-          </Label>
-          <Select
-            id="msg-retention-preset"
-            value={retentionPreset}
-            onChange={(e) => {
-              const preset = e.target.value as RetentionPreset
-              setRetentionPreset(preset)
-              if (preset === 'custom') return
-              const hours = Number(preset.replace('h', ''))
-              applySettings({ ...settings, retention_hours: hours })
-            }}
-          >
-            <option value="24h">24 hours</option>
-            <option value="72h">3 days (default)</option>
-            <option value="168h">7 days</option>
-            <option value="720h">30 days</option>
-            <option value="custom">Custom</option>
-          </Select>
-          <div className="flex items-center gap-2">
-            <Input
-              type="number"
-              min={1}
-              max={24 * 365}
-              value={settings.retention_hours}
-              onChange={(e) => {
-                const hours = Math.max(1, Math.min(24 * 365, Number(e.target.value || 72)))
-                setRetentionPreset(retentionPresetFor(hours))
-                applySettings({ ...settings, retention_hours: hours })
-              }}
-              className="h-10 w-32"
-            />
-            <span className="text-xs text-muted-foreground">hours</span>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            Older messages than this are removed from local cache.
-          </p>
+        <div className="rounded-md border border-border/50 bg-muted/20 p-3 text-xs text-muted-foreground">
+          {canEdit
+            ? `Editing message storage for ${activeServer?.name ?? 'active server'}.`
+            : 'Open a server first to edit its per-server message storage mode.'}
         </div>
 
         <div className="space-y-3 border border-border/50 rounded-md p-3">
           <div className="space-y-1">
-            <Label htmlFor="msg-max-per-chat" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Max per chat
+            <Label htmlFor="msg-mode" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Storage mode
             </Label>
-            <Input
-              id="msg-max-per-chat"
-              type="number"
-              min={20}
-              max={20000}
-              value={settings.max_messages_per_chat}
+            <Select
+              id="msg-mode"
+              value={settings.mode}
+              disabled={!canEdit}
               onChange={(e) =>
                 applySettings({
                   ...settings,
-                  max_messages_per_chat: Math.max(20, Math.min(20000, Number(e.target.value || 500))),
+                  mode: e.target.value === 'ephemeral' ? 'ephemeral' : 'persistent',
                 })
               }
-              className="h-9 w-40"
-            />
+            >
+              <option value="persistent">Persistent (default)</option>
+              <option value="ephemeral">Ephemeral (memory only)</option>
+            </Select>
             <p className="text-xs text-muted-foreground">
-              Keeps only the newest N messages for each chat.
+              Persistent keeps local history across restarts. Ephemeral clears on app close.
             </p>
           </div>
           <div className="space-y-1">
-            <Label htmlFor="msg-max-total" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Max total messages
+            <Label htmlFor="msg-max-on-open" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Max messages on server open
             </Label>
             <Input
-              id="msg-max-total"
+              id="msg-max-on-open"
               type="number"
-              min={100}
-              max={100000}
-              value={settings.max_total_messages}
+              min={50}
+              max={5000}
+              disabled={!canEdit}
+              value={settings.max_messages_on_open}
               onChange={(e) =>
                 applySettings({
                   ...settings,
-                  max_total_messages: Math.max(100, Math.min(100000, Number(e.target.value || 5000))),
+                  max_messages_on_open: Math.max(50, Math.min(5000, Number(e.target.value || 500))),
                 })
               }
               className="h-9 w-40"
             />
             <p className="text-xs text-muted-foreground">
-              Global cap across all servers/DMs for this account.
+              How many messages to load when opening this server.
             </p>
           </div>
           <div className="space-y-1">
@@ -155,11 +120,12 @@ export function MessagesSettings() {
               type="number"
               min={1}
               max={512}
+              disabled={!canEdit}
               value={settings.max_storage_mb}
               onChange={(e) =>
                 applySettings({
                   ...settings,
-                  max_storage_mb: Math.max(1, Math.min(512, Number(e.target.value || 16))),
+                  max_storage_mb: Math.max(1, Math.min(512, Number(e.target.value || 150))),
                 })
               }
               className="h-9 w-40"
@@ -168,37 +134,13 @@ export function MessagesSettings() {
               Approximate disk budget for message cache.
             </p>
           </div>
-          <div className="space-y-1">
-            <Label htmlFor="msg-max-sync-kb" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Max sync transfer (KB)
-            </Label>
-            <Input
-              id="msg-max-sync-kb"
-              type="number"
-              min={32}
-              max={4096}
-              value={settings.max_sync_kb}
-              onChange={(e) =>
-                applySettings({
-                  ...settings,
-                  max_sync_kb: Math.max(32, Math.min(4096, Number(e.target.value || 256))),
-                })
-              }
-              className="h-9 w-40"
-            />
-            <p className="text-xs text-muted-foreground">
-              Reserved cap for peer history sync transfer bursts.
-            </p>
-          </div>
         </div>
 
         <div className="rounded-md border border-border/50 bg-muted/20 p-4">
           <p className="text-xs text-muted-foreground">
-            Current behavior: keep up to <span className="text-foreground">{settings.retention_hours}h</span>,{' '}
-            <span className="text-foreground">{settings.max_messages_per_chat}</span> per chat,{' '}
-            <span className="text-foreground">{settings.max_total_messages}</span> total,{' '}
-            <span className="text-foreground">{settings.max_storage_mb}MB</span> max,{' '}
-            <span className="text-foreground">{settings.max_sync_kb}KB</span> sync burst cap.
+            Current behavior: <span className="text-foreground capitalize">{settings.mode}</span> mode,{' '}
+            <span className="text-foreground">{settings.max_messages_on_open}</span> messages on open,{' '}
+            <span className="text-foreground">{settings.max_storage_mb}MB</span> max storage.
           </p>
         </div>
       </div>

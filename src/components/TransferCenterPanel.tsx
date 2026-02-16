@@ -204,7 +204,7 @@ export function TransferCenterPanel() {
             )}
             {sharedAttachments.map((item) => {
               const live = latestUploadByAttachment.get(item.attachment_id)
-              const status = live?.status ?? (item.can_share_now ? 'ready' : 'missing')
+              const status = live?.status ?? (item.can_share_now ? 'available' : 'unavailable')
               const p = live?.status === 'completed' ? 100 : Math.max(0, Math.min(100, Math.round((live?.progress ?? 0) * 100)))
               const showBar = !!live && (live.status === 'transferring' || live.status === 'completed')
               return (

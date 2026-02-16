@@ -3,8 +3,8 @@ import {
   beginDownloadStream,
   cancelDownloadStream,
   finishDownloadStream,
-  getAttachmentRecord,
   listSharedAttachments,
+  listServers,
   pathExists,
   readAttachmentChunk,
   writeDownloadStreamChunk,
@@ -28,6 +28,7 @@ import {
 } from '../lib/downloadSettings'
 import { addIceCandidate, createAnswer, createOffer, createPeerConnection, handleAnswer } from '../lib/webrtc'
 import { confirm as confirmDialog } from '@tauri-apps/api/dialog'
+import { listen } from '@tauri-apps/api/event'
 import { getCurrent } from '@tauri-apps/api/window'
 
 export interface EphemeralAttachmentMeta {
@@ -48,9 +49,8 @@ export interface EphemeralChatMessage {
   attachment?: EphemeralAttachmentMeta
   sent_at: string
   local_only?: boolean
-  delivery_status?: 'pending' | 'delivered' | 'read'
+  delivery_status?: 'pending' | 'delivered'
   delivered_by?: string[]
-  read_by?: string[]
 }
 
 interface SendEphemeralChatInput {
@@ -83,7 +83,7 @@ interface IncomingEphemeralReceiptDetail {
   chat_id: string
   message_id: string
   from_user_id: string
-  receipt_type: 'delivered' | 'read'
+  receipt_type: 'delivered'
   sent_at: string
 }
 
@@ -136,6 +136,8 @@ const RESUME_PENDING_BYTES = 512 * 1024
 
 interface EphemeralMessagesContextType {
   getMessages: (signingPubkey: string, chatId: string) => EphemeralChatMessage[]
+  openServerChat: (serverId: string, signingPubkey: string, chatId: string) => void
+  getUnreadCount: (serverId: string) => number
   sendMessage: (input: SendEphemeralChatInput) => Promise<void>
   sendAttachmentMessage: (input: SendEphemeralAttachmentInput) => Promise<void>
   requestAttachmentDownload: (msg: EphemeralChatMessage) => Promise<void>
@@ -148,7 +150,6 @@ interface EphemeralMessagesContextType {
   sharedAttachments: SharedAttachmentItem[]
   refreshSharedAttachments: () => Promise<void>
   unshareAttachmentById: (attachmentId: string) => Promise<void>
-  markMessagesRead: (signingPubkey: string, chatId: string, messageIds: string[]) => void
 }
 
 export interface AttachmentTransferState {
@@ -188,8 +189,14 @@ export interface TransferHistoryEntry {
 const EphemeralMessagesContext = createContext<EphemeralMessagesContextType | null>(null)
 
 type MessageBuckets = Record<string, EphemeralChatMessage[]>
-const PERSIST_KEY_PREFIX = 'cordia:ephemeral-messages'
+const PERSIST_KEY_PREFIX = 'cordia:ephemeral-bucket'
 const TRANSFER_HISTORY_KEY_PREFIX = 'cordia:attachment-transfer-history'
+const UNREAD_STATE_KEY_PREFIX = 'cordia:ephemeral-unread-state'
+
+type UnreadState = {
+  unread_count_by_server: Record<string, number>
+  last_seen_at_by_server: Record<string, string>
+}
 
 function bucketKey(signingPubkey: string, chatId: string): string {
   return `${signingPubkey}::${chatId}`
@@ -210,8 +217,16 @@ function persistKeyForAccount(accountId: string | null): string {
   return accountId ? `${PERSIST_KEY_PREFIX}:${accountId}` : PERSIST_KEY_PREFIX
 }
 
+function persistBucketKeyForAccount(accountId: string | null, bucket: string): string {
+  return `${persistKeyForAccount(accountId)}:${bucket}`
+}
+
 function transferHistoryKeyForAccount(accountId: string | null): string {
   return accountId ? `${TRANSFER_HISTORY_KEY_PREFIX}:${accountId}` : TRANSFER_HISTORY_KEY_PREFIX
+}
+
+function unreadStateKeyForAccount(accountId: string | null): string {
+  return accountId ? `${UNREAD_STATE_KEY_PREFIX}:${accountId}` : UNREAD_STATE_KEY_PREFIX
 }
 
 function storageBytes(input: string): number {
@@ -221,60 +236,60 @@ function storageBytes(input: string): number {
 function pruneBuckets(
   buckets: MessageBuckets,
   settings: MessageStorageSettings,
-  nowMs: number
+  signingPubkey: string
 ): MessageBuckets {
-  const cutoffMs = nowMs - settings.retention_hours * 60 * 60 * 1000
-  const perChatPruned: MessageBuckets = {}
+  const serverEntries = Object.entries(buckets)
+    .filter(([k]) => k.startsWith(`${signingPubkey}::`))
+    .flatMap(([k, arr]) => arr.map((m) => ({ k, m })))
+  serverEntries.sort((a, b) => Date.parse(a.m.sent_at) - Date.parse(b.m.sent_at))
 
-  for (const [key, list] of Object.entries(buckets)) {
-    const filtered = list
-      .filter((m) => {
-        const ts = Date.parse(m.sent_at)
-        return Number.isFinite(ts) && ts >= cutoffMs
-      })
-      .slice(-settings.max_messages_per_chat)
-    if (filtered.length > 0) perChatPruned[key] = filtered
-  }
-
-  // Global count cap: keep newest messages across all chats.
-  const all = Object.entries(perChatPruned).flatMap(([k, arr]) => arr.map((m) => ({ k, m })))
-  all.sort((a, b) => Date.parse(a.m.sent_at) - Date.parse(b.m.sent_at))
-  const keptByCount = all.slice(-settings.max_total_messages)
-
-  const rebuiltByCount: MessageBuckets = {}
-  for (const { k, m } of keptByCount) {
-    if (!rebuiltByCount[k]) rebuiltByCount[k] = []
-    rebuiltByCount[k].push(m)
-  }
-
-  // Approx storage cap in bytes of serialized cache.
   const maxBytes = settings.max_storage_mb * 1024 * 1024
-  let compact = rebuiltByCount
-  let serialized = JSON.stringify(compact)
-  if (storageBytes(serialized) <= maxBytes) return compact
-
-  // Drop oldest globally until under cap.
-  let flat = Object.entries(compact).flatMap(([k, arr]) => arr.map((m) => ({ k, m })))
-  flat.sort((a, b) => Date.parse(a.m.sent_at) - Date.parse(b.m.sent_at))
-  while (flat.length > 0) {
-    flat = flat.slice(1)
-    const next: MessageBuckets = {}
-    for (const { k, m } of flat) {
-      if (!next[k]) next[k] = []
-      next[k].push(m)
-    }
-    serialized = JSON.stringify(next)
-    if (storageBytes(serialized) <= maxBytes) return next
+  let kept = serverEntries
+  let candidate: MessageBuckets = {}
+  for (const { k, m } of kept) {
+    if (!candidate[k]) candidate[k] = []
+    candidate[k].push(m)
   }
-  return {}
+  let serialized = JSON.stringify(candidate)
+  if (storageBytes(serialized) > maxBytes) {
+    candidate = {}
+    while (kept.length > 0) {
+      kept = kept.slice(1)
+      const next: MessageBuckets = {}
+      for (const { k, m } of kept) {
+        if (!next[k]) next[k] = []
+        next[k].push(m)
+      }
+      serialized = JSON.stringify(next)
+      if (storageBytes(serialized) <= maxBytes) {
+        candidate = next
+        break
+      }
+    }
+  }
+
+  const merged: MessageBuckets = {}
+  for (const [key, list] of Object.entries(buckets)) {
+    if (!key.startsWith(`${signingPubkey}::`)) {
+      merged[key] = list
+    }
+  }
+  for (const [key, list] of Object.entries(candidate)) {
+    merged[key] = list
+  }
+  return merged
 }
 
 export function EphemeralMessagesProvider({ children }: { children: ReactNode }) {
   const { currentAccountId } = useAccount()
   const { identity } = useIdentity()
-  const [settings, setSettings] = useState<MessageStorageSettings>(DEFAULT_MESSAGE_STORAGE_SETTINGS)
+  const [settingsBySigningPubkey, setSettingsBySigningPubkey] = useState<Record<string, MessageStorageSettings>>({})
   const [downloadSettings, setDownloadSettingsState] = useState<DownloadSettings>(DEFAULT_DOWNLOAD_SETTINGS)
   const [messagesByBucket, setMessagesByBucket] = useState<MessageBuckets>({})
+  const [unreadState, setUnreadState] = useState<UnreadState>({
+    unread_count_by_server: {},
+    last_seen_at_by_server: {},
+  })
   const [attachmentTransfers, setAttachmentTransfers] = useState<AttachmentTransferState[]>([])
   const [transferHistory, setTransferHistory] = useState<TransferHistoryEntry[]>([])
   const [sharedAttachments, setSharedAttachments] = useState<SharedAttachmentItem[]>([])
@@ -304,15 +319,115 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   >(new Map())
   const attachmentTransfersRef = useRef<AttachmentTransferState[]>([])
   const messagesByBucketRef = useRef<MessageBuckets>({})
+  const sharedAttachmentsRef = useRef<SharedAttachmentItem[]>([])
   const transferHistoryRef = useRef<TransferHistoryEntry[]>([])
+  const loadedBucketsRef = useRef<Set<string>>(new Set())
+  const activeSigningPubkeyRef = useRef<string | null>(null)
+  const receiptSentRef = useRef<Set<string>>(new Set())
+  const signingToServerIdRef = useRef<Map<string, string>>(new Map())
   const previousAccountIdRef = useRef<string | null>(null)
   const progressTickRef = useRef<Map<string, number>>(new Map())
   const debugStatsRef = useRef<Map<string, { at: number; bytes: number }>>(new Map())
-  const debugWindowRef = useRef<Map<string, Array<{ at: number; bytes: number }>>>(new Map())
-  const debugSpeedSamplesRef = useRef<Map<string, number[]>>(new Map())
+  const debugSpeedEmaRef = useRef<Map<string, number>>(new Map())
+  const debugEtaEmaRef = useRef<Map<string, number>>(new Map())
   const debugTickRef = useRef<Map<string, number>>(new Map())
   const downloadWriterWakeRef = useRef<Map<string, () => void>>(new Map())
   const downloadQueueRef = useRef<QueuedDownloadRequest[]>([])
+
+  const messageSettingsFor = (signingPubkey: string): MessageStorageSettings =>
+    settingsBySigningPubkey[signingPubkey] ?? DEFAULT_MESSAGE_STORAGE_SETTINGS
+
+  const ensureSettingsLoaded = (signingPubkey: string): MessageStorageSettings => {
+    const existing = settingsBySigningPubkey[signingPubkey]
+    if (existing) return existing
+    const loaded = getMessageStorageSettings(currentAccountId, signingPubkey)
+    setSettingsBySigningPubkey((prev) => ({ ...prev, [signingPubkey]: loaded }))
+    return loaded
+  }
+
+  const persistBucketIfNeeded = (
+    accountId: string | null,
+    signingPubkey: string,
+    chatId: string,
+    list: EphemeralChatMessage[]
+  ) => {
+    const settings = ensureSettingsLoaded(signingPubkey)
+    const bucket = bucketKey(signingPubkey, chatId)
+    const key = persistBucketKeyForAccount(accountId, bucket)
+    try {
+      if (settings.mode === 'ephemeral' || list.length === 0) {
+        window.localStorage.removeItem(key)
+      } else {
+        window.localStorage.setItem(key, JSON.stringify(list))
+      }
+    } catch {
+      // ignore local storage write failures
+    }
+  }
+
+  const appendAndPruneBySigning = (
+    prev: MessageBuckets,
+    signingPubkey: string,
+    chatId: string,
+    msg: EphemeralChatMessage
+  ) => {
+    const next = appendMessage(prev, signingPubkey, chatId, msg)
+    return pruneBuckets(next, ensureSettingsLoaded(signingPubkey), signingPubkey)
+  }
+
+  const ensureBucketLoaded = (signingPubkey: string, chatId: string) => {
+    if (!currentAccountId || !signingPubkey || !chatId) return
+    const bucket = bucketKey(signingPubkey, chatId)
+    if (loadedBucketsRef.current.has(bucket)) return
+    loadedBucketsRef.current.add(bucket)
+    const key = persistBucketKeyForAccount(currentAccountId, bucket)
+    try {
+      const raw = window.localStorage.getItem(key)
+      if (!raw) return
+      const parsed = JSON.parse(raw) as EphemeralChatMessage[]
+      if (!Array.isArray(parsed) || parsed.length === 0) return
+      const limit = ensureSettingsLoaded(signingPubkey).max_messages_on_open
+      const loaded = parsed.slice(-limit)
+      setMessagesByBucket((prev) => {
+        if ((prev[bucket] ?? []).length > 0) return prev
+      const merged = { ...prev, [bucket]: loaded }
+      return pruneBuckets(merged, ensureSettingsLoaded(signingPubkey), signingPubkey)
+      })
+    } catch {
+      // ignore malformed local storage values
+    }
+  }
+
+  const refreshSigningToServerMap = async () => {
+    try {
+      const servers = await listServers()
+      signingToServerIdRef.current = new Map(servers.map((s) => [s.signing_pubkey, s.id]))
+    } catch {
+      signingToServerIdRef.current = new Map()
+    }
+  }
+
+  const incrementUnreadForSigning = (signingPubkey: string) => {
+    const serverId = signingToServerIdRef.current.get(signingPubkey)
+    if (!serverId) return
+    setUnreadState((prev) => ({
+      unread_count_by_server: {
+        ...prev.unread_count_by_server,
+        [serverId]: (prev.unread_count_by_server[serverId] ?? 0) + 1,
+      },
+      last_seen_at_by_server: { ...prev.last_seen_at_by_server },
+    }))
+  }
+
+  const markServerSeenBySigning = (signingPubkey: string) => {
+    const serverId = signingToServerIdRef.current.get(signingPubkey)
+    if (!serverId) return
+    const seenAt = new Date().toISOString()
+    setUnreadState((prev) => ({
+      unread_count_by_server: { ...prev.unread_count_by_server, [serverId]: 0 },
+      last_seen_at_by_server: { ...prev.last_seen_at_by_server, [serverId]: seenAt },
+    }))
+  }
 
   const upsertTransfer = (requestId: string, updater: (prev?: AttachmentTransferState) => AttachmentTransferState) => {
     setAttachmentTransfers((prev) => {
@@ -417,52 +532,71 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     const now = Date.now()
     const prev = debugStatsRef.current.get(requestId)
     const lastTick = debugTickRef.current.get(requestId) ?? 0
-    let kbps: number | undefined
-    let etaSeconds: number | undefined
-    const window = debugWindowRef.current.get(requestId) ?? []
-    window.push({ at: now, bytes: totalBytes })
-    while (window.length > 0 && now - window[0].at > 1000) {
-      window.shift()
-    }
-    debugWindowRef.current.set(requestId, window)
-    if (window.length >= 2) {
-      const oldest = window[0]
-      const dtMs = now - oldest.at
-      const db = totalBytes - oldest.bytes
-      if (dtMs > 0 && db >= 0) {
-        kbps = (db / (dtMs / 1000)) / 1024
-      }
-    }
-    const speedSamples = debugSpeedSamplesRef.current.get(requestId) ?? []
-    if ((kbps ?? 0) > 0) {
-      speedSamples.push(kbps as number)
-      if (speedSamples.length > 6) speedSamples.shift()
-      debugSpeedSamplesRef.current.set(requestId, speedSamples)
-    }
-    const avgKbps =
-      speedSamples.length > 0
-        ? speedSamples.reduce((sum, v) => sum + v, 0) / speedSamples.length
-        : kbps
-    if (prev) {
-      const dtMs = now - prev.at
+    const isDownload = bufferedBytes === undefined
+    const speedAlpha = isDownload ? 0.15 : 0.25
+    const etaBeta = 0.2
+    const maxEtaUpwardRatio = 1.15
+
+    let speedEma = debugSpeedEmaRef.current.get(requestId) ?? null
+    let etaEma = debugEtaEmaRef.current.get(requestId) ?? null
+
+    if (prev && now > prev.at) {
+      const dtSec = (now - prev.at) / 1000
       const db = totalBytes - prev.bytes
-      if (dtMs > 0 && db >= 0) {
-        kbps = kbps ?? (db / (dtMs / 1000)) / 1024
+      if (dtSec > 0 && db >= 0) {
+        const instantKbps = db / dtSec / 1024
+        if (instantKbps > 0) {
+          speedEma =
+            speedEma == null ? instantKbps : speedEma * (1 - speedAlpha) + instantKbps * speedAlpha
+          debugSpeedEmaRef.current.set(requestId, speedEma)
+        }
       }
-    }
-    if (totalExpectedBytes && totalExpectedBytes > totalBytes && (avgKbps ?? 0) > 0) {
-      etaSeconds = (totalExpectedBytes - totalBytes) / ((avgKbps as number) * 1024)
-    } else if (totalExpectedBytes && totalExpectedBytes <= totalBytes) {
-      etaSeconds = 0
     }
     debugStatsRef.current.set(requestId, { at: now, bytes: totalBytes })
+
+    let etaSeconds: number | undefined
+    if (totalExpectedBytes != null && totalExpectedBytes > 0) {
+      if (totalBytes >= totalExpectedBytes) {
+        etaEma = 0
+        etaSeconds = 0
+      } else if ((speedEma ?? 0) > 0) {
+        const remaining = totalExpectedBytes - totalBytes
+        let effectiveRemaining = remaining
+        if (isDownload && speedEma != null) {
+          const inFlightEst = Math.min(remaining, speedEma * 1024 * 0.3)
+          effectiveRemaining = Math.max(0, remaining - inFlightEst)
+        }
+        const instEta = effectiveRemaining / ((speedEma as number) * 1024)
+        const rawEtaEma = etaEma == null ? instEta : etaEma * (1 - etaBeta) + instEta * etaBeta
+        const prevEta = etaEma ?? instEta
+        if (instEta <= prevEta) {
+          etaEma = rawEtaEma
+        } else {
+          etaEma = Math.min(rawEtaEma, prevEta * maxEtaUpwardRatio)
+        }
+        debugEtaEmaRef.current.set(requestId, etaEma)
+        etaSeconds = etaEma
+      }
+    }
+
     if (now - lastTick < 150 && bufferedBytes === undefined) return
     debugTickRef.current.set(requestId, now)
-    upsertTransfer(requestId, (prevState) => ({
-      ...(prevState as AttachmentTransferState),
-      debug_kbps: avgKbps ?? kbps ?? prevState?.debug_kbps,
-      debug_buffered_bytes: bufferedBytes ?? prevState?.debug_buffered_bytes,
-      debug_eta_seconds: etaSeconds ?? prevState?.debug_eta_seconds,
+
+    const prevState = attachmentTransfersRef.current.find((t) => t.request_id === requestId)
+    const prevDisplayedEta = prevState?.debug_eta_seconds
+    let finalEta = etaSeconds ?? prevDisplayedEta
+    if (finalEta != null && prevDisplayedEta != null && finalEta > prevDisplayedEta) {
+      const delta = finalEta - prevDisplayedEta
+      if (delta < 1 && (prevDisplayedEta <= 0 || delta / prevDisplayedEta < 0.05)) {
+        finalEta = prevDisplayedEta
+      }
+    }
+
+    upsertTransfer(requestId, (state) => ({
+      ...(state as AttachmentTransferState),
+      debug_kbps: speedEma ?? state?.debug_kbps,
+      debug_buffered_bytes: bufferedBytes ?? state?.debug_buffered_bytes,
+      debug_eta_seconds: finalEta ?? state?.debug_eta_seconds,
     }))
   }
 
@@ -525,7 +659,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
             requestId,
             afterWrite.expected > 0 ? Math.min(1, afterWrite.writtenBytes / afterWrite.expected) : 0
           )
-          updateTransferDebug(requestId, afterWrite.writtenBytes, undefined, afterWrite.expected)
+          updateTransferDebug(requestId, afterWrite.receivedBytes, undefined, afterWrite.expected)
         } catch {
           // If transfer was cancelled/cleaned, avoid resurrecting failure state.
           if (!downloadStreamStateRef.current.has(requestId)) return
@@ -843,8 +977,8 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     downloadStreamStateRef.current.delete(requestId)
     progressTickRef.current.delete(requestId)
     debugStatsRef.current.delete(requestId)
-    debugWindowRef.current.delete(requestId)
-    debugSpeedSamplesRef.current.delete(requestId)
+    debugSpeedEmaRef.current.delete(requestId)
+    debugEtaEmaRef.current.delete(requestId)
     debugTickRef.current.delete(requestId)
     for (const session of uploadSessionsRef.current.values()) {
       if (!session.subscribers.has(requestId)) continue
@@ -893,6 +1027,10 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   }, [transferHistory])
 
   useEffect(() => {
+    sharedAttachmentsRef.current = sharedAttachments
+  }, [sharedAttachments])
+
+  useEffect(() => {
     const now = new Date().toISOString()
     for (const t of attachmentTransfers) {
       upsertHistory(t.request_id, (prev) => {
@@ -919,7 +1057,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     }
   }, [attachmentTransfers])
 
-  // Hydrate cache + settings on account change.
+  // Reset account-scoped state and load lightweight metadata only.
   useEffect(() => {
     setHydrated(false)
     downloadQueueRef.current = []
@@ -927,33 +1065,36 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     uploadSessionsRef.current.clear()
     activeUploadSessionIdsRef.current.clear()
     pendingUploadSessionIdsRef.current = []
-    const nextSettings = getMessageStorageSettings(currentAccountId)
-    setSettings(nextSettings)
+    loadedBucketsRef.current.clear()
+    setSettingsBySigningPubkey({})
     setDownloadSettingsState(getDownloadSettings(currentAccountId))
 
     if (!currentAccountId) {
       setMessagesByBucket({})
+      setUnreadState({ unread_count_by_server: {}, last_seen_at_by_server: {} })
       setTransferHistory([])
       setSharedAttachments([])
       setHydrated(true)
       return
     }
 
+    setMessagesByBucket({})
+    refreshSigningToServerMap().catch(() => {})
     try {
-      const raw = window.localStorage.getItem(persistKeyForAccount(currentAccountId))
-      if (!raw) {
-        setMessagesByBucket({})
-        setHydrated(true)
-        return
+      const rawUnread = window.localStorage.getItem(unreadStateKeyForAccount(currentAccountId))
+      if (!rawUnread) {
+        setUnreadState({ unread_count_by_server: {}, last_seen_at_by_server: {} })
+      } else {
+        const parsedUnread = JSON.parse(rawUnread) as UnreadState
+        setUnreadState({
+          unread_count_by_server: parsedUnread?.unread_count_by_server ?? {},
+          last_seen_at_by_server: parsedUnread?.last_seen_at_by_server ?? {},
+        })
       }
-      const parsed = JSON.parse(raw) as MessageBuckets
-      const pruned = pruneBuckets(parsed, nextSettings, Date.now())
-      setMessagesByBucket(pruned)
     } catch {
-      setMessagesByBucket({})
-    } finally {
-      setHydrated(true)
+      setUnreadState({ unread_count_by_server: {}, last_seen_at_by_server: {} })
     }
+    setHydrated(true)
 
     try {
       const raw = window.localStorage.getItem(transferHistoryKeyForAccount(currentAccountId))
@@ -992,12 +1133,26 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   }, [currentAccountId])
 
   useEffect(() => {
+    const unlistenPromise = listen<{ attachment_id: string; ok: boolean; error?: string }>(
+      'cordia:attachment-ready',
+      () => {
+        listSharedAttachments().then(setSharedAttachments).catch(() => {})
+      }
+    )
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten()).catch(() => {})
+    }
+  }, [])
+
+  useEffect(() => {
     const onChanged = (e: Event) => {
-      const detail = (e as CustomEvent<MessageStorageSettings>).detail
+      const detail = (e as CustomEvent<{ signing_pubkey: string; settings: MessageStorageSettings }>).detail
       if (!detail) return
-      const next = detail
-      setSettings(next)
-      setMessagesByBucket((prev) => pruneBuckets(prev, next, Date.now()))
+      const signing = detail.signing_pubkey
+      const next = detail.settings
+      if (!signing) return
+      setSettingsBySigningPubkey((prev) => ({ ...prev, [signing]: next }))
+      setMessagesByBucket((prev) => pruneBuckets(prev, next, signing))
     }
     window.addEventListener('cordia:message-storage-settings-changed', onChanged as EventListener)
     return () => {
@@ -1018,19 +1173,99 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   }, [])
 
   useEffect(() => {
+    refreshSigningToServerMap().catch(() => {})
+    const onServersUpdated = () => {
+      refreshSigningToServerMap().catch(() => {})
+    }
+    window.addEventListener('cordia:servers-updated', onServersUpdated)
+    return () => {
+      window.removeEventListener('cordia:servers-updated', onServersUpdated)
+    }
+  }, [])
+
+  useEffect(() => {
+    const onActiveServerChanged = (e: Event) => {
+      const detail = (e as CustomEvent<{ signing_pubkey?: string | null }>).detail
+      const signing = detail?.signing_pubkey?.trim() || null
+      activeSigningPubkeyRef.current = signing
+      if (signing) {
+        markServerSeenBySigning(signing)
+        if (currentAccountId && identity?.user_id) {
+          const settings = getMessageStorageSettings(currentAccountId, signing)
+          if (settings.mode === 'persistent') {
+            const buckets = messagesByBucketRef.current
+            for (const [bucket, list] of Object.entries(buckets)) {
+              if (!bucket.startsWith(`${signing}::`)) continue
+              const [, chatId] = bucket.split('::')
+              if (!chatId) continue
+              for (const msg of list) {
+                if (msg.from_user_id === identity.user_id) continue
+                const receiptKey = `${signing}::${chatId}::${msg.id}`
+                if (receiptSentRef.current.has(receiptKey)) continue
+                receiptSentRef.current.add(receiptKey)
+                window.dispatchEvent(
+                  new CustomEvent('cordia:send-ephemeral-receipt', {
+                    detail: {
+                      signing_pubkey: signing,
+                      chat_id: chatId,
+                      message_id: msg.id,
+                      receipt_type: 'delivered',
+                    },
+                  })
+                )
+              }
+            }
+          }
+        }
+      }
+    }
+    window.addEventListener('cordia:active-server-changed', onActiveServerChanged as EventListener)
+    return () => {
+      window.removeEventListener('cordia:active-server-changed', onActiveServerChanged as EventListener)
+    }
+  }, [currentAccountId, identity?.user_id])
+
+  useEffect(() => {
     if (!hydrated || !currentAccountId) return
-    const pruned = pruneBuckets(messagesByBucket, settings, Date.now())
-    const json = JSON.stringify(pruned)
+    for (const [bucket, list] of Object.entries(messagesByBucket)) {
+      const [signingPubkey, chatId] = bucket.split('::')
+      if (!signingPubkey || !chatId) continue
+      persistBucketIfNeeded(currentAccountId, signingPubkey, chatId, list)
+      const settings = getMessageStorageSettings(currentAccountId, signingPubkey)
+      const didPersist = settings.mode === 'persistent' && list.length > 0
+      const serverOpen = activeSigningPubkeyRef.current === signingPubkey
+      if (didPersist && serverOpen && identity?.user_id) {
+        for (const msg of list) {
+          if (msg.from_user_id === identity.user_id) continue
+          const receiptKey = `${signingPubkey}::${chatId}::${msg.id}`
+          if (receiptSentRef.current.has(receiptKey)) continue
+          receiptSentRef.current.add(receiptKey)
+          window.dispatchEvent(
+            new CustomEvent('cordia:send-ephemeral-receipt', {
+              detail: {
+                signing_pubkey: signingPubkey,
+                chat_id: chatId,
+                message_id: msg.id,
+                receipt_type: 'delivered',
+              },
+            })
+          )
+        }
+      }
+    }
+  }, [messagesByBucket, hydrated, currentAccountId, settingsBySigningPubkey, identity?.user_id])
+
+  useEffect(() => {
+    if (!currentAccountId) return
     try {
-      window.localStorage.setItem(persistKeyForAccount(currentAccountId), json)
+      window.localStorage.setItem(
+        unreadStateKeyForAccount(currentAccountId),
+        JSON.stringify(unreadState)
+      )
     } catch {
       // ignore local storage write failures
     }
-    // If pruning changed contents, converge state.
-    if (JSON.stringify(messagesByBucket) !== json) {
-      setMessagesByBucket(pruned)
-    }
-  }, [messagesByBucket, settings, hydrated, currentAccountId])
+  }, [unreadState, currentAccountId])
 
   useEffect(() => {
     if (!currentAccountId) return
@@ -1099,9 +1334,6 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
           kind,
           attachment: kind === 'attachment' ? parsed.attachment : undefined,
           sent_at: effectiveSentAt,
-          delivery_status: 'delivered',
-          delivered_by: [],
-          read_by: [],
         }
         setMessagesByBucket((prev) => {
           const key = bucketKey(detail.signing_pubkey, detail.chat_id)
@@ -1109,21 +1341,10 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
           if (existing.some((m) => m.id === detail.message_id)) {
             return prev
           }
-          const next = appendMessage(prev, detail.signing_pubkey, detail.chat_id, msg)
-          return pruneBuckets(next, settings, Date.now())
+          return appendAndPruneBySigning(prev, detail.signing_pubkey, detail.chat_id, msg)
         })
-
-        if (identity?.user_id && detail.from_user_id !== identity.user_id) {
-          window.dispatchEvent(
-            new CustomEvent('cordia:send-ephemeral-receipt', {
-              detail: {
-                signing_pubkey: detail.signing_pubkey,
-                chat_id: detail.chat_id,
-                message_id: detail.message_id,
-                receipt_type: 'delivered',
-              },
-            })
-          )
+        if (detail.signing_pubkey !== activeSigningPubkeyRef.current) {
+          incrementUnreadForSigning(detail.signing_pubkey)
         }
       } catch {
         // Ignore payloads we cannot decrypt (e.g. not a member of that server).
@@ -1135,7 +1356,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       cancelled = true
       window.removeEventListener('cordia:ephemeral-chat-incoming', onIncoming as EventListener)
     }
-  }, [settings, identity?.user_id])
+  }, [identity?.user_id, settingsBySigningPubkey])
 
   // Retry pending outbox messages while we're online, bounded by max_sync_kb.
   useEffect(() => {
@@ -1146,19 +1367,21 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       if (cancelled || inFlight) return
       inFlight = true
       try {
-        const maxBudgetBytes = Math.max(32, settings.max_sync_kb) * 1024
-        let usedBytes = 0
+        const budgetUsedBySigning = new Map<string, number>()
         const pending = Object.values(messagesByBucket)
           .flat()
           .filter((m) => m.from_user_id === identity.user_id && m.delivery_status === 'pending')
           .sort((a, b) => Date.parse(a.sent_at) - Date.parse(b.sent_at))
         for (const m of pending) {
+          const settingsForMessage = messageSettingsFor(m.signing_pubkey)
+          const maxBudgetBytes = Math.max(32, settingsForMessage.max_sync_kb) * 1024
+          const usedBytes = budgetUsedBySigning.get(m.signing_pubkey) ?? 0
           const payload = m.kind === 'attachment' && m.attachment
             ? JSON.stringify({ kind: 'attachment', attachment: m.attachment, sent_at: m.sent_at } satisfies EphemeralPayload)
             : JSON.stringify({ kind: 'text', text: m.text, sent_at: m.sent_at } satisfies EphemeralPayload)
           const estimate = storageBytes(payload) + 128
-          if (usedBytes + estimate > maxBudgetBytes) break
-          usedBytes += estimate
+          if (usedBytes + estimate > maxBudgetBytes) continue
+          budgetUsedBySigning.set(m.signing_pubkey, usedBytes + estimate)
           try {
             const encrypted_payload = await encryptEphemeralChatMessageBySigningPubkey(m.signing_pubkey, payload)
             if (cancelled) return
@@ -1187,13 +1410,13 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       cancelled = true
       window.clearInterval(id)
     }
-  }, [messagesByBucket, settings.max_sync_kb, identity?.user_id])
+  }, [messagesByBucket, identity?.user_id, settingsBySigningPubkey])
 
   useEffect(() => {
     const onReceipt = (e: Event) => {
       const detail = (e as CustomEvent<IncomingEphemeralReceiptDetail>).detail
       if (!detail?.signing_pubkey || !detail?.chat_id || !detail?.message_id || !detail?.from_user_id) return
-      if (detail.receipt_type !== 'delivered' && detail.receipt_type !== 'read') return
+      if (detail.receipt_type !== 'delivered') return
       setMessagesByBucket((prev) => {
         const key = bucketKey(detail.signing_pubkey, detail.chat_id)
         const list = prev[key]
@@ -1202,35 +1425,16 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         const nextList: EphemeralChatMessage[] = list.map((m) => {
           if (m.id !== detail.message_id) return m
           const deliveredBy = m.delivered_by ?? []
-          const readBy = m.read_by ?? []
-          if (detail.receipt_type === 'delivered') {
-            if (deliveredBy.includes(detail.from_user_id)) return m
-            changed = true
-            const nextDelivered = [...deliveredBy, detail.from_user_id]
-            const nextStatus: 'read' | 'delivered' =
-              m.delivery_status === 'read' ? 'read' : 'delivered'
-            return {
-              ...m,
-              delivered_by: nextDelivered,
-              delivery_status: nextStatus,
-            }
-          }
-          // read
-          if (readBy.includes(detail.from_user_id)) return m
+          if (deliveredBy.includes(detail.from_user_id)) return m
           changed = true
-          const nextDelivered = deliveredBy.includes(detail.from_user_id)
-            ? deliveredBy
-            : [...deliveredBy, detail.from_user_id]
           return {
             ...m,
-            delivered_by: nextDelivered,
-            read_by: [...readBy, detail.from_user_id],
-            delivery_status: 'read',
+            delivered_by: [...deliveredBy, detail.from_user_id],
+            delivery_status: 'delivered',
           }
         })
         if (!changed) return prev
-        const next = { ...prev, [key]: nextList }
-        return pruneBuckets(next, settings, Date.now())
+        return { ...prev, [key]: nextList }
       })
     }
 
@@ -1238,7 +1442,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     return () => {
       window.removeEventListener('cordia:ephemeral-receipt-incoming', onReceipt as EventListener)
     }
-  }, [settings])
+  }, [])
 
   useEffect(() => {
     if (!identity?.user_id) return
@@ -1262,12 +1466,19 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       const attachmentId = detail?.attachment_id?.trim()
       if (!fromUserId || !requestId || !attachmentId) return
 
-      const attachment = await getAttachmentRecord(attachmentId).catch(() => null)
-      if (!attachment) {
+      const sharedItem = sharedAttachmentsRef.current.find((s) => s.attachment_id === attachmentId)
+      if (!sharedItem?.can_share_now) {
         window.dispatchEvent(new CustomEvent('cordia:send-attachment-transfer-response', {
           detail: { to_user_id: fromUserId, request_id: requestId, accepted: false },
         }))
         return
+      }
+      const attachment = {
+        attachment_id: sharedItem.attachment_id,
+        file_name: sharedItem.file_name,
+        extension: sharedItem.extension,
+        size_bytes: sharedItem.size_bytes,
+        sha256: sharedItem.sha256,
       }
       const approved = await confirmDialog(
         `${fromUserId} wants to download "${attachment.file_name}". Allow transfer now?`,
@@ -1551,6 +1762,20 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     })
   }
 
+  const openServerChat: EphemeralMessagesContextType['openServerChat'] = (serverId, signingPubkey, chatId) => {
+    if (!serverId || !signingPubkey || !chatId) return
+    ensureSettingsLoaded(signingPubkey)
+    ensureBucketLoaded(signingPubkey, chatId)
+    activeSigningPubkeyRef.current = signingPubkey
+    setUnreadState((prev) => ({
+      unread_count_by_server: { ...prev.unread_count_by_server, [serverId]: 0 },
+      last_seen_at_by_server: { ...prev.last_seen_at_by_server, [serverId]: new Date().toISOString() },
+    }))
+  }
+
+  const getUnreadCount: EphemeralMessagesContextType['getUnreadCount'] = (serverId) =>
+    unreadState.unread_count_by_server[serverId] ?? 0
+
   const sendMessage: EphemeralMessagesContextType['sendMessage'] = async ({
     serverId,
     signingPubkey,
@@ -1589,12 +1814,11 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       local_only: true,
       delivery_status: 'pending',
       delivered_by: [],
-      read_by: [],
     }
     setMessagesByBucket((prev) => {
-      const next = appendMessage(prev, signingPubkey, chatId, localMessage)
-      return pruneBuckets(next, settings, Date.now())
+      return appendAndPruneBySigning(prev, signingPubkey, chatId, localMessage)
     })
+    ensureBucketLoaded(signingPubkey, chatId)
   }
 
   const sendAttachmentMessage: EphemeralMessagesContextType['sendAttachmentMessage'] = async ({
@@ -1631,12 +1855,11 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       local_only: true,
       delivery_status: 'pending',
       delivered_by: [],
-      read_by: [],
     }
     setMessagesByBucket((prev) => {
-      const next = appendMessage(prev, signingPubkey, chatId, localMessage)
-      return pruneBuckets(next, settings, Date.now())
+      return appendAndPruneBySigning(prev, signingPubkey, chatId, localMessage)
     })
+    ensureBucketLoaded(signingPubkey, chatId)
     listSharedAttachments()
       .then((list) => setSharedAttachments(list))
       .catch(() => {})
@@ -1730,53 +1953,11 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     }
   }
 
-  const markMessagesRead: EphemeralMessagesContextType['markMessagesRead'] = (signingPubkey, chatId, messageIds) => {
-    if (!identity?.user_id || messageIds.length === 0) return
-    const uniqueIds = Array.from(new Set(messageIds.filter(Boolean)))
-    if (uniqueIds.length === 0) return
-    setMessagesByBucket((prev) => {
-      const key = bucketKey(signingPubkey, chatId)
-      const list = prev[key]
-      if (!list || list.length === 0) return prev
-      let changed = false
-      const nextList: EphemeralChatMessage[] = list.map((m) => {
-        if (!uniqueIds.includes(m.id)) return m
-        if (m.from_user_id === identity.user_id) return m
-        const readBy = m.read_by ?? []
-        const deliveredBy = m.delivered_by ?? []
-        if (readBy.includes(identity.user_id)) return m
-        changed = true
-        const nextDelivered = deliveredBy.includes(identity.user_id)
-          ? deliveredBy
-          : [...deliveredBy, identity.user_id]
-        return {
-          ...m,
-          delivered_by: nextDelivered,
-          read_by: [...readBy, identity.user_id],
-          delivery_status: m.delivery_status,
-        }
-      })
-      if (!changed) return prev
-      return { ...prev, [key]: nextList }
-    })
-
-    for (const message_id of uniqueIds) {
-      window.dispatchEvent(
-        new CustomEvent('cordia:send-ephemeral-receipt', {
-          detail: {
-            signing_pubkey: signingPubkey,
-            chat_id: chatId,
-            message_id,
-            receipt_type: 'read',
-          },
-        })
-      )
-    }
-  }
-
   const value = useMemo(
     () => ({
       getMessages,
+      openServerChat,
+      getUnreadCount,
       sendMessage,
       sendAttachmentMessage,
       requestAttachmentDownload,
@@ -1789,9 +1970,8 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       sharedAttachments,
       refreshSharedAttachments,
       unshareAttachmentById,
-      markMessagesRead,
     }),
-    [messagesByBucket, identity?.user_id, attachmentTransfers, transferHistory, sharedAttachments]
+    [messagesByBucket, unreadState, identity?.user_id, attachmentTransfers, transferHistory, sharedAttachments]
   )
 
   return <EphemeralMessagesContext.Provider value={value}>{children}</EphemeralMessagesContext.Provider>

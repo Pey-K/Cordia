@@ -458,6 +458,9 @@ export function ServerSyncBootstrap() {
           }
 
           if (msg.type === 'EphemeralReceiptIncoming') {
+            if (String(msg.receipt_type) !== 'delivered') {
+              return
+            }
             window.dispatchEvent(
               new CustomEvent('cordia:ephemeral-receipt-incoming', {
                 detail: {
@@ -773,7 +776,7 @@ export function ServerSyncBootstrap() {
         const message_id = detail?.message_id?.trim()
         const receipt_type = detail?.receipt_type?.trim()
         if (!signing_pubkey || !chat_id || !message_id || !receipt_type) return
-        if (receipt_type !== 'delivered' && receipt_type !== 'read') return
+        if (receipt_type !== 'delivered') return
         sendOrQueue({
           type: 'EphemeralReceiptSend',
           signing_pubkey,

@@ -10,6 +10,7 @@ mod account_manager;
 #[cfg(windows)]
 mod file_association;
 
+use tauri::Manager;
 use identity::{IdentityManager, UserIdentity};
 use audio_settings::{AudioSettingsManager, AudioSettings};
 use server::{ServerManager, ServerInfo};
@@ -24,6 +25,9 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct EncryptedServerHint {
@@ -69,6 +73,7 @@ enum AttachmentStorageMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AttachmentRecord {
     attachment_id: String,
+    #[serde(default)]
     sha256: String,
     file_name: String,
     extension: String,
@@ -81,6 +86,13 @@ struct AttachmentRecord {
     #[serde(default)]
     thumbnail_path: Option<String>,
     created_at: String,
+    /// "preparing" | "ready" | "failed" — default "ready" for backward compat
+    #[serde(default = "default_attachment_status")]
+    status: String,
+}
+
+fn default_attachment_status() -> String {
+    "ready".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -153,6 +165,20 @@ fn sha256_file(path: &PathBuf) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("Failed to read file for hashing: {}", e))?;
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn sha256_file_streaming(path: &PathBuf) -> Result<String, String> {
+    let mut f = std::fs::File::open(path).map_err(|e| format!("Failed to open file for hashing: {}", e))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 1024 * 1024];
+    loop {
+        let n = f.read(&mut buf).map_err(|e| format!("Failed to read file for hashing: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
     Ok(hex::encode(hasher.finalize()))
 }
 
@@ -231,26 +257,31 @@ fn extract_thumbnail(source: &PathBuf, output_path: &PathBuf, ext: &str) -> bool
     let ffmpeg = if cfg!(target_os = "windows") { "ffmpeg.exe" } else { "ffmpeg" };
     let output = output_path.to_string_lossy();
     let input = source.to_string_lossy();
-    let ok = if is_video_ext(ext) {
-        Command::new(ffmpeg)
-            .args(["-i", &input, "-vframes", "1", "-y", &output])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
+    let args: Vec<&str> = if is_video_ext(ext) {
+        vec!["-i", &input, "-vframes", "1", "-y", &output]
     } else if is_image_ext(ext) {
-        Command::new(ffmpeg)
-            .args(["-i", &input, "-vf", "scale=128:-1", "-y", &output])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
+        vec!["-i", &input, "-vf", "scale=128:-1", "-y", &output]
     } else {
         return false;
     };
-    ok.map(|s| s.success()).unwrap_or(false)
+    let mut cmd = Command::new(ffmpeg);
+    cmd.args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd.status().map(|s| s.success()).unwrap_or(false)
 }
 
 #[tauri::command]
-fn register_attachment_from_path(path: String, storage_mode: String) -> Result<AttachmentRegistrationResult, String> {
+fn register_attachment_from_path(
+    window: tauri::Window,
+    path: String,
+    storage_mode: String,
+) -> Result<AttachmentRegistrationResult, String> {
     let account_id = require_session()?;
     let source = PathBuf::from(path.trim());
     if !source.exists() {
@@ -271,7 +302,6 @@ fn register_attachment_from_path(path: String, storage_mode: String) -> Result<A
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
     let size_bytes = meta.len();
-    let sha256 = sha256_file(&source)?;
     let mode = if storage_mode == "program_copy" {
         AttachmentStorageMode::ProgramCopy
     } else {
@@ -280,61 +310,66 @@ fn register_attachment_from_path(path: String, storage_mode: String) -> Result<A
 
     let base = account_attachment_dir(&account_id)?;
     let mut index = load_attachment_index(&base);
-    let cache_dir = base.join("cache");
-    let cached_file_name = if let Some(existing) = index.sha_to_cached_file_name.get(&sha256) {
-        Some(existing.clone())
-    } else if matches!(mode, AttachmentStorageMode::ProgramCopy) {
-        let ext_suffix = if extension.is_empty() { "".to_string() } else { format!(".{}", extension) };
-        let file_name_cache = format!("{}{}", sha256, ext_suffix);
-        let target = cache_dir.join(&file_name_cache);
-        if !target.exists() {
-            std::fs::copy(&source, &target).map_err(|e| format!("Failed to copy attachment to cache: {}", e))?;
-        }
-        index.sha_to_cached_file_name.insert(sha256.clone(), file_name_cache.clone());
-        Some(file_name_cache)
-    } else {
-        None
-    };
-
     let attachment_id = uuid::Uuid::new_v4().to_string();
+    let source_path_str = source.to_string_lossy().to_string();
+
     let record = AttachmentRecord {
         attachment_id: attachment_id.clone(),
-        sha256: sha256.clone(),
+        sha256: String::new(),
         file_name: file_name.clone(),
         extension: extension.clone(),
         size_bytes,
         storage_mode: mode.clone(),
         source_path: if matches!(mode, AttachmentStorageMode::CurrentPath) {
-            Some(source.to_string_lossy().to_string())
+            Some(source_path_str.clone())
         } else {
             None
         },
-        cached_file_name: cached_file_name.clone(),
+        cached_file_name: None,
         thumbnail_path: None,
         created_at: chrono::Utc::now().to_rfc3339(),
+        status: "preparing".to_string(),
     };
     index.records.insert(attachment_id.clone(), record);
     save_attachment_index(&base, &index)?;
 
-    // Extract thumbnail for video/image (uses ffmpeg if available)
-    if is_video_ext(&extension) || is_image_ext(&extension) {
-        let extract_from = if let Some(cache_name) = &cached_file_name {
-            cache_dir.join(cache_name)
-        } else {
-            source.clone()
-        };
-        let thumb_path = base.join("thumbs").join(format!("{}.jpg", attachment_id));
-        if extract_thumbnail(&extract_from, &thumb_path, &extension) {
-            if let Some(rec) = index.records.get_mut(&attachment_id) {
-                rec.thumbnail_path = Some(thumb_path.to_string_lossy().to_string());
-                save_attachment_index(&base, &index)?;
+    let app_handle = window.app_handle().clone();
+    let attachment_id_clone = attachment_id.clone();
+    let file_name_clone = file_name.clone();
+    let extension_clone = extension.clone();
+    let mode_clone = mode.clone();
+    std::thread::spawn(move || {
+        let result = prepare_attachment_background(
+            &account_id,
+            &source_path_str,
+            mode_clone,
+            &attachment_id_clone,
+            &file_name_clone,
+            &extension_clone,
+            size_bytes,
+        );
+        if let Err(ref err) = result {
+            if let Ok(base) = account_attachment_dir(&account_id) {
+                let mut index = load_attachment_index(&base);
+                if let Some(rec) = index.records.get_mut(&attachment_id_clone) {
+                    rec.status = "failed".to_string();
+                    let _ = save_attachment_index(&base, &index);
+                }
             }
+            eprintln!("Attachment prep failed for {}: {}", attachment_id_clone, err);
         }
-    }
+        if let Err(e) = app_handle.emit_all("cordia:attachment-ready", serde_json::json!({
+            "attachment_id": attachment_id_clone,
+            "ok": result.is_ok(),
+            "error": result.as_ref().err().map(|s| s.as_str()),
+        })) {
+            eprintln!("Failed to emit attachment-ready: {:?}", e);
+        }
+    });
 
     Ok(AttachmentRegistrationResult {
         attachment_id,
-        sha256,
+        sha256: String::new(),
         file_name,
         extension,
         size_bytes,
@@ -343,6 +378,73 @@ fn register_attachment_from_path(path: String, storage_mode: String) -> Result<A
             AttachmentStorageMode::ProgramCopy => "program_copy".to_string(),
         },
     })
+}
+
+fn prepare_attachment_background(
+    account_id: &str,
+    source_path: &str,
+    mode: AttachmentStorageMode,
+    attachment_id: &str,
+    _file_name: &str,
+    extension: &str,
+    _size_bytes: u64,
+) -> Result<(), String> {
+    let base = account_attachment_dir(account_id)?;
+    let cache_dir = base.join("cache");
+    let source = PathBuf::from(source_path);
+
+    let sha256 = sha256_file_streaming(&source)?;
+    let mut index = load_attachment_index(&base);
+
+    let cached_file_name = if let Some(existing) = index.sha_to_cached_file_name.get(&sha256) {
+        Some(existing.clone())
+    } else if matches!(mode, AttachmentStorageMode::ProgramCopy) {
+        let ext_suffix = if extension.is_empty() {
+            "".to_string()
+        } else {
+            format!(".{}", extension)
+        };
+        let file_name_cache = format!("{}{}", sha256, ext_suffix);
+        let target = cache_dir.join(&file_name_cache);
+        if !target.exists() {
+            std::fs::copy(&source, &target)
+                .map_err(|e| format!("Failed to copy attachment to cache: {}", e))?;
+        }
+        index.sha_to_cached_file_name.insert(sha256.clone(), file_name_cache.clone());
+        Some(file_name_cache)
+    } else {
+        None
+    };
+
+    if let Some(rec) = index.records.get_mut(attachment_id) {
+        rec.sha256 = sha256.clone();
+        rec.cached_file_name = cached_file_name.clone();
+        rec.source_path = if matches!(mode, AttachmentStorageMode::CurrentPath) {
+            Some(source_path.to_string())
+        } else {
+            None
+        };
+        rec.status = "ready".to_string();
+    }
+    save_attachment_index(&base, &index)?;
+
+    if is_video_ext(extension) || is_image_ext(extension) {
+        let extract_from = if let Some(cache_name) = &cached_file_name {
+            cache_dir.join(cache_name)
+        } else {
+            source
+        };
+        let thumb_path = base.join("thumbs").join(format!("{}.jpg", attachment_id));
+        if extract_thumbnail(&extract_from, &thumb_path, extension) {
+            let mut index = load_attachment_index(&base);
+            if let Some(rec) = index.records.get_mut(attachment_id) {
+                rec.thumbnail_path = Some(thumb_path.to_string_lossy().to_string());
+                let _ = save_attachment_index(&base, &index);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -375,6 +477,9 @@ fn read_attachment_bytes(attachment_id: String) -> Result<Vec<u8>, String> {
         .records
         .get(&attachment_id)
         .ok_or_else(|| "Attachment not found".to_string())?;
+    if rec.status != "ready" {
+        return Err("Attachment is still preparing".to_string());
+    }
 
     let path = if let Some(cache_name) = &rec.cached_file_name {
         base.join("cache").join(cache_name)
@@ -398,6 +503,9 @@ fn read_attachment_chunk(attachment_id: String, offset: u64, length: usize) -> R
         .records
         .get(&attachment_id)
         .ok_or_else(|| "Attachment not found".to_string())?;
+    if rec.status != "ready" {
+        return Err("Attachment is still preparing".to_string());
+    }
 
     let path = if let Some(cache_name) = &rec.cached_file_name {
         base.join("cache").join(cache_name)
@@ -427,13 +535,14 @@ fn list_shared_attachments() -> Result<Vec<SharedAttachmentItem>, String> {
         .records
         .values()
         .map(|rec| {
-            let can_share_now = if let Some(cache_name) = &rec.cached_file_name {
+            let file_exists = if let Some(cache_name) = &rec.cached_file_name {
                 base.join("cache").join(cache_name).exists()
             } else if let Some(src) = &rec.source_path {
                 PathBuf::from(src).exists()
             } else {
                 false
             };
+            let can_share_now = rec.status == "ready" && file_exists && !rec.sha256.is_empty();
             {
                 let file_path = if let Some(cache_name) = &rec.cached_file_name {
                     base.join("cache").join(cache_name).to_string_lossy().to_string()

@@ -40,9 +40,17 @@ export function TransferCenterModal() {
   if (!isOpen || !anchorRect) return null
 
   const popupWidth = Math.min(isSmall ? 430 : 760, width - 24)
-  const rowsVisible = Math.max(1, Math.min(5, Math.max(downloadRowsCount, sharedAttachments.length)))
-  const baseHeight = 180
-  const popupHeight = Math.min(baseHeight + rowsVisible * 64, height - 24)
+  const totalRows = Math.max(1, Math.max(downloadRowsCount, sharedAttachments.length))
+  const rowHeight = 62
+  const headerHeight = 40
+  const footerHeight = 40
+  const sectionHeaders = 28
+  const contentPadding = 16
+  const contentHeight = Math.min(totalRows * rowHeight, 8 * rowHeight)
+  const popupHeight = Math.min(
+    headerHeight + footerHeight + sectionHeaders + contentPadding + contentHeight,
+    height - 24
+  )
   const gutter = 10
   const topBarHeight = 96
 
@@ -94,6 +102,7 @@ export function TransferCenterModal() {
                   minWidth: 760,
                   minHeight: 520,
                   resizable: true,
+                  decorations: false,
                   url: '/transfers',
                 })
               }

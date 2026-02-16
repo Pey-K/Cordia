@@ -1,23 +1,30 @@
+export type MessageStorageMode = 'persistent' | 'ephemeral'
+
 export interface MessageStorageSettings {
-  retention_hours: number
-  max_messages_per_chat: number
-  max_total_messages: number
+  mode: MessageStorageMode
+  max_messages_on_open: number
   max_storage_mb: number
   max_sync_kb: number
 }
 
+export interface MessageStorageSettingsChangedDetail {
+  signing_pubkey: string
+  settings: MessageStorageSettings
+}
+
 export const DEFAULT_MESSAGE_STORAGE_SETTINGS: MessageStorageSettings = {
-  retention_hours: 72,        // 3 days
-  max_messages_per_chat: 500,
-  max_total_messages: 5000,
-  max_storage_mb: 16,
+  mode: 'persistent',
+  max_messages_on_open: 500,
+  max_storage_mb: 150,
   max_sync_kb: 256,
 }
 
 const KEY_PREFIX = 'cordia:message-storage-settings'
 
-function keyFor(accountId: string | null): string {
-  return accountId ? `${KEY_PREFIX}:${accountId}` : KEY_PREFIX
+function keyFor(accountId: string | null, signingPubkey: string): string {
+  return accountId
+    ? `${KEY_PREFIX}:${accountId}:${signingPubkey}`
+    : `${KEY_PREFIX}:${signingPubkey}`
 }
 
 function clampInt(value: number, min: number, max: number): number {
@@ -30,17 +37,20 @@ export function normalizeMessageStorageSettings(
 ): MessageStorageSettings {
   if (!value) return { ...DEFAULT_MESSAGE_STORAGE_SETTINGS }
   return {
-    retention_hours: clampInt(value.retention_hours ?? DEFAULT_MESSAGE_STORAGE_SETTINGS.retention_hours, 1, 24 * 365),
-    max_messages_per_chat: clampInt(value.max_messages_per_chat ?? DEFAULT_MESSAGE_STORAGE_SETTINGS.max_messages_per_chat, 20, 20000),
-    max_total_messages: clampInt(value.max_total_messages ?? DEFAULT_MESSAGE_STORAGE_SETTINGS.max_total_messages, 100, 100000),
+    mode: value.mode === 'ephemeral' ? 'ephemeral' : 'persistent',
+    max_messages_on_open: clampInt(value.max_messages_on_open ?? (value as { max_total_messages?: number }).max_total_messages ?? DEFAULT_MESSAGE_STORAGE_SETTINGS.max_messages_on_open, 50, 5000),
     max_storage_mb: clampInt(value.max_storage_mb ?? DEFAULT_MESSAGE_STORAGE_SETTINGS.max_storage_mb, 1, 512),
     max_sync_kb: clampInt(value.max_sync_kb ?? DEFAULT_MESSAGE_STORAGE_SETTINGS.max_sync_kb, 32, 4096),
   }
 }
 
-export function getMessageStorageSettings(accountId: string | null): MessageStorageSettings {
+export function getMessageStorageSettings(
+  accountId: string | null,
+  signingPubkey: string
+): MessageStorageSettings {
+  if (!signingPubkey) return { ...DEFAULT_MESSAGE_STORAGE_SETTINGS }
   try {
-    const raw = window.localStorage.getItem(keyFor(accountId))
+    const raw = window.localStorage.getItem(keyFor(accountId, signingPubkey))
     if (!raw) return { ...DEFAULT_MESSAGE_STORAGE_SETTINGS }
     return normalizeMessageStorageSettings(JSON.parse(raw))
   } catch {
@@ -50,15 +60,18 @@ export function getMessageStorageSettings(accountId: string | null): MessageStor
 
 export function setMessageStorageSettings(
   accountId: string | null,
+  signingPubkey: string,
   value: Partial<MessageStorageSettings>
 ): MessageStorageSettings {
+  if (!signingPubkey) return { ...DEFAULT_MESSAGE_STORAGE_SETTINGS }
   const next = normalizeMessageStorageSettings(value)
   try {
-    window.localStorage.setItem(keyFor(accountId), JSON.stringify(next))
+    window.localStorage.setItem(keyFor(accountId, signingPubkey), JSON.stringify(next))
   } catch {
     // ignore storage failures
   }
-  window.dispatchEvent(new CustomEvent('cordia:message-storage-settings-changed', { detail: next }))
+  const detail: MessageStorageSettingsChangedDetail = { signing_pubkey: signingPubkey, settings: next }
+  window.dispatchEvent(new CustomEvent('cordia:message-storage-settings-changed', { detail }))
   return next
 }
 
