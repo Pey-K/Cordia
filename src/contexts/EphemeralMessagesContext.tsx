@@ -101,7 +101,36 @@ type QueuedDownloadRequest = {
   size_bytes?: number
 }
 
+type UploadSubscriber = {
+  requestId: string
+  toUserId: string
+  dc: RTCDataChannel
+  ready: boolean
+  flowPaused: boolean
+  nextOffset: number
+  done: boolean
+}
+
+type UploadSession = {
+  attachmentId: string
+  fileName: string
+  sha256: string
+  totalBytes: number
+  chunkSize: number
+  cache: Map<number, Uint8Array>
+  cacheBytes: number
+  nextReadOffset: number
+  eof: boolean
+  running: boolean
+  subscribers: Map<string, UploadSubscriber>
+}
+
 const MAX_PARALLEL_DOWNLOADS = 2
+const MAX_ACTIVE_UPLOAD_SESSIONS = 2
+const MAX_UPLOAD_CACHE_BYTES = 2 * 1024 * 1024
+const UPLOAD_SESSION_IDLE_TIMEOUT_MS = 30_000
+const UPLOAD_MAX_BUFFER = 8 * 1024 * 1024
+const UPLOAD_LOW_WATER = 2 * 1024 * 1024
 const MAX_PENDING_BYTES = 1024 * 1024
 const RESUME_PENDING_BYTES = 512 * 1024
 
@@ -252,7 +281,9 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   const [hydrated, setHydrated] = useState(false)
   const transferPeersRef = useRef<Map<string, RTCPeerConnection>>(new Map())
   const transferDataChannelsRef = useRef<Map<string, RTCDataChannel>>(new Map())
-  const senderFlowPausedRef = useRef<Map<string, boolean>>(new Map())
+  const uploadSessionsRef = useRef<Map<string, UploadSession>>(new Map())
+  const activeUploadSessionIdsRef = useRef<Set<string>>(new Set())
+  const pendingUploadSessionIdsRef = useRef<string[]>([])
   const transferBuffersRef = useRef<Map<string, Uint8Array[]>>(new Map())
   const transferExpectedSizeRef = useRef<Map<string, number>>(new Map())
   const downloadStreamStateRef = useRef<
@@ -280,6 +311,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   const debugWindowRef = useRef<Map<string, Array<{ at: number; bytes: number }>>>(new Map())
   const debugSpeedSamplesRef = useRef<Map<string, number[]>>(new Map())
   const debugTickRef = useRef<Map<string, number>>(new Map())
+  const downloadWriterWakeRef = useRef<Map<string, () => void>>(new Map())
   const downloadQueueRef = useRef<QueuedDownloadRequest[]>([])
 
   const upsertTransfer = (requestId: string, updater: (prev?: AttachmentTransferState) => AttachmentTransferState) => {
@@ -440,8 +472,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     st.writerRunning = true
     downloadStreamStateRef.current.set(requestId, st)
     const run = async () => {
-      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-      const targetBatchBytes = 128 * 1024
+      const targetBatchBytes = 512 * 1024
       while (true) {
         const cur = downloadStreamStateRef.current.get(requestId)
         if (!cur || !cur.started) return
@@ -459,7 +490,9 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         }
         if (cur.pendingBytes <= 0) {
           if (cur.doneReceived) break
-          await sleep(4)
+          await new Promise<void>((resolve) => {
+            downloadWriterWakeRef.current.set(requestId, resolve)
+          })
           continue
         }
         const outSize = Math.min(targetBatchBytes, cur.pendingBytes)
@@ -529,11 +562,204 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       }
     }
     run().finally(() => {
+      downloadWriterWakeRef.current.delete(requestId)
       const latest = downloadStreamStateRef.current.get(requestId)
       if (!latest) return
       latest.writerRunning = false
       downloadStreamStateRef.current.set(requestId, latest)
     })
+  }
+
+  const getOrCreateUploadSession = (
+    attachmentId: string,
+    attachment: { file_name: string; sha256: string; size_bytes: number }
+  ): UploadSession => {
+    const existing = uploadSessionsRef.current.get(attachmentId)
+    if (existing) return existing
+    const created: UploadSession = {
+      attachmentId,
+      fileName: attachment.file_name,
+      sha256: attachment.sha256,
+      totalBytes: attachment.size_bytes,
+      chunkSize: 64 * 1024,
+      cache: new Map<number, Uint8Array>(),
+      cacheBytes: 0,
+      nextReadOffset: 0,
+      eof: false,
+      running: false,
+      subscribers: new Map<string, UploadSubscriber>(),
+    }
+    uploadSessionsRef.current.set(attachmentId, created)
+    return created
+  }
+
+  const hasRunnableUploadSubscriber = (session: UploadSession) =>
+    Array.from(session.subscribers.values()).some(
+      (s) => !s.done && s.ready && s.dc.readyState === 'open'
+    )
+
+  const enqueueUploadSession = (attachmentId: string) => {
+    if (pendingUploadSessionIdsRef.current.includes(attachmentId)) return
+    pendingUploadSessionIdsRef.current.push(attachmentId)
+  }
+
+  const dequeueUploadSession = (attachmentId: string) => {
+    pendingUploadSessionIdsRef.current = pendingUploadSessionIdsRef.current.filter((id) => id !== attachmentId)
+  }
+
+  const removeUploadSubscriber = (session: UploadSession, requestId: string) => {
+    session.subscribers.delete(requestId)
+    if (session.subscribers.size === 0) {
+      uploadSessionsRef.current.delete(session.attachmentId)
+      dequeueUploadSession(session.attachmentId)
+      activeUploadSessionIdsRef.current.delete(session.attachmentId)
+    }
+  }
+
+  const failUploadSubscriber = (session: UploadSession, requestId: string, error: string) => {
+    const current = attachmentTransfersRef.current.find((t) => t.request_id === requestId)
+    const alreadyTerminal =
+      current?.status === 'failed' || current?.status === 'completed' || current?.status === 'rejected'
+    if (!alreadyTerminal) {
+      upsertTransfer(requestId, (prev) => ({
+        ...(prev as AttachmentTransferState),
+        status: 'failed',
+        error,
+      }))
+    }
+    cleanupTransferPeer(requestId)
+    removeUploadSubscriber(session, requestId)
+  }
+
+  const startUploadSessionPump = (session: UploadSession) => {
+    const schedule = () => {
+      if (session.running) return
+      if (!hasRunnableUploadSubscriber(session)) return
+      if (!activeUploadSessionIdsRef.current.has(session.attachmentId)) {
+        enqueueUploadSession(session.attachmentId)
+      }
+      while (
+        activeUploadSessionIdsRef.current.size < MAX_ACTIVE_UPLOAD_SESSIONS &&
+        pendingUploadSessionIdsRef.current.length > 0
+      ) {
+        const nextId = pendingUploadSessionIdsRef.current.shift()!
+        const nextSession = uploadSessionsRef.current.get(nextId)
+        if (!nextSession || nextSession.running || !hasRunnableUploadSubscriber(nextSession)) continue
+        activeUploadSessionIdsRef.current.add(nextId)
+        runSession(nextSession)
+      }
+    }
+
+    const runSession = (runForSession: UploadSession) => {
+      if (runForSession.running) return
+      runForSession.running = true
+        const run = async () => {
+        const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+          const MAX_BUFFER = UPLOAD_MAX_BUFFER
+        let lastProgressAt = Date.now()
+        while (runForSession.subscribers.size > 0) {
+          let progressed = false
+          // Read next block if any subscriber needs data beyond what we cached.
+          const needRead = Array.from(runForSession.subscribers.values()).some(
+            (s) => !s.done && s.ready && s.nextOffset >= runForSession.nextReadOffset && !runForSession.eof
+          )
+          if (needRead && runForSession.cacheBytes < MAX_UPLOAD_CACHE_BYTES) {
+            const next = Math.min(runForSession.totalBytes, runForSession.nextReadOffset + runForSession.chunkSize)
+            try {
+              const block = await readAttachmentChunk(runForSession.attachmentId, runForSession.nextReadOffset, next - runForSession.nextReadOffset)
+              if (block.byteLength === 0) {
+                runForSession.eof = true
+              } else {
+                runForSession.cache.set(runForSession.nextReadOffset, block)
+                runForSession.cacheBytes += block.byteLength
+                runForSession.nextReadOffset += block.byteLength
+                progressed = true
+              }
+            } catch {
+              for (const sub of Array.from(runForSession.subscribers.values())) {
+                failUploadSubscriber(runForSession, sub.requestId, 'Failed reading attachment chunk')
+              }
+              runForSession.cache.clear()
+              runForSession.cacheBytes = 0
+              return
+            }
+          }
+
+          for (const sub of runForSession.subscribers.values()) {
+            if (sub.done || !sub.ready || sub.dc.readyState !== 'open') continue
+            while (!sub.flowPaused && sub.dc.readyState === 'open') {
+              if (sub.dc.bufferedAmount > MAX_BUFFER) break
+              const chunk = runForSession.cache.get(sub.nextOffset)
+              if (!chunk) break
+              const sendChunk = new Uint8Array(chunk.byteLength)
+              sendChunk.set(chunk)
+              sub.dc.send(sendChunk)
+              sub.nextOffset += chunk.byteLength
+              progressed = true
+              const p = runForSession.totalBytes > 0 ? Math.min(1, sub.nextOffset / runForSession.totalBytes) : 1
+              updateTransferProgress(sub.requestId, p)
+              updateTransferDebug(sub.requestId, sub.nextOffset, sub.dc.bufferedAmount, runForSession.totalBytes)
+            }
+            if (!sub.done && runForSession.eof && sub.nextOffset >= runForSession.totalBytes && sub.dc.readyState === 'open') {
+              sub.dc.send(JSON.stringify({ type: 'done' }))
+              sub.done = true
+              upsertTransfer(sub.requestId, (prev) => ({
+                ...(prev as AttachmentTransferState),
+                status: 'completed',
+                progress: 1,
+              }))
+              cleanupTransferPeer(sub.requestId)
+              removeUploadSubscriber(runForSession, sub.requestId)
+              progressed = true
+            }
+          }
+
+          // Evict cache blocks all active subscribers have passed.
+          const minOffset = Array.from(runForSession.subscribers.values())
+            .filter((s) => !s.done)
+            .reduce((min, s) => Math.min(min, s.nextOffset), Number.POSITIVE_INFINITY)
+          if (Number.isFinite(minOffset)) {
+            for (const offset of runForSession.cache.keys()) {
+              const chunk = runForSession.cache.get(offset)
+              if (!chunk) continue
+              if (offset + chunk.byteLength <= minOffset) {
+                runForSession.cache.delete(offset)
+                runForSession.cacheBytes = Math.max(0, runForSession.cacheBytes - chunk.byteLength)
+              }
+            }
+          } else if (runForSession.subscribers.size === 0) {
+            runForSession.cache.clear()
+            runForSession.cacheBytes = 0
+            break
+          }
+
+          if (progressed) {
+            lastProgressAt = Date.now()
+          } else {
+            if (Date.now() - lastProgressAt > UPLOAD_SESSION_IDLE_TIMEOUT_MS) {
+              for (const sub of Array.from(runForSession.subscribers.values())) {
+                failUploadSubscriber(runForSession, sub.requestId, 'Upload session timed out')
+              }
+              runForSession.cache.clear()
+              runForSession.cacheBytes = 0
+              return
+            }
+            await sleep(4)
+          }
+        }
+      }
+      run().finally(() => {
+        runForSession.running = false
+        activeUploadSessionIdsRef.current.delete(runForSession.attachmentId)
+        if (runForSession.subscribers.size === 0) {
+          uploadSessionsRef.current.delete(runForSession.attachmentId)
+          dequeueUploadSession(runForSession.attachmentId)
+        }
+        schedule()
+      })
+    }
+
+    schedule()
   }
 
   const removeTransferHistoryEntry = (requestId: string) => {
@@ -603,9 +829,13 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       transferPeersRef.current.delete(requestId)
     }
     transferDataChannelsRef.current.delete(requestId)
-    senderFlowPausedRef.current.delete(requestId)
     transferBuffersRef.current.delete(requestId)
     transferExpectedSizeRef.current.delete(requestId)
+    const wake = downloadWriterWakeRef.current.get(requestId)
+    if (wake) {
+      downloadWriterWakeRef.current.delete(requestId)
+      wake()
+    }
     const st = downloadStreamStateRef.current.get(requestId)
     if (st?.started) {
       cancelDownloadStream(requestId).catch(() => {})
@@ -616,6 +846,15 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     debugWindowRef.current.delete(requestId)
     debugSpeedSamplesRef.current.delete(requestId)
     debugTickRef.current.delete(requestId)
+    for (const session of uploadSessionsRef.current.values()) {
+      if (!session.subscribers.has(requestId)) continue
+      session.subscribers.delete(requestId)
+      if (session.subscribers.size === 0) {
+        uploadSessionsRef.current.delete(session.attachmentId)
+        dequeueUploadSession(session.attachmentId)
+        activeUploadSessionIdsRef.current.delete(session.attachmentId)
+      }
+    }
   }
 
   const upsertHistory = (
@@ -684,6 +923,10 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   useEffect(() => {
     setHydrated(false)
     downloadQueueRef.current = []
+    downloadWriterWakeRef.current.clear()
+    uploadSessionsRef.current.clear()
+    activeUploadSessionIdsRef.current.clear()
+    pendingUploadSessionIdsRef.current = []
     const nextSettings = getMessageStorageSettings(currentAccountId)
     setSettings(nextSettings)
     setDownloadSettingsState(getDownloadSettings(currentAccountId))
@@ -1068,78 +1311,35 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       }
       const dc = pc.createDataChannel('cordia-attachment', { ordered: true })
       transferDataChannelsRef.current.set(requestId, dc)
-      senderFlowPausedRef.current.set(requestId, false)
       dc.binaryType = 'arraybuffer'
-      const CHUNK_SIZE = 64 * 1024
-      const MAX_BUFFER = 512 * 1024
-      const LOW_WATER = 256 * 1024
-      dc.bufferedAmountLowThreshold = LOW_WATER
+      dc.bufferedAmountLowThreshold = UPLOAD_LOW_WATER
+      const session = getOrCreateUploadSession(attachmentId, attachment)
+      const subscriber: UploadSubscriber = {
+        requestId,
+        toUserId: fromUserId,
+        dc,
+        ready: false,
+        flowPaused: false,
+        nextOffset: 0,
+        done: false,
+      }
+      session.subscribers.set(requestId, subscriber)
       dc.onopen = async () => {
         try {
           upsertTransfer(requestId, (prev) => ({ ...(prev as AttachmentTransferState), status: 'transferring' }))
-          const total = attachment.size_bytes
-          dc.send(JSON.stringify({ type: 'meta', file_name: attachment.file_name, size_bytes: total, sha256: attachment.sha256 }))
-          let sent = 0
-          const readBlockSize = 256 * 1024
-          const waitForDrain = async () => {
-            if (dc.bufferedAmount < LOW_WATER) return
-            await new Promise<void>((resolve, reject) => {
-              const onLow = () => {
-                cleanup()
-                resolve()
-              }
-              const onClose = () => {
-                cleanup()
-                reject(new Error('Data channel closed during send'))
-              }
-              const onError = () => {
-                cleanup()
-                reject(new Error('Data channel error during send'))
-              }
-              const cleanup = () => {
-                dc.removeEventListener('bufferedamountlow', onLow)
-                dc.removeEventListener('close', onClose)
-                dc.removeEventListener('error', onError)
-              }
-              dc.addEventListener('bufferedamountlow', onLow)
-              dc.addEventListener('close', onClose)
-              dc.addEventListener('error', onError)
+          dc.send(
+            JSON.stringify({
+              type: 'meta',
+              file_name: session.fileName,
+              size_bytes: session.totalBytes,
+              sha256: session.sha256,
             })
-          }
-          while (sent < total) {
-            while (senderFlowPausedRef.current.get(requestId) === true) {
-              await new Promise((r) => setTimeout(r, 2))
-            }
-            const blockStart = sent
-            const blockNext = Math.min(total, blockStart + readBlockSize)
-            const block = await readAttachmentChunk(attachmentId, blockStart, blockNext - blockStart)
-            if (block.byteLength === 0) {
-              throw new Error('Attachment stream ended early')
-            }
-            let blockOffset = 0
-            while (blockOffset < block.byteLength) {
-              if (dc.bufferedAmount > MAX_BUFFER) {
-                await waitForDrain()
-              }
-              const end = Math.min(block.byteLength, blockOffset + CHUNK_SIZE)
-              const segment = block.subarray(blockOffset, end)
-              const sendChunk = new Uint8Array(segment.byteLength)
-              sendChunk.set(segment)
-              dc.send(sendChunk)
-              sent += segment.byteLength
-              blockOffset = end
-              const progress = total > 0 ? Math.min(1, sent / total) : 1
-              updateTransferProgress(requestId, progress)
-              updateTransferDebug(requestId, sent, dc.bufferedAmount, total)
-            }
-            // Yield once per read block to keep UI responsive under concurrent transfers.
-            await new Promise((r) => setTimeout(r, 0))
-          }
-          dc.send(JSON.stringify({ type: 'done' }))
-          upsertTransfer(requestId, (prev) => ({ ...(prev as AttachmentTransferState), status: 'completed', progress: 1 }))
-          cleanupTransferPeer(requestId)
+          )
+          subscriber.ready = true
+          startUploadSessionPump(session)
         } catch (err) {
           upsertTransfer(requestId, (prev) => ({ ...(prev as AttachmentTransferState), status: 'failed', error: String(err) }))
+          removeUploadSubscriber(session, requestId)
           cleanupTransferPeer(requestId)
         }
       }
@@ -1148,13 +1348,35 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         try {
           const control = JSON.parse(m.data) as { type?: string }
           if (control.type === 'flow_pause') {
-            senderFlowPausedRef.current.set(requestId, true)
+            subscriber.flowPaused = true
           } else if (control.type === 'flow_resume') {
-            senderFlowPausedRef.current.set(requestId, false)
+            subscriber.flowPaused = false
           }
         } catch {
           // ignore malformed control message
         }
+      }
+      dc.onclose = () => {
+        if (!subscriber.done) {
+          upsertTransfer(requestId, (prev) => ({
+            ...(prev as AttachmentTransferState),
+            status: prev?.status === 'completed' ? 'completed' : 'failed',
+            error: prev?.status === 'completed' ? undefined : 'Receiver disconnected',
+          }))
+        }
+        removeUploadSubscriber(session, requestId)
+        cleanupTransferPeer(requestId)
+      }
+      dc.onerror = () => {
+        if (!subscriber.done) {
+          upsertTransfer(requestId, (prev) => ({
+            ...(prev as AttachmentTransferState),
+            status: 'failed',
+            error: 'Data channel error during upload',
+          }))
+        }
+        removeUploadSubscriber(session, requestId)
+        cleanupTransferPeer(requestId)
       }
 
       const offerSdp = await createOffer(pc)
@@ -1240,6 +1462,11 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
                 }
                 st.doneReceived = true
                 downloadStreamStateRef.current.set(requestId, st)
+                const wake = downloadWriterWakeRef.current.get(requestId)
+                if (wake) {
+                  downloadWriterWakeRef.current.delete(requestId)
+                  wake()
+                }
               }
             } catch {
               // ignore malformed control message
@@ -1264,6 +1491,11 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
             }
           }
           downloadStreamStateRef.current.set(requestId, st)
+          const wake = downloadWriterWakeRef.current.get(requestId)
+          if (wake) {
+            downloadWriterWakeRef.current.delete(requestId)
+            wake()
+          }
           startDownloadWriter(requestId)
           // UI progress/debug are updated from bytes written to disk in writer loop.
         }

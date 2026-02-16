@@ -29,6 +29,7 @@ import AccountRestorePage from './pages/AccountRestorePage'
 import ServerListPage from './pages/ServerListPage'
 import ServerViewPage from './pages/ServerViewPage'
 import SettingsPage from './pages/SettingsPage'
+import TransfersPage from './pages/TransfersPage'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { identity } = useIdentity()
@@ -115,6 +116,14 @@ function App() {
                             element={
                               <ProtectedRoute>
                                 <SettingsPage />
+                              </ProtectedRoute>
+                            }
+                          />
+                          <Route
+                            path="/transfers"
+                            element={
+                              <ProtectedRoute>
+                                <TransfersPage />
                               </ProtectedRoute>
                             }
                           />
