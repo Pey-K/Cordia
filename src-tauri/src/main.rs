@@ -109,6 +109,14 @@ struct AttachmentRegistrationResult {
     extension: String,
     size_bytes: u64,
     storage_mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thumbnail_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -338,10 +346,11 @@ fn register_attachment_from_path(
     let file_name_clone = file_name.clone();
     let extension_clone = extension.clone();
     let mode_clone = mode.clone();
+    let source_path_for_thread = source_path_str.clone();
     std::thread::spawn(move || {
         let result = prepare_attachment_background(
             &account_id,
-            &source_path_str,
+            &source_path_for_thread,
             mode_clone,
             &attachment_id_clone,
             &file_name_clone,
@@ -377,6 +386,14 @@ fn register_attachment_from_path(
             AttachmentStorageMode::CurrentPath => "current_path".to_string(),
             AttachmentStorageMode::ProgramCopy => "program_copy".to_string(),
         },
+        thumbnail_path: None,
+        source_path: if matches!(mode, AttachmentStorageMode::CurrentPath) {
+            Some(source_path_str)
+        } else {
+            None
+        },
+        file_path: None,
+        status: Some("preparing".to_string()),
     })
 }
 
@@ -455,6 +472,26 @@ fn get_attachment_record(attachment_id: String) -> Result<Option<AttachmentRegis
     let Some(rec) = index.records.get(&attachment_id) else {
         return Ok(None);
     };
+    let file_path = if let Some(cache_name) = &rec.cached_file_name {
+        let p = base.join("cache").join(cache_name);
+        if p.exists() {
+            Some(p.to_string_lossy().to_string())
+        } else {
+            None
+        }
+    } else if let Some(src) = &rec.source_path {
+        if PathBuf::from(src).exists() {
+            Some(src.clone())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let thumbnail_path = rec
+        .thumbnail_path
+        .clone()
+        .filter(|p| PathBuf::from(p).exists());
     Ok(Some(AttachmentRegistrationResult {
         attachment_id: rec.attachment_id.clone(),
         sha256: rec.sha256.clone(),
@@ -465,6 +502,10 @@ fn get_attachment_record(attachment_id: String) -> Result<Option<AttachmentRegis
             AttachmentStorageMode::CurrentPath => "current_path".to_string(),
             AttachmentStorageMode::ProgramCopy => "program_copy".to_string(),
         },
+        thumbnail_path,
+        source_path: rec.source_path.clone(),
+        file_path,
+        status: Some(rec.status.clone()),
     }))
 }
 

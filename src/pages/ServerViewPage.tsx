@@ -1,9 +1,11 @@
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
-import { ArrowLeft, Copy, Check, PhoneOff, Phone, Send, Paperclip, Download } from 'lucide-react'
+import { ArrowLeft, Copy, Check, PhoneOff, Phone, Send, Paperclip, Download, Eye, EyeOff, Trash2, Play } from 'lucide-react'
 import { open, confirm } from '@tauri-apps/api/dialog'
+import { listen } from '@tauri-apps/api/event'
+import { convertFileSrc } from '@tauri-apps/api/tauri'
 import { Button } from '../components/ui/button'
-import { loadServer, type Server, fetchAndImportServerHintOpaque, createTemporaryInvite, revokeActiveInvite, registerAttachmentFromPath } from '../lib/tauri'
+import { loadServer, type Server, fetchAndImportServerHintOpaque, createTemporaryInvite, revokeActiveInvite, registerAttachmentFromPath, getAttachmentRecord } from '../lib/tauri'
 import { UserProfileCard } from '../components/UserProfileCard'
 import { UserCard } from '../components/UserCard'
 import { useIdentity } from '../contexts/IdentityContext'
@@ -23,6 +25,10 @@ import { useSpeaking } from '../contexts/SpeakingContext'
 import { useActiveServer } from '../contexts/ActiveServerContext'
 import { useEphemeralMessages } from '../contexts/EphemeralMessagesContext'
 import { cn } from '../lib/utils'
+import { getDraft, setDraft, clearDraft } from '../lib/messageDrafts'
+import { FileIcon } from '../components/FileIcon'
+import { MediaPreviewModal } from '../components/MediaPreviewModal'
+import { isMediaType, getFileTypeFromExt } from '../lib/fileType'
 
 function ServerViewPage() {
   const { serverId } = useParams<{ serverId: string }>()
@@ -45,6 +51,7 @@ function ServerViewPage() {
     sendAttachmentMessage,
     requestAttachmentDownload,
     attachmentTransfers,
+    transferHistory,
     sharedAttachments,
     hasAccessibleCompletedDownload,
   } = useEphemeralMessages()
@@ -67,6 +74,37 @@ function ServerViewPage() {
   const [profileCardUserId, setProfileCardUserId] = useState<string | null>(null)
   const [profileCardAnchor, setProfileCardAnchor] = useState<DOMRect | null>(null)
   const [messageDraft, setMessageDraft] = useState('')
+  const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null)
+  const chatScrollRef = useRef<HTMLDivElement | null>(null)
+  const wasAtBottomRef = useRef(true)
+  const messageInputRef = useRef<HTMLTextAreaElement | null>(null)
+  const draftSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const draftValueRef = useRef('')
+
+  type StagedAttachment = {
+    attachment_id: string
+    file_name: string
+    extension: string
+    size_bytes: number
+    sha256: string
+    spoiler?: boolean
+    source_path?: string | null
+    thumbnail_path?: string | null
+    file_path?: string | null
+    status?: string | null
+  }
+  const [stagedAttachments, setStagedAttachments] = useState<StagedAttachment[]>([])
+  const [mediaPreview, setMediaPreview] = useState<{
+    type: 'image' | 'video'
+    url: string | null
+    attachmentId?: string
+    fileName?: string
+  } | null>(null)
+  const [revealedSpoilerIds, setRevealedSpoilerIds] = useState<Set<string>>(new Set())
+
+  const MESSAGE_INPUT_MAX_HEIGHT = 100
+  const DRAFT_SAVE_DEBOUNCE_MS = 300
+  const MESSAGE_MAX_LENGTH = 2500
 
   // Single group chat per server (v1: no chat selector)
   const groupChat = server?.chats?.[0] ?? null
@@ -276,53 +314,93 @@ function ServerViewPage() {
   }
 
   const handleSendMessage = async () => {
-    if (!server || !groupChat || !identity) return
-    const text = messageDraft.trim()
-    if (!text || !canSendMessages) return
+    if (!server || !groupChat || !identity || !canSendMessages) return
+    const text = messageDraft.trim().slice(0, MESSAGE_MAX_LENGTH)
+    const readyAttachments = stagedAttachments.filter((a) => a.status === 'ready' && a.sha256)
+    if (!text && readyAttachments.length === 0) return
+
+    setMessageDraft('')
+    if (currentAccountId) clearDraft(currentAccountId, server.signing_pubkey)
+    const toSend = [...readyAttachments]
+    setStagedAttachments((prev) => prev.filter((a) => !readyAttachments.some((r) => r.attachment_id === a.attachment_id)))
+
     try {
-      await sendMessage({
-        serverId: server.id,
-        signingPubkey: server.signing_pubkey,
-        chatId: groupChat.id,
-        fromUserId: identity.user_id,
-        text,
-      })
-      setMessageDraft('')
+      if (text) {
+        await sendMessage({
+          serverId: server.id,
+          signingPubkey: server.signing_pubkey,
+          chatId: groupChat.id,
+          fromUserId: identity.user_id,
+          text,
+        })
+      }
+      for (const att of toSend) {
+        await sendAttachmentMessage({
+          serverId: server.id,
+          signingPubkey: server.signing_pubkey,
+          chatId: groupChat.id,
+          fromUserId: identity.user_id,
+          attachment: {
+            attachment_id: att.attachment_id,
+            file_name: att.file_name,
+            extension: att.extension,
+            size_bytes: att.size_bytes,
+            sha256: att.sha256,
+            spoiler: att.spoiler ?? false,
+          },
+        })
+      }
     } catch (error) {
-      console.warn('Failed to send message:', error)
+      console.warn('Failed to send:', error)
+      setMessageDraft(text)
+      setStagedAttachments((prev) => [...toSend, ...prev])
     }
   }
 
-  const handleSendAttachment = async () => {
+  const handleAddAttachment = async () => {
     if (!server || !groupChat || !identity || !canSendMessages) return
     try {
       const selected = await open({
-        title: 'Select attachment',
-        multiple: false,
+        title: 'Select attachment(s)',
+        multiple: true,
       })
-      if (!selected || Array.isArray(selected)) return
-      const copyToCordia = await confirm('Copy file into Cordia storage for reliable sharing?', {
-        title: 'Attachment storage',
-        okLabel: 'Copy to Cordia',
-        cancelLabel: 'Keep current path',
-      })
-      const registered = await registerAttachmentFromPath(selected, copyToCordia ? 'program_copy' : 'current_path')
-      await sendAttachmentMessage({
-        serverId: server.id,
-        signingPubkey: server.signing_pubkey,
-        chatId: groupChat.id,
-        fromUserId: identity.user_id,
-        attachment: {
-          attachment_id: registered.attachment_id,
-          file_name: registered.file_name,
-          extension: registered.extension,
-          size_bytes: registered.size_bytes,
-          sha256: registered.sha256,
-        },
-      })
+      if (!selected) return
+      const paths = Array.isArray(selected) ? selected : [selected]
+      if (paths.length === 0) return
+      const copyToCordia = await confirm(
+        `Copy ${paths.length} file(s) into Cordia storage for reliable sharing?`,
+        { title: 'Attachment storage', okLabel: 'Copy to Cordia', cancelLabel: 'Keep current path' }
+      )
+      for (const p of paths) {
+        const registered = await registerAttachmentFromPath(p, copyToCordia ? 'program_copy' : 'current_path')
+        setStagedAttachments((prev) => [
+          ...prev,
+          {
+            attachment_id: registered.attachment_id,
+            file_name: registered.file_name,
+            extension: registered.extension,
+            size_bytes: registered.size_bytes,
+            sha256: registered.sha256,
+            source_path: registered.source_path ?? null,
+            thumbnail_path: registered.thumbnail_path ?? null,
+            file_path: registered.file_path ?? null,
+            status: registered.status ?? 'preparing',
+          },
+        ])
+      }
     } catch (error) {
-      console.warn('Failed to send attachment:', error)
+      console.warn('Failed to add attachment:', error)
     }
+  }
+
+  const handleRemoveStagedAttachment = (attachmentId: string) => {
+    setStagedAttachments((prev) => prev.filter((a) => a.attachment_id !== attachmentId))
+  }
+
+  const handleToggleStagedSpoiler = (attachmentId: string) => {
+    setStagedAttachments((prev) =>
+      prev.map((a) => (a.attachment_id === attachmentId ? { ...a, spoiler: !a.spoiler } : a))
+    )
   }
 
   useEffect(() => {
@@ -330,6 +408,86 @@ function ServerViewPage() {
     openServerChat(server.id, server.signing_pubkey, groupChat.id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [server?.id, server?.signing_pubkey, groupChat?.id])
+
+  // Restore per-server draft when entering or switching servers; clear staged attachments
+  useEffect(() => {
+    setStagedAttachments([])
+    if (!server?.signing_pubkey || !currentAccountId) return
+    const draft = getDraft(currentAccountId, server.signing_pubkey)
+    setMessageDraft(draft)
+    draftValueRef.current = draft
+  }, [server?.signing_pubkey, currentAccountId])
+
+  // Update staged attachment when cordia:attachment-ready fires (thumbnail, sha256, etc.)
+  useEffect(() => {
+    const unlistenPromise = listen<{ attachment_id: string; ok: boolean; error?: string }>(
+      'cordia:attachment-ready',
+      async (event) => {
+        if (!event.payload?.ok) return
+        const { attachment_id } = event.payload
+        const rec = await getAttachmentRecord(attachment_id)
+        if (!rec) return
+        setStagedAttachments((prev) =>
+          prev.map((a) =>
+            a.attachment_id === attachment_id
+              ? {
+                  ...a,
+                  sha256: rec.sha256,
+                  thumbnail_path: rec.thumbnail_path ?? null,
+                  file_path: rec.file_path ?? null,
+                  status: rec.status ?? 'ready',
+                }
+              : a
+          )
+        )
+      }
+    )
+    return () => {
+      unlistenPromise.then((u) => u()).catch(() => {})
+    }
+  }, [])
+
+  // Flush draft to sessionStorage on unmount (e.g. navigate away)
+  useEffect(() => {
+    return () => {
+      if (draftSaveTimeoutRef.current) clearTimeout(draftSaveTimeoutRef.current)
+      if (server?.signing_pubkey && currentAccountId) {
+        setDraft(currentAccountId, server.signing_pubkey, draftValueRef.current)
+      }
+    }
+  }, [server?.signing_pubkey, currentAccountId])
+
+  // Auto-resize message input (Discord-style: grow up to max, then scroll)
+  // requestAnimationFrame coalesces rapid updates (e.g. key repeat) to avoid layout thrashing
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      const el = messageInputRef.current
+      if (!el) return
+      el.style.height = 'auto'
+      const capped = Math.min(el.scrollHeight, MESSAGE_INPUT_MAX_HEIGHT)
+      el.style.height = `${capped}px`
+      const isScrollable = el.scrollHeight > MESSAGE_INPUT_MAX_HEIGHT
+      el.style.overflowY = isScrollable ? 'auto' : 'hidden'
+      // Only scroll to bottom when caret is at end (typing new lines at end). Don't jump when editing in the middle.
+      if (isScrollable && el.selectionStart === el.value.length) {
+        el.scrollTop = el.scrollHeight
+      }
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [messageDraft])
+
+  useEffect(() => {
+    wasAtBottomRef.current = true
+  }, [serverId, groupChat?.id])
+
+  useEffect(() => {
+    if (!groupChat || !chatScrollRef.current || chatMessages.length === 0) return
+    if (!wasAtBottomRef.current) return
+    const el = chatScrollRef.current
+    requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight
+    })
+  }, [chatMessages, groupChat?.id])
 
   if (!server) {
     return (
@@ -375,7 +533,7 @@ function ServerViewPage() {
               {/* Group Chat Header with Voice */}
               <div className="border-b-2 border-border p-4">
                 <div className="flex items-center justify-between">
-                  <h2 className="text-lg font-light tracking-tight">{server.name}</h2>
+                  <div className="min-w-0" />
                   <Button
                     variant={webrtcIsInVoice && currentRoomId === groupChat.id ? "default" : "outline"}
                     size="sm"
@@ -409,15 +567,17 @@ function ServerViewPage() {
                         const displayName = member?.display_name || (userId === identity?.user_id ? identity?.display_name : `User ${userId.slice(0, 8)}`)
                         const isSpeaking = isUserSpeaking(userId)
                         const level = getMemberLevel(server.signing_pubkey, userId, voicePresence.isUserInVoice(server.signing_pubkey, userId))
+                        const voiceRp = userId === identity?.user_id ? null : remoteProfiles.getProfile(userId)
+                        const voiceAvatarUrl = userId === identity?.user_id ? profile.avatar_data_url : voiceRp?.avatar_data_url
                         return (
                           <button
                             key={userId}
                             type="button"
                             className={cn(
-                              "relative h-6 w-6 shrink-0 grid place-items-center rounded-none ring-2 will-change-transform transition-all duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.06] focus:outline-none group/avatar",
+                              "relative h-6 w-6 shrink-0 grid place-items-center rounded-none ring-2 will-change-transform transition-all duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.06] focus:outline-none overflow-hidden",
                               isSpeaking ? "ring-green-500" : "ring-background"
                             )}
-                            style={avatarStyleForUser(userId)}
+                            style={!voiceAvatarUrl ? avatarStyleForUser(userId) : undefined}
                             onClick={(e) => {
                               e.stopPropagation()
                               setProfileCardUserId(userId)
@@ -426,7 +586,11 @@ function ServerViewPage() {
                             aria-label={displayName}
                             title={`${displayName}${userId === identity?.user_id ? ' (you)' : ''}`}
                           >
-                            <span className="text-[9px] font-mono tracking-wider">{getInitials(displayName)}</span>
+                            {voiceAvatarUrl ? (
+                              <img src={voiceAvatarUrl} alt="" className="w-full h-full object-cover" />
+                            ) : (
+                              <span className="text-[9px] font-mono tracking-wider">{getInitials(displayName)}</span>
+                            )}
                             <div className="absolute -top-1 left-1/2 -translate-x-1/2">
                               <PresenceSquare level={level} />
                             </div>
@@ -440,193 +604,581 @@ function ServerViewPage() {
 
               {/* Text Chat Area */}
               <div className="flex-1 flex flex-col overflow-hidden">
-                <div className="flex-1 overflow-y-auto p-4">
-                  <div className="max-w-4xl mx-auto space-y-4">
-                    <div className="p-4 border-2 border-border rounded-lg bg-card/50">
-                      <p className="text-sm text-muted-foreground font-light">
-                        Welcome to <span className="text-foreground font-normal">{server.name}</span> — your group chat.
-                      </p>
-                    </div>
-                    {chatMessages.map((msg) => {
-                      const mine = msg.from_user_id === identity?.user_id
-                      const attachmentTransferRows = msg.kind === 'attachment' && msg.attachment
-                        ? attachmentTransfers.filter(
-                            (t) => t.message_id === msg.id || t.attachment_id === msg.attachment?.attachment_id
-                          )
-                        : []
-                      const alreadyDownloadedAccessible = msg.kind === 'attachment' && msg.attachment
-                        ? hasAccessibleCompletedDownload(msg.attachment.attachment_id)
-                        : false
-                      const hasActiveDownload = attachmentTransferRows.some(
-                        (t) =>
-                          t.direction === 'download' &&
-                          t.status !== 'completed' &&
-                          t.status !== 'failed' &&
-                          t.status !== 'rejected'
-                      )
-                      const name = mine ? 'You' : fallbackNameForUser(msg.from_user_id)
-                      const deliveredBy = (msg.delivered_by ?? []).filter((uid) => uid !== identity?.user_id)
-                      const statusLabel = msg.delivery_status === 'delivered' ? 'Delivered' : 'Pending'
-                      const time = new Date(msg.sent_at).toLocaleTimeString([], {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })
-                      const hostOnlineForAttachment = msg.kind === 'attachment'
-                        ? getLevel(server.signing_pubkey, msg.from_user_id, voicePresence.isUserInVoice(server.signing_pubkey, msg.from_user_id)) !== 'offline'
-                        : false
-                      const senderSharedReady = msg.kind === 'attachment' && msg.attachment
-                        ? sharedAttachments.some((s) => s.attachment_id === msg.attachment?.attachment_id && s.can_share_now)
-                        : false
-                      const attachmentStateLabel = msg.kind === 'attachment' && msg.attachment
-                        ? alreadyDownloadedAccessible
-                          ? 'Cached'
-                          : mine
-                            ? senderSharedReady
-                              ? 'Available'
-                              : 'Unavailable'
-                            : hostOnlineForAttachment
-                              ? 'Available'
-                              : 'Unavailable'
-                        : null
+                <div
+                  ref={chatScrollRef}
+                  className="flex-1 overflow-y-auto p-4 pt-2"
+                  onScroll={() => {
+                    const el = chatScrollRef.current
+                    if (!el) return
+                    const threshold = 80
+                    wasAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < threshold
+                  }}
+                >
+                  <div className="max-w-6xl mx-auto">
+                    {chatMessages.length === 0 && (
+                      <div className="flex justify-center py-12">
+                        <p className="text-sm text-muted-foreground font-light">
+                          Welcome to <span className="text-foreground font-normal">{server.name}</span> — your group chat.
+                        </p>
+                      </div>
+                    )}
+                    {chatMessages.length > 0 && (() => {
+                      type ChatItem = { type: 'day'; dateStr: string } | { type: 'group'; userId: string; messages: typeof chatMessages }
+                      const items: ChatItem[] = []
+                      let lastDateStr: string | null = null
+                      let currentGroup: { userId: string; messages: typeof chatMessages } | null = null
+
+                      const flushGroup = () => {
+                        if (currentGroup && currentGroup.messages.length > 0) {
+                          items.push({ type: 'group', userId: currentGroup.userId, messages: currentGroup.messages })
+                          currentGroup = null
+                        }
+                      }
+
+                      const formatDay = (d: Date) => d.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+
+                      const FIVE_MIN_MS = 5 * 60 * 1000
+                      for (const msg of chatMessages) {
+                        const msgDate = new Date(msg.sent_at)
+                        const dateStr = formatDay(msgDate)
+                        if (dateStr !== lastDateStr) {
+                          flushGroup()
+                          lastDateStr = dateStr
+                          items.push({ type: 'day', dateStr })
+                        }
+                        const prevMsg = currentGroup?.messages[currentGroup.messages.length - 1]
+                        const isContinuation = currentGroup
+                          && currentGroup.userId === msg.from_user_id
+                          && prevMsg
+                          && (msgDate.getTime() - new Date(prevMsg.sent_at).getTime()) < FIVE_MIN_MS
+                        if (!isContinuation) {
+                          flushGroup()
+                          currentGroup = { userId: msg.from_user_id, messages: [msg] }
+                        } else {
+                          currentGroup!.messages.push(msg)
+                        }
+                      }
+                      flushGroup()
+
+                      let lastDeliveredMessageId: string | null = null
+                      let lastPendingMessageId: string | null = null
+                      for (const msg of chatMessages) {
+                        if (msg.from_user_id !== identity?.user_id) continue
+                        if (msg.delivery_status === 'delivered') lastDeliveredMessageId = msg.id
+                        else lastPendingMessageId = msg.id
+                      }
+
                       return (
-                        <div
-                          key={msg.id}
-                          className={cn('flex', mine ? 'justify-end' : 'justify-start')}
-                        >
-                          <div
-                            className={cn(
-                              'max-w-[80%] rounded-lg border px-3 py-2',
-                              mine
-                                ? 'bg-primary/15 border-primary/30'
-                                : 'bg-card/70 border-border'
-                            )}
-                          >
-                            <div className="flex items-center gap-2 mb-1">
-                              <span className="text-xs font-medium">{name}</span>
-                              <span className="text-[10px] text-muted-foreground">{time}</span>
-                            </div>
-                            {msg.kind === 'attachment' && msg.attachment ? (
-                              <div className="rounded border border-border/70 bg-background/60 px-2 py-2">
-                                <div className="flex items-center justify-between gap-2">
-                                  <div className="min-w-0">
-                                    <FilenameEllipsis name={msg.attachment.file_name} className="block text-sm truncate" />
-                                    <p className="text-[10px] text-muted-foreground">
-                                      {formatBytes(msg.attachment.size_bytes)}
-                                      {msg.attachment.extension ? ` • .${msg.attachment.extension}` : ''}
-                                      {attachmentStateLabel && <span className="ml-1">• {attachmentStateLabel}</span>}
-                                    </p>
-                                  </div>
-                                  {!mine && !alreadyDownloadedAccessible && !hasActiveDownload && attachmentStateLabel === 'Available' && (
-                                    <Button
-                                      type="button"
-                                      variant="outline"
-                                      size="icon"
-                                      className="h-7 w-7 shrink-0"
-                                      onClick={() => requestAttachmentDownload(msg)}
-                                      title="Download"
-                                    >
-                                      <Download className="h-3.5 w-3.5" />
-                                    </Button>
-                                  )}
+                        <div className="space-y-2">
+                          {items.map((item, idx) => {
+                            if (item.type === 'day') {
+                              return (
+                                <div key={`day-${idx}`} className="flex items-center gap-3 py-2" aria-hidden>
+                                  <div className="h-px flex-1 bg-muted-foreground/50" />
+                                  <span className="text-xs text-muted-foreground shrink-0">{item.dateStr}</span>
+                                  <div className="h-px flex-1 bg-muted-foreground/50" />
                                 </div>
-                                {attachmentTransferRows.length > 0 && (
-                                  <div className="mt-2 space-y-1">
-                                    {attachmentTransferRows.slice(-2).map((t) => (
-                                      <div key={t.request_id} className="text-[10px] text-muted-foreground">
-                                        <div className="flex items-center justify-between gap-2">
-                                          <span className="truncate">{t.direction === 'upload' ? 'Upload' : 'Download'}</span>
-                                          <span>
-                                            {t.status === 'transferring' ? `${Math.round(t.progress * 100)}%` : t.status}
-                                          </span>
+                              )
+                            }
+                            const { userId, messages } = item
+                            const displayName = userId === identity?.user_id ? (identity?.display_name ?? 'You') : fallbackNameForUser(userId)
+                            const rp = userId === identity?.user_id ? null : remoteProfiles.getProfile(userId)
+                            const avatarUrl = userId === identity?.user_id ? profile.avatar_data_url : rp?.avatar_data_url
+                            const memberLevel = getMemberLevel(server.signing_pubkey, userId, voicePresence.isUserInVoice(server.signing_pubkey, userId))
+                            const levelColor = memberLevel === 'in_call' ? 'text-blue-500' : memberLevel === 'active' ? 'text-green-500' : memberLevel === 'online' ? 'text-amber-500' : 'text-muted-foreground'
+                            return (
+                              <div key={`group-${idx}-${messages[0]?.id}`} className="flex gap-2">
+                                <div className="shrink-0 w-8 flex flex-col items-center pt-0.5 self-start sticky top-0 z-10 bg-background pb-1">
+                                  <div className="relative overflow-visible will-change-transform transition-transform duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.06]">
+                                    <div className="absolute -left-1 top-1/2 -translate-y-1/2 z-10">
+                                      <PresenceSquare level={memberLevel} />
+                                    </div>
+                                    <button
+                                      type="button"
+                                      className="relative h-8 w-8 grid place-items-center rounded-none ring-2 ring-background shrink-0 focus:outline-none overflow-hidden"
+                                      style={!avatarUrl ? avatarStyleForUser(userId) : undefined}
+                                      onClick={(e) => {
+                                        setProfileCardUserId(userId)
+                                        setProfileCardAnchor((e.currentTarget as HTMLElement).getBoundingClientRect())
+                                      }}
+                                      aria-label={displayName}
+                                    >
+                                      {avatarUrl ? (
+                                        <img src={avatarUrl} alt="" className="w-full h-full object-cover" />
+                                      ) : (
+                                        <span className="text-[9px] font-mono tracking-wider">{getInitials(displayName)}</span>
+                                      )}
+                                    </button>
+                                  </div>
+                                </div>
+                                <div className="min-w-0 flex-1 flex flex-col">
+                                  {messages.map((msg, msgIdx) => {
+                                    const isFirstInGroup = msgIdx === 0
+                                    const attachmentTransferRows = msg.kind === 'attachment' && msg.attachment
+                                      ? attachmentTransfers.filter(
+                                          (t) => t.message_id === msg.id || t.attachment_id === msg.attachment?.attachment_id
+                                        )
+                                      : []
+                                    const alreadyDownloadedAccessible = msg.kind === 'attachment' && msg.attachment
+                                      ? hasAccessibleCompletedDownload(msg.attachment.attachment_id)
+                                      : false
+                                    const hasActiveDownload = attachmentTransferRows.some(
+                                      (t) =>
+                                        t.direction === 'download' &&
+                                        t.status !== 'completed' &&
+                                        t.status !== 'failed' &&
+                                        t.status !== 'rejected'
+                                    )
+                                    const hostOnlineForAttachment = msg.kind === 'attachment'
+                                      ? getLevel(server.signing_pubkey, msg.from_user_id, voicePresence.isUserInVoice(server.signing_pubkey, msg.from_user_id)) !== 'offline'
+                                      : false
+                                    const senderSharedReady = msg.kind === 'attachment' && msg.attachment
+                                      ? sharedAttachments.some((s) => s.attachment_id === msg.attachment?.attachment_id && s.can_share_now)
+                                      : false
+                                    const attachmentStateLabel = msg.kind === 'attachment' && msg.attachment
+                                      ? alreadyDownloadedAccessible
+                                        ? 'Cached'
+                                        : msg.from_user_id === identity?.user_id
+                                          ? senderSharedReady
+                                            ? 'Available'
+                                            : 'Unavailable'
+                                          : hostOnlineForAttachment
+                                            ? 'Available'
+                                            : 'Unavailable'
+                                      : null
+                                    const timeStr = new Date(msg.sent_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                    return (
+                                      <div
+                                        key={msg.id}
+                                        className="group/msg py-px px-1 -mx-1 rounded transition-colors cursor-default"
+                                        style={{ backgroundColor: hoveredMsgId === msg.id ? 'hsl(var(--muted) / 0.85)' : undefined }}
+                                        onMouseEnter={() => setHoveredMsgId(msg.id)}
+                                        onMouseLeave={() => setHoveredMsgId(null)}
+                                      >
+                                        {isFirstInGroup ? (
+                                          <div className="flex items-baseline gap-2 flex-wrap">
+                                            <span className={cn('text-sm font-medium', levelColor)}>{displayName}</span>
+                                            <span className="text-[10px] text-muted-foreground">
+                                              {timeStr}
+                                            </span>
+                                          </div>
+                                        ) : null}
+                                        <div className={cn(isFirstInGroup ? 'mt-0.5' : '')}>
+                                          {msg.kind === 'attachment' && msg.attachment ? (
+                                            <div className="py-2">
+                                              <div
+                                                className={cn(
+                                                  'relative rounded-lg transition-all',
+                                                  msg.attachment.spoiler && !revealedSpoilerIds.has(msg.id) && 'overflow-hidden'
+                                                )}
+                                              >
+                                                {msg.attachment.spoiler && !revealedSpoilerIds.has(msg.id) ? (
+                                                  <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                      setRevealedSpoilerIds((prev) => new Set(prev).add(msg.id))
+                                                    }
+                                                    className="w-full py-4 px-4 bg-muted/80 hover:bg-muted rounded-lg text-center"
+                                                  >
+                                                    <EyeOff className="h-5 w-5 mx-auto mb-1.5 text-muted-foreground" />
+                                                    <span className="text-xs text-muted-foreground block">
+                                                      Spoiler • Click to reveal
+                                                    </span>
+                                                  </button>
+                                                ) : (() => {
+                                                  const att = msg.attachment!
+                                                  const isOwn = msg.from_user_id === identity?.user_id
+                                                  const sharedItem = sharedAttachments.find((s) => s.attachment_id === att.attachment_id)
+                                                  const completedDownload = transferHistory.find(
+                                                    (h) => h.direction === 'download' && h.attachment_id === att.attachment_id && h.status === 'completed' && h.saved_path
+                                                  )
+                                                  const liveDownload = attachmentTransferRows.find(
+                                                    (t) => t.direction === 'download' && (t.status === 'transferring' || t.status === 'requesting' || t.status === 'connecting')
+                                                  )
+                                                  const hasPath = isOwn ? sharedItem?.file_path : completedDownload?.saved_path
+                                                  const thumbPath = isOwn ? sharedItem?.thumbnail_path : undefined
+                                                  const category = getFileTypeFromExt(att.file_name)
+                                                  const isMedia = isMediaType(category as Parameters<typeof isMediaType>[0])
+                                                  const mediaPreviewPath = category === 'video'
+                                                    ? (thumbPath || hasPath)
+                                                    : (hasPath || thumbPath)
+                                                  const notDownloaded = !isOwn && !alreadyDownloadedAccessible && !hasPath
+                                                  const p = liveDownload ? Math.max(0, Math.min(100, Math.round((liveDownload.progress ?? 0) * 100))) : 0
+                                                  const showProgress = !!liveDownload && (liveDownload.status === 'transferring' || liveDownload.status === 'completed')
+                                                  const CHAT_MEDIA_MAX_W = 320
+                                                  const CHAT_MEDIA_MAX_H = 240
+                                                  if (isMedia) {
+                                                    return (
+                                                      <div className="space-y-1">
+                                                        <div
+                                                          className={cn(
+                                                            'relative rounded-lg overflow-hidden border border-border/50',
+                                                            notDownloaded && 'bg-muted/60'
+                                                          )}
+                                                          style={{
+                                                            maxWidth: CHAT_MEDIA_MAX_W,
+                                                            maxHeight: CHAT_MEDIA_MAX_H,
+                                                            ...(notDownloaded ? { width: 280, aspectRatio: '16/9', minHeight: 158 } : { width: 'fit-content', minWidth: 160, minHeight: 120 }),
+                                                          }}
+                                                        >
+                                                          {notDownloaded ? (
+                                                            <button
+                                                              type="button"
+                                                              className="w-full h-full min-h-[140px] flex items-center justify-center transition-colors hover:bg-muted/80"
+                                                              style={{ aspectRatio: '16/9' }}
+                                                              title={attachmentStateLabel === 'Available' ? 'Click to download' : 'Not downloaded'}
+                                                              onClick={attachmentStateLabel === 'Available' ? () => requestAttachmentDownload(msg) : undefined}
+                                                              disabled={attachmentStateLabel !== 'Available'}
+                                                            >
+                                                              <Download className="h-12 w-12 text-white" />
+                                                            </button>
+                                                          ) : category === 'image' && hasPath ? (
+                                                            <button
+                                                              type="button"
+                                                              className="block w-full overflow-hidden rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background"
+                                                              onClick={() =>
+                                                                setMediaPreview({
+                                                                  type: 'image',
+                                                                  url: convertFileSrc(hasPath),
+                                                                  fileName: att.file_name,
+                                                                })
+                                                              }
+                                                            >
+                                                              <img
+                                                                src={convertFileSrc(hasPath)}
+                                                                alt=""
+                                                                className="max-w-full max-h-[240px] w-auto h-auto object-contain block"
+                                                              />
+                                                            </button>
+                                                          ) : category === 'video' && hasPath ? (
+                                                            <button
+                                                              type="button"
+                                                              className="relative block w-full overflow-hidden rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background group"
+                                                              onClick={() =>
+                                                                setMediaPreview({
+                                                                  type: 'video',
+                                                                  url: convertFileSrc(hasPath),
+                                                                  fileName: att.file_name,
+                                                                })
+                                                              }
+                                                            >
+                                                              {thumbPath ? (
+                                                                <img
+                                                                  src={convertFileSrc(thumbPath)}
+                                                                  alt=""
+                                                                  className="max-w-full max-h-[240px] w-auto h-auto object-contain block"
+                                                                />
+                                                              ) : (
+                                                                <video
+                                                                  src={convertFileSrc(hasPath)}
+                                                                  className="max-w-full max-h-[240px] w-auto h-auto object-contain block"
+                                                                  muted
+                                                                  playsInline
+                                                                  preload="metadata"
+                                                                />
+                                                              )}
+                                                              <span className="absolute inset-0 flex items-center justify-center bg-black/30 group-hover:bg-black/40 transition-colors pointer-events-none">
+                                                                <span className="w-12 h-12 rounded-full bg-black/50 flex items-center justify-center">
+                                                                  <Play className="h-6 w-6 text-white fill-white" />
+                                                                </span>
+                                                              </span>
+                                                            </button>
+                                                          ) : (
+                                                            <FileIcon
+                                                              fileName={att.file_name}
+                                                              attachmentId={!hasPath && (isOwn ? sharedItem?.can_share_now : false) ? att.attachment_id : null}
+                                                              savedPath={hasPath ?? undefined}
+                                                              thumbnailPath={thumbPath ?? undefined}
+                                                              onMediaClick={(url, type, attachmentId, fileName) => {
+                                                                setMediaPreview({
+                                                                  type: type as 'image' | 'video',
+                                                                  url: url ?? (attachmentId ? null : mediaPreviewPath ? convertFileSrc(mediaPreviewPath) : null),
+                                                                  attachmentId,
+                                                                  fileName: fileName ?? att.file_name,
+                                                                })
+                                                              }}
+                                                              boxSize={120}
+                                                            />
+                                                          )}
+                                                        </div>
+                                                        <div className="flex items-center gap-2 flex-wrap">
+                                                          <FilenameEllipsis name={att.file_name} className="text-xs truncate" />
+                                                          <span className="text-[10px] text-muted-foreground shrink-0">
+                                                            {formatBytes(att.size_bytes)}
+                                                            {att.extension ? ` .${att.extension}` : ''}
+                                                          </span>
+                                                        </div>
+                                                        {showProgress && (
+                                                          <div className="h-1 bg-foreground/15 overflow-hidden rounded-full max-w-[280px]">
+                                                            <div
+                                                              className={cn('h-full', liveDownload?.status === 'completed' ? 'bg-emerald-400/80' : 'bg-violet-400/85')}
+                                                              style={{ width: `${Math.max(2, p)}%` }}
+                                                            />
+                                                          </div>
+                                                        )}
+                                                        {liveDownload?.status === 'completed' && liveDownload.saved_path && (
+                                                          <span className="block text-[9px] text-muted-foreground truncate" title={liveDownload.saved_path}>
+                                                            Saved
+                                                          </span>
+                                                        )}
+                                                      </div>
+                                                    )
+                                                  }
+                                                  return (
+                                                    <div
+                                                      className={cn(
+                                                        'flex gap-2 items-start border border-border/50 bg-card/60 rounded-lg px-2 py-1.5 max-w-[280px]',
+                                                        notDownloaded && 'opacity-70 bg-muted/60'
+                                                      )}
+                                                    >
+                                                      {notDownloaded ? (
+                                                        <button
+                                                          type="button"
+                                                          className={cn(
+                                                            'shrink-0 w-10 h-10 flex items-center justify-center rounded bg-muted/80 transition-colors',
+                                                            attachmentStateLabel === 'Available' && 'hover:bg-muted cursor-pointer'
+                                                          )}
+                                                          title={attachmentStateLabel === 'Available' ? 'Click to download' : 'Not downloaded'}
+                                                          onClick={attachmentStateLabel === 'Available' ? () => requestAttachmentDownload(msg) : undefined}
+                                                          disabled={attachmentStateLabel !== 'Available'}
+                                                        >
+                                                          <Download className="h-5 w-5 text-white" />
+                                                        </button>
+                                                      ) : (
+                                                        <FileIcon
+                                                          fileName={att.file_name}
+                                                          attachmentId={!hasPath && (isOwn ? sharedItem?.can_share_now : false) ? att.attachment_id : null}
+                                                          savedPath={hasPath ?? undefined}
+                                                          thumbnailPath={thumbPath ?? undefined}
+                                                          onMediaClick={(url, type, attachmentId, fileName) => {
+                                                            if (isMedia) {
+                                                              setMediaPreview({
+                                                                type: type as 'image' | 'video',
+                                                                url: url ?? (attachmentId ? null : mediaPreviewPath ? convertFileSrc(mediaPreviewPath) : null),
+                                                                attachmentId,
+                                                                fileName: fileName ?? att.file_name,
+                                                              })
+                                                            }
+                                                          }}
+                                                          boxSize={40}
+                                                        />
+                                                      )}
+                                                      <div className="min-w-0 flex-1 py-0.5">
+                                                        <FilenameEllipsis name={att.file_name} className="block text-xs truncate leading-4" />
+                                                        <div className="text-[10px] text-muted-foreground truncate">
+                                                          {formatBytes(att.size_bytes)}
+                                                          {att.extension ? ` .${att.extension}` : ''}
+                                                        </div>
+                                                        {showProgress && (
+                                                          <div className="mt-1 h-1 bg-foreground/15 overflow-hidden rounded-full">
+                                                            <div
+                                                              className={cn('h-full', liveDownload?.status === 'completed' ? 'bg-emerald-400/80' : 'bg-violet-400/85')}
+                                                              style={{ width: `${Math.max(2, p)}%` }}
+                                                            />
+                                                          </div>
+                                                        )}
+                                                        {liveDownload?.status === 'completed' && liveDownload.saved_path && (
+                                                          <span className="block text-[9px] text-muted-foreground truncate mt-0.5" title={liveDownload.saved_path}>
+                                                            Saved
+                                                          </span>
+                                                        )}
+                                                      </div>
+                                                      <div className="shrink-0 flex flex-col gap-0.5 justify-center">
+                                                        {!notDownloaded && !isOwn && !alreadyDownloadedAccessible && !hasActiveDownload && attachmentStateLabel === 'Available' && (
+                                                          <Button
+                                                            type="button"
+                                                            variant="outline"
+                                                            size="icon"
+                                                            className="h-7 w-7"
+                                                            onClick={() => requestAttachmentDownload(msg)}
+                                                            title="Download"
+                                                          >
+                                                            <Download className="h-3.5 w-3.5" />
+                                                          </Button>
+                                                        )}
+                                                      </div>
+                                                    </div>
+                                                  )
+                                                })()}
+                                              </div>
+                                            </div>
+                                          ) : (
+                                            <p className="text-sm whitespace-pre-wrap break-words">{msg.text}</p>
+                                          )}
                                         </div>
-                                        {t.direction === 'download' && t.status === 'completed' && t.saved_path && (
-                                          <div className="truncate" title={t.saved_path}>
-                                            Saved: {t.saved_path}
+                                        {msg.from_user_id === identity?.user_id && (msg.id === lastDeliveredMessageId || msg.id === lastPendingMessageId) && (
+                                          <div className="text-[10px] text-muted-foreground mt-0.5">
+                                            {msg.id === lastDeliveredMessageId ? 'Delivered' : 'Pending'}
+                                            {msg.id === lastPendingMessageId && (msg.delivered_by ?? []).filter((uid) => uid !== identity?.user_id).length > 0 && (
+                                              <span className="ml-1">({(msg.delivered_by ?? []).filter((uid) => uid !== identity?.user_id).length} online)</span>
+                                            )}
                                           </div>
                                         )}
                                       </div>
-                                    ))}
-                                  </div>
-                                )}
-                                {!mine && (
-                                  <p className="mt-1 text-[10px] text-muted-foreground">
-                                    Download saves to your system Downloads folder by default. Change it in Settings - Downloads.
-                                  </p>
-                                )}
+                                    )
+                                  })}
+                                </div>
                               </div>
-                            ) : (
-                              <p className="text-sm whitespace-pre-wrap break-words">{msg.text}</p>
-                            )}
-                            {mine && (
-                              <div className="mt-1 text-[10px] text-muted-foreground relative group/receipt">
-                                <span
-                                  title={
-                                    msg.delivery_status === 'delivered'
-                                      ? 'Someone has opened this server and read or saved this message'
-                                      : 'Waiting to be sent or read by another user'
-                                  }
-                                >
-                                  {statusLabel}
-                                </span>
-                                {msg.delivery_status !== 'delivered' && deliveredBy.length > 0 && (
-                                  <span className="ml-1 text-[9px] text-muted-foreground">({deliveredBy.length} online)</span>
-                                )}
-                              </div>
-                            )}
-                          </div>
+                            )
+                          })}
                         </div>
                       )
-                    })}
+                    })()}
                   </div>
                 </div>
 
                 <div className="border-t-2 border-border p-4 bg-card/50">
+                  {mediaPreview && (
+                    <MediaPreviewModal
+                      type={mediaPreview.type}
+                      url={mediaPreview.url}
+                      attachmentId={mediaPreview.attachmentId}
+                      fileName={mediaPreview.fileName}
+                      onClose={() => {
+                        if (mediaPreview.url?.startsWith('blob:')) URL.revokeObjectURL(mediaPreview.url)
+                        setMediaPreview(null)
+                      }}
+                    />
+                  )}
                   <form
-                    className="max-w-4xl mx-auto"
+                    className="max-w-6xl mx-auto"
                     onSubmit={(e) => {
                       e.preventDefault()
                       handleSendMessage()
                     }}
                   >
-                    <div className="flex items-center gap-2">
+                    {stagedAttachments.length > 0 && (
+                      <div className="flex flex-wrap gap-2 mb-3">
+                        {stagedAttachments.map((att) => {
+                          const category = att.file_name ? getFileTypeFromExt(att.file_name) : 'default'
+                          const isMedia = att.file_name && isMediaType(category as Parameters<typeof isMediaType>[0])
+                          // For video: thumbnail_path = first-frame JPEG (display only); file_path/source_path = actual video (preview)
+                          // For image: any path works for both display and preview
+                          const isVideo = category === 'video'
+                          const mediaPreviewPath = isVideo
+                            ? (att.file_path || att.source_path)
+                            : (att.file_path || att.source_path || att.thumbnail_path)
+                          return (
+                            <div
+                              key={att.attachment_id}
+                              className="flex items-start gap-2 w-[165px] h-[80px] shrink-0 border-2 border-border bg-card rounded-lg px-2 py-2 overflow-hidden"
+                            >
+                              <FileIcon
+                                fileName={att.file_name}
+                                attachmentId={att.status === 'ready' ? att.attachment_id : null}
+                                savedPath={mediaPreviewPath ?? undefined}
+                                thumbnailPath={att.thumbnail_path ?? undefined}
+                                onMediaClick={(url, type, attachmentId, fileName) => {
+                                  if (isMedia) {
+                                    setMediaPreview({
+                                      type: type as 'image' | 'video',
+                                      url: url ?? (attachmentId ? null : mediaPreviewPath ? convertFileSrc(mediaPreviewPath) : null),
+                                      attachmentId,
+                                      fileName: fileName ?? att.file_name,
+                                    })
+                                  }
+                                }}
+                                boxSize={48}
+                              />
+                              <div className="min-w-0 flex-1 flex flex-col gap-1">
+                                <FilenameEllipsis name={att.file_name} className="text-xs truncate" />
+                                <div className="flex items-center gap-1">
+                                  <span className="text-[10px] text-muted-foreground">{formatBytes(att.size_bytes)}</span>
+                                  {att.status !== 'ready' && (
+                                    <span className="text-[10px] text-amber-500">preparing</span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-1 mt-0.5">
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    className={cn('h-6 w-6', att.spoiler && 'text-amber-500')}
+                                    onClick={() => handleToggleStagedSpoiler(att.attachment_id)}
+                                    title={att.spoiler ? 'Marked as spoiler' : 'Mark as spoiler'}
+                                  >
+                                    {att.spoiler ? (
+                                      <EyeOff className="h-3.5 w-3.5" />
+                                    ) : (
+                                      <Eye className="h-3.5 w-3.5" />
+                                    )}
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-6 w-6 text-red-300 hover:text-red-200"
+                                    onClick={() => handleRemoveStagedAttachment(att.attachment_id)}
+                                    title="Remove"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </Button>
+                                </div>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                    <div className="flex items-end gap-2">
                       <Button
                         type="button"
                         size="icon"
                         variant="outline"
                         className="h-11 w-11 shrink-0"
                         disabled={!canSendMessages}
-                        onClick={handleSendAttachment}
-                        title="Attach file"
+                        onClick={handleAddAttachment}
+                        title="Attach file(s)"
                       >
                         <Paperclip className="h-4 w-4" />
                       </Button>
-                      <input
-                        type="text"
+                      <textarea
+                        ref={messageInputRef}
                         value={messageDraft}
-                        onChange={(e) => setMessageDraft(e.target.value)}
+                        onChange={(e) => {
+                          const v = e.target.value
+                          setMessageDraft(v)
+                          draftValueRef.current = v
+                          if (server && currentAccountId) {
+                            if (draftSaveTimeoutRef.current) clearTimeout(draftSaveTimeoutRef.current)
+                            draftSaveTimeoutRef.current = setTimeout(() => {
+                              setDraft(currentAccountId, server.signing_pubkey, v)
+                              draftSaveTimeoutRef.current = null
+                            }, DRAFT_SAVE_DEBOUNCE_MS)
+                          }
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault()
+                            handleSendMessage()
+                          }
+                        }}
                         placeholder={
                           canSendMessages
-                            ? 'Message (live-only)'
+                            ? ''
                             : beaconStatus !== 'connected'
                               ? 'Beacon disconnected - messages unavailable'
                               : 'Messaging unavailable for this connection mode'
                         }
-                        className="w-full px-4 py-3 bg-background border border-border rounded-lg text-sm font-light focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-60"
+                        rows={1}
+                        maxLength={MESSAGE_MAX_LENGTH}
+                        style={{ maxHeight: MESSAGE_INPUT_MAX_HEIGHT }}
+                        className="w-full min-h-[44px] resize-none overflow-y-hidden [scrollbar-gutter:stable_both-edges] px-4 py-3 bg-background border border-border rounded-lg text-sm font-light focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-60"
                         disabled={!canSendMessages}
                       />
                       <Button
                         type="submit"
                         size="sm"
-                        className="h-11 px-4 gap-2"
-                        disabled={!canSendMessages || messageDraft.trim().length === 0}
+                        className="h-11 px-4 gap-2 shrink-0"
+                        disabled={
+                          !canSendMessages ||
+                          (messageDraft.trim().length === 0 && !stagedAttachments.some((a) => a.status === 'ready'))
+                        }
                       >
                         <Send className="h-4 w-4" />
                         Send
                       </Button>
                     </div>
-                    <p className="text-xs text-muted-foreground mt-2">
-                      Encrypted messaging with sender-hosted attachments. Recipients download directly from the original sender while both are online.
-                    </p>
                   </form>
                 </div>
               </div>
@@ -638,40 +1190,53 @@ function ServerViewPage() {
           )}
         </div>
 
-        {/* Right Sidebar - Members List */}
-        <div className="w-64 border-l-2 border-border bg-card/50 flex flex-col">
-          <div className="p-4 space-y-2 flex-1 overflow-y-auto">
+        {/* Right Sidebar - Members List (same width as friends list: 12.25rem) */}
+        <div className="w-[12.25rem] shrink-0 border-l-2 border-border bg-card/50 flex flex-col">
+          <div className="p-4 pt-5 space-y-2 flex-1 overflow-y-auto">
             <h2 className="text-xs font-light tracking-wider uppercase text-muted-foreground px-2">
               Members — {(server.members ?? []).length}
             </h2>
-            <div className="space-y-1">
-              {(server.members ?? []).map((member) => (
-                <div
-                  key={member.user_id}
-                  className="px-3 py-2 rounded-md hover:bg-accent/50 transition-colors"
-                >
-                  <div className="flex items-center gap-2">
-                    <div className="relative">
-                      <div
-                        className="w-8 h-8 grid place-items-center rounded-none text-[10px] font-mono tracking-wider ring-2 ring-background"
-                        style={avatarStyleForUser(member.user_id)}
-                        title={member.display_name}
-                      >
-                        {getInitials(member.display_name)}
-                      </div>
-                      {/* Presence badge "attached" to the avatar */}
-                      <div className="absolute left-0 top-1/2 -translate-x-1/2 -translate-y-1/2">
-                        <PresenceSquare level={getMemberLevel(
-                          server.signing_pubkey,
-                          member.user_id,
-                          voicePresence.isUserInVoice(server.signing_pubkey, member.user_id)
-                        )} />
+            <div className="space-y-0.5">
+              {(server.members ?? []).map((member) => {
+                const rp = remoteProfiles.getProfile(member.user_id)
+                const displayName = member.display_name
+                const level = getMemberLevel(
+                  server.signing_pubkey,
+                  member.user_id,
+                  voicePresence.isUserInVoice(server.signing_pubkey, member.user_id)
+                )
+                return (
+                  <button
+                    key={member.user_id}
+                    type="button"
+                    className="flex gap-2 px-2 py-1.5 rounded-md hover:bg-accent/50 transition-colors w-full text-left min-w-0 overflow-visible"
+                    onClick={(e) => {
+                      setProfileCardUserId(member.user_id)
+                      setProfileCardAnchor((e.currentTarget as HTMLElement).getBoundingClientRect())
+                    }}
+                  >
+                    <div
+                      className="relative h-7 w-7 shrink-0 grid place-items-center rounded-none ring-2 ring-background will-change-transform transition-transform duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.06] overflow-visible"
+                      style={!rp?.avatar_data_url ? avatarStyleForUser(member.user_id) : undefined}
+                    >
+                      {rp?.avatar_data_url ? (
+                        <img src={rp.avatar_data_url} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        <span className="text-[9px] font-mono tracking-wider">{getInitials(displayName)}</span>
+                      )}
+                      <div className="absolute -top-1 left-1/2 -translate-x-1/2">
+                        <PresenceSquare level={level} />
                       </div>
                     </div>
-                    <span className="text-sm font-light truncate">{member.display_name}</span>
-                  </div>
-                </div>
-              ))}
+                    <div className="min-w-0 flex-1 flex flex-col justify-center">
+                      <p className="text-xs font-light truncate">{displayName}</p>
+                      {rp?.show_secondary && rp.secondary_name ? (
+                        <p className="text-[11px] text-muted-foreground truncate">{rp.secondary_name}</p>
+                      ) : null}
+                    </div>
+                  </button>
+                )
+              })}
             </div>
           </div>
 

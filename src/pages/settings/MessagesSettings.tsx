@@ -90,7 +90,7 @@ export function MessagesSettings() {
           </div>
           <div className="space-y-1">
             <Label htmlFor="msg-max-on-open" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Max messages on server open
+              Max messages to sync from peers on open
             </Label>
             <Input
               id="msg-max-on-open"
@@ -108,7 +108,7 @@ export function MessagesSettings() {
               className="h-9 w-40"
             />
             <p className="text-xs text-muted-foreground">
-              How many messages to load when opening this server.
+              When opening a server, request the most recent N messages from other online users who have been chatting. Your own saved history always loads in full.
             </p>
           </div>
           <div className="space-y-1">
@@ -138,8 +138,8 @@ export function MessagesSettings() {
 
         <div className="rounded-md border border-border/50 bg-muted/20 p-4">
           <p className="text-xs text-muted-foreground">
-            Current behavior: <span className="text-foreground capitalize">{settings.mode}</span> mode,{' '}
-            <span className="text-foreground">{settings.max_messages_on_open}</span> messages on open,{' '}
+            Current behavior: <span className="text-foreground capitalize">{settings.mode}</span> mode, load all saved history on open, sync up to{' '}
+            <span className="text-foreground">{settings.max_messages_on_open}</span> from peers when available,{' '}
             <span className="text-foreground">{settings.max_storage_mb}MB</span> max storage.
           </p>
         </div>

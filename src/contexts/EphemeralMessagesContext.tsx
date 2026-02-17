@@ -37,6 +37,7 @@ export interface EphemeralAttachmentMeta {
   extension: string
   size_bytes: number
   sha256: string
+  spoiler?: boolean
 }
 
 export interface EphemeralChatMessage {
@@ -386,8 +387,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
       if (!raw) return
       const parsed = JSON.parse(raw) as EphemeralChatMessage[]
       if (!Array.isArray(parsed) || parsed.length === 0) return
-      const limit = ensureSettingsLoaded(signingPubkey).max_messages_on_open
-      const loaded = parsed.slice(-limit)
+      const loaded = parsed
       setMessagesByBucket((prev) => {
         if ((prev[bucket] ?? []).length > 0) return prev
       const merged = { ...prev, [bucket]: loaded }

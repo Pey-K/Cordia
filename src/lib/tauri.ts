@@ -137,6 +137,10 @@ export interface AttachmentRegistrationResult {
   extension: string
   size_bytes: number
   storage_mode: 'current_path' | 'program_copy' | string
+  thumbnail_path?: string | null
+  source_path?: string | null
+  file_path?: string | null
+  status?: string | null
 }
 
 export interface SharedAttachmentItem {

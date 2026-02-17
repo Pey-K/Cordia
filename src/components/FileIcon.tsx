@@ -29,6 +29,8 @@ type Props = {
   /** Called when image/video thumbnail is clicked. For video with attachmentId, url is null and attachmentId is provided for deferred loading. */
   onMediaClick?: (url: string | null, type: 'image' | 'video', attachmentId?: string, fileName?: string) => void
   className?: string
+  /** Override box size in pixels (default THUMB_SIZE) */
+  boxSize?: number
 }
 
 function IconForCategory({ cat, className }: { cat: FileTypeCategory; className?: string }) {
@@ -62,6 +64,7 @@ export function FileIcon({
   thumbnailPath,
   onMediaClick,
   className = '',
+  boxSize = THUMB_SIZE,
 }: Props) {
   const category = getFileTypeFromExt(fileName)
   const [mediaUrl, setMediaUrl] = useState<string | null>(null)
@@ -153,7 +156,7 @@ export function FileIcon({
       <button
         type="button"
         className={`${boxCls} cursor-pointer hover:opacity-90 transition-opacity`}
-        style={{ width: THUMB_SIZE, height: THUMB_SIZE }}
+        style={{ width: boxSize, height: boxSize }}
         onClick={() => onMediaClick?.(fullImageUrl, 'image', undefined, fileName)}
         title="Click to expand"
       >
@@ -174,7 +177,7 @@ export function FileIcon({
       <button
         type="button"
         className={`${boxCls} relative cursor-pointer hover:opacity-90 transition-opacity group`}
-        style={{ width: THUMB_SIZE, height: THUMB_SIZE }}
+        style={{ width: boxSize, height: boxSize }}
         onClick={() => {
           if (savedPath) {
             onMediaClick?.(convertFileSrc(savedPath), 'video', undefined, fileName)
@@ -223,7 +226,7 @@ export function FileIcon({
   return (
     <div
       className={boxCls}
-      style={{ width: THUMB_SIZE, height: THUMB_SIZE }}
+      style={{ width: boxSize, height: boxSize }}
     >
       <IconForCategory cat={category} className="text-muted-foreground" />
     </div>

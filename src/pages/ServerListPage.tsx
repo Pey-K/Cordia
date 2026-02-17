@@ -23,6 +23,7 @@ import { useServers } from '../contexts/ServersContext'
 import { useFriends } from '../contexts/FriendsContext'
 import { useToast } from '../contexts/ToastContext'
 import { useEphemeralMessages } from '../contexts/EphemeralMessagesContext'
+import { clearDraft } from '../lib/messageDrafts'
 
 /** Strip to raw 8-char code (no dash). Used so dash is never part of stored/copied value. */
 function normalizeFriendCode(code: string): string {
@@ -691,6 +692,7 @@ function ServerListPage() {
       window.dispatchEvent(
         new CustomEvent('cordia:server-removed', { detail: { signing_pubkey: deleteTarget.signing_pubkey } })
       )
+      if (currentAccountId) clearDraft(currentAccountId, deleteTarget.signing_pubkey)
 
       // Best-effort: advertise leave to other members (requires symmetric key to encrypt hint).
       // If this fails (e.g. server missing key), we still delete locally so the user can always leave.
