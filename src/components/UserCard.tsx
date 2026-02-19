@@ -66,8 +66,8 @@ export function UserCard({ embedded = false, compact = false, variant = 'default
     if (!userId) return undefined
     const h = hashId(userId) % 360
     return {
-      backgroundColor: `hsl(${h} 60% 78%)`,
-      color: `hsl(${h} 35% 25%)`,
+      backgroundColor: `hsl(${h}, 45%, 35%)`,
+      color: '#fff',
     }
   }, [identity?.user_id])
 

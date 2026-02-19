@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect, type ReactNode, type CSSProperties } from 'react'
-import { Bell, Users } from 'lucide-react'
+import { useState, useRef, useEffect, useCallback, type ReactNode, type CSSProperties } from 'react'
+import { Users } from 'lucide-react'
 
 const DRAWER_CLOSED_WIDTH = 48 // px - matches PFP strip
 const DRAWER_OPEN_WIDTH = 196 // 12.25rem
@@ -24,15 +24,12 @@ type StripFriend = {
 }
 
 type DrawerPanelProps = {
-  friendsPaneMode: 'friends' | 'pending'
-  pendingOutgoingCount: number
-  mergedIncomingCount: number
   stripFriends: StripFriend[]
-  stripPending: StripFriend[]
   getInitials: (name: string) => string
   avatarStyleForUser: (userId: string) => CSSProperties
   onAvatarClick: (userId: string, rect: DOMRect) => void
-  onToggleMode: () => void
+  /** Open the full friends overlay (settings-style) */
+  onOpenFriendsOverlay?: () => void
   /** When true, drawer stays open (e.g. invite/friend code popup is open) */
   popoverOpen?: boolean
   /** Increment to force-close drawer when popover closed by click-outside */
@@ -141,21 +138,18 @@ export function FriendsDrawer({ stripHeader, stripContent, children, stayOpen = 
 }
 
 export function FriendsDrawerPanel({
-  friendsPaneMode,
-  pendingOutgoingCount,
-  mergedIncomingCount,
   stripFriends,
-  stripPending,
   getInitials,
   avatarStyleForUser,
   onAvatarClick,
-  onToggleMode,
+  onOpenFriendsOverlay,
   popoverOpen = false,
   closeDrawerTrigger,
   children,
 }: DrawerPanelProps) {
-  const isFriends = friendsPaneMode === 'friends'
-  const list = isFriends ? stripFriends : stripPending
+  const handleFriendsClick = useCallback(() => {
+    onOpenFriendsOverlay?.()
+  }, [onOpenFriendsOverlay])
 
   return (
     <FriendsDrawer
@@ -165,37 +159,16 @@ export function FriendsDrawerPanel({
         <button
           type="button"
           className="relative h-8 w-8 grid place-items-center rounded-none hover:bg-accent/30"
-          onClick={onToggleMode}
-          title={isFriends ? 'Pending invites' : 'Back to friends'}
+          onClick={handleFriendsClick}
+          title="Friends"
         >
-          {isFriends ? (
-            <>
-              <Bell className="h-4 w-4" />
-              {pendingOutgoingCount > 0 && (
-                <span
-                  className="absolute -top-0.5 left-0.5 min-w-[0.75rem] h-3.5 px-0.5 flex items-center justify-center rounded-sm bg-gray-500 text-black border border-border text-[8px] font-medium leading-none pointer-events-none"
-                  title={`${pendingOutgoingCount} outgoing`}
-                >
-                  {pendingOutgoingCount > 99 ? '99+' : pendingOutgoingCount}
-                </span>
-              )}
-              {mergedIncomingCount > 0 && (
-                <span
-                  className="absolute -top-0.5 right-0.5 min-w-[0.75rem] h-3.5 px-0.5 flex items-center justify-center rounded-sm bg-green-500 text-white border border-border text-[8px] font-medium leading-none pointer-events-none"
-                  title={`${mergedIncomingCount} incoming`}
-                >
-                  {mergedIncomingCount > 99 ? '99+' : mergedIncomingCount}
-                </span>
-              )}
-            </>
-          ) : (
-            <Users className="h-4 w-4" />
-          )}
+          <Users className="h-4 w-4" />
         </button>
       }
       stripContent={
         <div className="flex flex-col items-center gap-2 min-h-0 flex-1">
-          {isFriends ? (() => {
+          {(() => {
+            const list = stripFriends
             const offlineIdx = list.findIndex((f) => f.bestLevel === 'offline')
             const hasOfflineSep = offlineIdx > 0 && offlineIdx < list.length
             const online = hasOfflineSep ? list.slice(0, offlineIdx) : list
@@ -240,22 +213,7 @@ export function FriendsDrawerPanel({
                 {offline.map((f) => renderPfp(f))}
               </>
             )
-          })() : list.map(({ userId, displayName, avatarDataUrl }) => (
-            <button
-              key={userId}
-              type="button"
-              className="relative h-7 w-7 shrink-0 grid place-items-center rounded-none ring-2 ring-background"
-              style={!avatarDataUrl ? avatarStyleForUser(userId) : undefined}
-              onClick={(e) => onAvatarClick(userId, (e.currentTarget as HTMLElement).getBoundingClientRect())}
-              aria-label={displayName}
-            >
-              {avatarDataUrl ? (
-                <img src={avatarDataUrl} alt="" className="w-full h-full object-cover" />
-              ) : (
-                <span className="text-[9px] font-mono tracking-wider">{getInitials(displayName)}</span>
-              )}
-            </button>
-          ))}
+          })()}
         </div>
       }
     >

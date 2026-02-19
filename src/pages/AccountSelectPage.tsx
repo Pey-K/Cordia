@@ -150,8 +150,8 @@ function AccountSelectPage() {
   const avatarStyleForUser = (userId: string): CSSProperties => {
     const h = hashId(userId) % 360
     return {
-      backgroundColor: `hsl(${h} 60% 78%)`,
-      color: `hsl(${h} 35% 25%)`,
+      backgroundColor: `hsl(${h}, 45%, 35%)`,
+      color: '#fff',
     }
   }
 

@@ -17,6 +17,7 @@ import { useWebRTC } from '../contexts/WebRTCContext'
 import { BeaconStatus } from '../components/BeaconStatus'
 import { useBeacon } from '../contexts/BeaconContext'
 import { TransferCenterButton } from '../components/TransferCenterButton'
+import { NotificationCenterButton } from '../components/NotificationCenterButton'
 import { FilenameEllipsis } from '../components/FilenameEllipsis'
 import { formatBytes } from '../lib/bytes'
 import { usePresence, type PresenceLevel } from '../contexts/PresenceContext'
@@ -133,8 +134,8 @@ function ServerViewPage() {
   const avatarStyleForUser = (userId: string): CSSProperties => {
     const h = hashId(userId) % 360
     return {
-      backgroundColor: `hsl(${h} 60% 78%)`,
-      color: `hsl(${h} 35% 25%)`,
+      backgroundColor: `hsl(${h}, 45%, 35%)`,
+      color: '#fff',
     }
   }
 
@@ -513,6 +514,7 @@ function ServerViewPage() {
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <BeaconStatus />
+            <NotificationCenterButton />
             <TransferCenterButton />
             <UserCard
               variant="header"
