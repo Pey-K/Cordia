@@ -3,6 +3,8 @@
 
 mod identity;
 mod audio_settings;
+mod audio_capture;
+mod audio_dsp;
 mod server;
 mod beacon;
 mod account_manager;
@@ -13,6 +15,8 @@ mod file_association;
 use tauri::Manager;
 use identity::{IdentityManager, UserIdentity};
 use audio_settings::{AudioSettingsManager, AudioSettings};
+use audio_capture::{enumerate_devices, start_capture, stop_capture, AudioDevice, AudioDropStats};
+use audio_dsp::{get_dsp, InputMode};
 use server::{ServerManager, ServerInfo};
 use beacon::{check_beacon_health, get_default_beacon_url};
 use account_manager::{AccountManager, SessionState, AccountInfo, KnownProfile, KnownProfileForExport};
@@ -2250,6 +2254,138 @@ fn get_friend_auth_headers(
     Ok(headers)
 }
 
+// === Native Audio Commands ===
+
+#[tauri::command]
+fn enumerate_audio_devices_native() -> Result<Vec<AudioDevice>, String> {
+    enumerate_devices()
+}
+
+/// Bounded capacity for processed frames: ~30 ms. If JS doesn't drain in time, we drop (never block Rust).
+const PROCESSED_FRAME_QUEUE_CAP: usize = 3;
+
+#[tauri::command]
+fn start_audio_capture(
+    app: tauri::AppHandle,
+    device_id: Option<String>,
+) -> Result<(), String> {
+    // Bounded channel: processing thread uses try_send; when full, frames are dropped (audio loss > latency).
+    let (processed_tx, processed_rx) = std::sync::mpsc::sync_channel(PROCESSED_FRAME_QUEUE_CAP);
+    let (level_tx, level_rx) = std::sync::mpsc::channel();
+
+    start_capture(device_id, processed_tx, level_tx)?;
+
+    let app_clone = app.clone();
+    std::thread::spawn(move || {
+        // Level updates: event-driven, no polling
+        let app_level = app_clone.clone();
+        std::thread::spawn(move || {
+            loop {
+                match level_rx.recv() {
+                    Ok(level) => {
+                        let _ = app_level.emit_all("cordia:audio-level", level);
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        // Emitter: drain opportunistically, batch 2–3 frames to reduce IPC jitter. Never block Rust.
+        const BATCH_SIZE: usize = 2;
+        const RECV_TIMEOUT_MS: u64 = 25; // ~2.5 frames at 10 ms/frame; if nothing, emit what we have
+        let timeout = std::time::Duration::from_millis(RECV_TIMEOUT_MS);
+        let mut batch: Vec<f32> = Vec::with_capacity(480 * BATCH_SIZE);
+        loop {
+            batch.clear();
+            let mut got_any = false;
+            for _ in 0..BATCH_SIZE {
+                match processed_rx.recv_timeout(timeout) {
+                    Ok(frame) => {
+                        batch.extend_from_slice(&frame);
+                        got_any = true;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                }
+            }
+            if got_any && !batch.is_empty() {
+                let frame_bytes: Vec<u8> = batch
+                    .iter()
+                    .flat_map(|f| f.to_le_bytes().to_vec())
+                    .collect();
+                let frame_b64 = base64::encode(&frame_bytes);
+                let _ = app_clone.emit_all("cordia:audio-frame", frame_b64);
+            }
+        }
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_audio_capture() -> Result<(), String> {
+    stop_capture();
+    Ok(())
+}
+
+#[tauri::command]
+fn set_audio_gain(gain: f32) -> Result<(), String> {
+    let dsp = get_dsp();
+    let mut dsp_guard = dsp.lock().map_err(|_| "Failed to lock DSP".to_string())?;
+    dsp_guard.set_gain(gain);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_audio_threshold(threshold: f32) -> Result<(), String> {
+    let dsp = get_dsp();
+    let mut dsp_guard = dsp.lock().map_err(|_| "Failed to lock DSP".to_string())?;
+    dsp_guard.set_threshold(threshold);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_audio_input_mode(mode: String) -> Result<(), String> {
+    let dsp = get_dsp();
+    let mut dsp_guard = dsp.lock().map_err(|_| "Failed to lock DSP".to_string())?;
+    let input_mode = match mode.as_str() {
+        "voice_activity" => InputMode::VoiceActivity,
+        "push_to_talk" => InputMode::PushToTalk,
+        _ => return Err(format!("Invalid input mode: {}", mode)),
+    };
+    dsp_guard.set_input_mode(input_mode);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_ptt_key_pressed(pressed: bool) -> Result<(), String> {
+    let dsp = get_dsp();
+    let mut dsp_guard = dsp.lock().map_err(|_| "Failed to lock DSP".to_string())?;
+    dsp_guard.set_ptt_pressed(pressed);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_transmission_muted(muted: bool) -> Result<(), String> {
+    let dsp = get_dsp();
+    let mut dsp_guard = dsp.lock().map_err(|_| "Failed to lock DSP".to_string())?;
+    dsp_guard.set_transmission_muted(muted);
+    Ok(())
+}
+
+#[tauri::command]
+fn get_audio_level() -> Result<f32, String> {
+    let dsp = get_dsp();
+    let dsp_guard = dsp.lock().map_err(|_| "Failed to lock DSP".to_string())?;
+    Ok(dsp_guard.get_level())
+}
+
+/// Drop/underrun stats for dev overlay or debug. Resets on each start_audio_capture.
+#[tauri::command]
+fn get_audio_drop_stats_command() -> AudioDropStats {
+    audio_capture::get_audio_drop_stats()
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -2282,6 +2418,17 @@ fn main() {
             // Audio settings commands
             load_audio_settings,
             save_audio_settings,
+            // Native audio commands
+            enumerate_audio_devices_native,
+            start_audio_capture,
+            stop_audio_capture,
+            set_audio_gain,
+            set_audio_threshold,
+            set_audio_input_mode,
+            set_ptt_key_pressed,
+            set_transmission_muted,
+            get_audio_level,
+            get_audio_drop_stats_command,
             // House commands
             create_server,
             list_servers,

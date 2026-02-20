@@ -38,80 +38,32 @@ export async function enumerateAudioDevices(): Promise<{
   outputDevices: AudioDevice[]
 }> {
   try {
-    // Request permission to access audio devices (required for device labels)
-    // Only request if we don't already have an active stream
-    let stream: MediaStream | null = null
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      // Stop immediately, we just needed permission
-      stream.getTracks().forEach(track => track.stop())
-    } catch (permError) {
-      console.warn('Permission denied for audio devices:', permError)
-      // Continue anyway - we might still get device IDs without labels
-    }
-
-    // Enumerate devices
-    const devices = await navigator.mediaDevices.enumerateDevices()
-    console.log('Enumerated devices:', devices.length, 'total')
+    // Use native Rust enumeration (no permissions needed!)
+    const { enumerateAudioDevicesNative } = await import('./nativeAudio')
+    const nativeDevices = await enumerateAudioDevicesNative()
     
-    // Process input devices - filter out prefixed ones and clean labels
-    const rawInputDevices = devices
-      .filter(device => device.kind === 'audioinput')
-      .filter(device => {
-        // Filter out "Default -" and "Communications -" prefixed devices
-        const label = device.label || ''
-        // If label is empty, still include it (permission issue, but device exists)
-        if (!label) return true
-        return !/^(Default|Communications|Multimedia)\s*-\s*/i.test(label)
-      })
-      .map(device => ({
-        deviceId: device.deviceId,
-        label: device.label 
-          ? cleanDeviceLabel(device.label)
-          : `Microphone ${device.deviceId.slice(0, 8)}`,
-        kind: 'audioinput' as const,
-      }))
-
-    // Process output devices - filter out prefixed ones, clean labels, and deduplicate
-    const rawOutputDevices = devices
-      .filter(device => device.kind === 'audiooutput')
-      .filter(device => {
-        // Filter out "Default -" and "Communications -" prefixed devices
-        const label = device.label || ''
-        // If label is empty, still include it (permission issue, but device exists)
-        if (!label) return true
-        return !/^(Default|Communications|Multimedia)\s*-\s*/i.test(label)
-      })
-      .map(device => ({
-        deviceId: device.deviceId,
-        originalLabel: device.label || `Speaker ${device.deviceId.slice(0, 8)}`,
-        label: device.label
-          ? cleanDeviceLabel(device.label)
-          : `Speaker ${device.deviceId.slice(0, 8)}`,
-        kind: 'audiooutput' as const,
-      }))
-
-    // Deduplicate output devices by cleaned label (keep first occurrence)
-    const outputDeviceMap = new Map<string, AudioDevice>()
-    for (const device of rawOutputDevices) {
-      if (!outputDeviceMap.has(device.label)) {
-        outputDeviceMap.set(device.label, device)
-      }
-    }
-
-    const result = { 
-      inputDevices: rawInputDevices, 
-      outputDevices: Array.from(outputDeviceMap.values())
-    }
+    // Convert to AudioDevice format
+    const inputDevices: AudioDevice[] = nativeDevices.inputDevices.map(d => ({
+      deviceId: d.device_id,
+      label: d.label,
+      kind: d.kind as 'audioinput'
+    }))
     
-    console.log('Processed devices:', {
-      input: result.inputDevices.length,
-      output: result.outputDevices.length
+    const outputDevices: AudioDevice[] = nativeDevices.outputDevices.map(d => ({
+      deviceId: d.device_id,
+      label: d.label,
+      kind: d.kind as 'audiooutput'
+    }))
+    
+    console.log('Enumerated devices (native):', {
+      input: inputDevices.length,
+      output: outputDevices.length
     })
-
-    return result
+    
+    return { inputDevices, outputDevices }
   } catch (error) {
-    console.error('Failed to enumerate audio devices:', error)
+    console.error('Failed to enumerate audio devices (native):', error)
+    // Fallback: return empty arrays
     return { inputDevices: [], outputDevices: [] }
   }
 }
@@ -134,11 +86,15 @@ export function setupDeviceChangeListener(
 }
 
 export class InputLevelMeter {
+  // Native audio capture (replaces Web Audio API)
+  private nativeCapture: any = null // NativeAudioCapture instance
+  private stream: MediaStream | null = null
+  
+  // Legacy Web Audio API fields (kept for compatibility, but not used with native capture)
   private audioContext: AudioContext | null = null
   private analyser: AnalyserNode | null = null
   private gainNode: GainNode | null = null
   private microphone: MediaStreamAudioSourceNode | null = null
-  private stream: MediaStream | null = null
   private dataArray: Float32Array | null = null
   private animationFrame: number | null = null
   private onLevelUpdate: ((level: number) => void) | null = null
@@ -153,6 +109,9 @@ export class InputLevelMeter {
   private useVoiceActivity: boolean = true // false for push-to-talk (raw audio always on)
   private isPttKeyPressed: boolean = false // PTT key state
   private isTransmissionMuted: boolean = false // Manual mute (overrides VAD/PTT)
+  
+  // Use native capture by default
+  private useNativeCapture: boolean = true
 
   async start(
     deviceId: string | null,
@@ -162,6 +121,27 @@ export class InputLevelMeter {
     this.onLevelUpdate = onLevelUpdate
 
     try {
+      // Use native capture (system-level, no mic prompt)
+      if (this.useNativeCapture) {
+        try {
+          const { NativeAudioCapture } = await import('./nativeAudio')
+          const { invoke } = await import('@tauri-apps/api/tauri')
+          
+          this.nativeCapture = new NativeAudioCapture()
+          this.stream = await this.nativeCapture.start(deviceId, onLevelUpdate)
+          
+          // Apply saved settings to native DSP
+          // These will be set via Tauri commands
+          console.log('[Audio] Native capture started successfully')
+          return
+        } catch (nativeError) {
+          console.error('[Audio] Native capture failed, falling back to getUserMedia:', nativeError)
+          // Fall through to getUserMedia fallback
+          this.useNativeCapture = false
+        }
+      }
+      
+      // Fallback to old getUserMedia method (for compatibility)
       // Prefer specified device but use ideal so we don't fail if device is unavailable
       const constraints: MediaStreamConstraints = {
         audio: deviceId
@@ -229,19 +209,32 @@ export class InputLevelMeter {
     }
   }
 
-  setGain(value: number) {
-    if (this.gainNode) {
+  async setGain(value: number) {
+    if (this.useNativeCapture && this.nativeCapture) {
+      // Use native DSP via Tauri command
+      const { invoke } = await import('@tauri-apps/api/tauri')
+      await invoke('set_audio_gain', { gain: value })
+      console.log(`[Audio] Native input gain updated → ${value.toFixed(2)}`)
+    } else if (this.gainNode) {
+      // Legacy Web Audio API
       this.gainNode.gain.value = value
       console.log(`[Audio] Input gain updated → ${value.toFixed(2)}`)
     }
   }
 
-  setThreshold(value: number) {
+  async setThreshold(value: number) {
     this.threshold = value
-    console.log(`[Audio] VAD threshold updated → ${value.toFixed(2)}`)
+    if (this.useNativeCapture && this.nativeCapture) {
+      // Use native DSP via Tauri command
+      const { invoke } = await import('@tauri-apps/api/tauri')
+      await invoke('set_audio_threshold', { threshold: value })
+      console.log(`[Audio] Native VAD threshold updated → ${value.toFixed(2)}`)
+    } else {
+      console.log(`[Audio] VAD threshold updated → ${value.toFixed(2)}`)
+    }
   }
 
-  setInputMode(mode: 'voice_activity' | 'push_to_talk') {
+  async setInputMode(mode: 'voice_activity' | 'push_to_talk') {
     const wasVAD = this.useVoiceActivity
     this.useVoiceActivity = mode === 'voice_activity'
     // Reset gain when switching modes
@@ -254,12 +247,24 @@ export class InputLevelMeter {
     if (wasVAD !== this.useVoiceActivity) {
       console.log(`[Audio] Input mode switched → ${mode}`)
     }
+    
+    if (this.useNativeCapture && this.nativeCapture) {
+      // Use native DSP via Tauri command
+      const { invoke } = await import('@tauri-apps/api/tauri')
+      await invoke('set_audio_input_mode', { mode })
+    }
   }
 
-  setPttKeyPressed(pressed: boolean) {
+  async setPttKeyPressed(pressed: boolean) {
     if (this.isPttKeyPressed !== pressed) {
       this.isPttKeyPressed = pressed
       console.log(`[Audio] PTT key ${pressed ? 'pressed' : 'released'}`)
+    }
+    
+    if (this.useNativeCapture && this.nativeCapture) {
+      // Use native DSP via Tauri command
+      const { invoke } = await import('@tauri-apps/api/tauri')
+      await invoke('set_ptt_key_pressed', { pressed })
     }
   }
 
@@ -296,9 +301,14 @@ export class InputLevelMeter {
 
   /**
    * Get the audio stream for WebRTC transmission.
-   * This stream has VAD/PTT gating applied via monitoringGain.
+   * With native capture, this stream already has VAD/PTT gating applied in Rust DSP.
    */
   getTransmissionStream(): MediaStream | null {
+    if (this.useNativeCapture && this.stream) {
+      // Native capture stream already has DSP gating applied
+      return this.stream
+    }
+    // Legacy: Web Audio API destination stream
     return this.destination?.stream || null
   }
 
@@ -309,17 +319,22 @@ export class InputLevelMeter {
    * Note: This overrides VAD/PTT - even if voice is detected or PTT is pressed,
    * muted audio will not transmit.
    */
-  setTransmissionMuted(muted: boolean) {
-    if (!this.monitoringGain) return
-
+  async setTransmissionMuted(muted: boolean) {
     // Store mute state to prevent VAD/PTT from overriding it
     this.isTransmissionMuted = muted
 
-    if (muted) {
-      // Force gain to 0 (muted)
-      this.monitoringGain.gain.value = 0
+    if (this.useNativeCapture && this.nativeCapture) {
+      // Use native DSP via Tauri command
+      const { invoke } = await import('@tauri-apps/api/tauri')
+      await invoke('set_transmission_muted', { muted })
+    } else if (this.monitoringGain) {
+      // Legacy: Web Audio API
+      if (muted) {
+        // Force gain to 0 (muted)
+        this.monitoringGain.gain.value = 0
+      }
+      // If unmuted, VAD/PTT logic in updateLevel() will control the gain
     }
-    // If unmuted, VAD/PTT logic in updateLevel() will control the gain
   }
 
   private updateLevel() {
@@ -404,7 +419,7 @@ export class InputLevelMeter {
     this.animationFrame = requestAnimationFrame(() => this.updateLevel())
   }
 
-  stop() {
+  async stop() {
     if (this.animationFrame !== null) {
       cancelAnimationFrame(this.animationFrame)
       this.animationFrame = null
@@ -412,7 +427,13 @@ export class InputLevelMeter {
 
     this.setMonitoring(false)
 
-    if (this.stream) {
+    // Stop native capture
+    if (this.useNativeCapture && this.nativeCapture) {
+      await this.nativeCapture.stop()
+      this.nativeCapture = null
+      this.stream = null
+    } else if (this.stream) {
+      // Legacy: Web Audio API
       this.stream.getTracks().forEach(track => track.stop())
       this.stream = null
     }

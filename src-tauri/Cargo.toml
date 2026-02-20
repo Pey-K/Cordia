@@ -38,6 +38,10 @@ zeroize = { version = "1.7", features = ["derive"] }
 base64 = "0.21"
 arboard = "3.2"
 
+# Native audio capture and processing
+cpal = "0.15"
+rtrb = "0.3"  # Lock-free ring buffer for real-time audio (no allocation in callback)
+
 [features]
 # This feature is used for production builds or when `devPath` points to the filesystem
 custom-protocol = ["tauri/custom-protocol"]
