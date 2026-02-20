@@ -1480,15 +1480,27 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         size_bytes: sharedItem.size_bytes,
         sha256: sharedItem.sha256,
       }
-      const approved = await confirmDialog(
-        `${fromUserId} wants to download "${attachment.file_name}". Allow transfer now?`,
-        {
-          title: 'Attachment Transfer',
-          type: 'info',
-          okLabel: 'Allow',
-          cancelLabel: 'Deny',
-        }
-      )
+
+      const relatedMessage = Object.values(messagesByBucketRef.current)
+        .flat()
+        .find((m) => m.kind === 'attachment' && m.attachment?.attachment_id === attachmentId)
+      const signingPubkey = relatedMessage?.signing_pubkey ?? ''
+      const settings = signingPubkey
+        ? getMessageStorageSettings(currentAccountId, signingPubkey)
+        : DEFAULT_MESSAGE_STORAGE_SETTINGS
+      const askFirst = settings.attachment_download_allow === 'ask'
+      let approved = !askFirst
+      if (askFirst) {
+        approved = await confirmDialog(
+          `${fromUserId} wants to download "${attachment.file_name}". Allow transfer now?`,
+          {
+            title: 'Attachment Transfer',
+            type: 'info',
+            okLabel: 'Allow',
+            cancelLabel: 'Deny',
+          }
+        )
+      }
       if (!approved) {
         window.dispatchEvent(new CustomEvent('cordia:send-attachment-transfer-response', {
           detail: { to_user_id: fromUserId, request_id: requestId, accepted: false },
@@ -1496,9 +1508,6 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         return
       }
 
-      const relatedMessage = Object.values(messagesByBucketRef.current)
-        .flat()
-        .find((m) => m.kind === 'attachment' && m.attachment?.attachment_id === attachmentId)
       upsertTransfer(requestId, () => ({
         request_id: requestId,
         message_id: relatedMessage?.id ?? '',

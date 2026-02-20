@@ -17,10 +17,13 @@ const MAX_VISIBLE_ROWS = 12
 const LIST_VIEW_BOTTOM_GAP = 16
 
 export function NotificationsModal() {
-  const { isOpen, anchorRect, closeNotifications } = useNotificationsModal()
+  const { isOpen, anchorRect, anchorRef, closeNotifications } = useNotificationsModal()
   const { width, height } = useWindowSize()
+  const effectiveAnchorRect = isOpen
+    ? (anchorRef?.current?.getBoundingClientRect() ?? anchorRect)
+    : null
   const [view, setView] = useState<'list' | 'friend_requests'>('list')
-  const [pendingFilter, setPendingFilter] = useState<'outgoing' | 'incoming'>('outgoing')
+  const [pendingFilter, setPendingFilter] = useState<'outgoing' | 'incoming'>('incoming')
 
   const {
     pendingIncoming,
@@ -79,7 +82,7 @@ export function NotificationsModal() {
   useEffect(() => {
     if (!isOpen) return
     setView('list')
-    setPendingFilter('outgoing')
+    setPendingFilter('incoming')
   }, [isOpen])
 
   useEffect(() => {
@@ -94,7 +97,7 @@ export function NotificationsModal() {
     return () => window.removeEventListener('keydown', onKey)
   }, [isOpen, view, closeNotifications])
 
-  if (!isOpen || !anchorRect) return null
+  if (!isOpen || !effectiveAnchorRect) return null
 
   const popupWidthPx = Math.round(FRIENDS_LIST_WIDTH_REM * 16)
   const notificationCount = mergedIncoming.length > 0 ? 1 : 0
@@ -112,11 +115,11 @@ export function NotificationsModal() {
   )
   const gutter = 10
   const topBarHeight = 96
-  let left = Math.round(anchorRect.right - popupWidthPx)
+  let left = Math.round(effectiveAnchorRect.right - popupWidthPx)
   left = Math.max(gutter, Math.min(left, width - popupWidthPx - gutter))
-  let top = Math.round(anchorRect.bottom + 8)
+  let top = Math.round(effectiveAnchorRect.bottom + 8)
   if (top + popupHeight > height - gutter) {
-    top = Math.round(anchorRect.top - popupHeight - 8)
+    top = Math.round(effectiveAnchorRect.top - popupHeight - 8)
   }
   top = Math.max(topBarHeight, Math.min(top, height - popupHeight - gutter))
 
@@ -212,20 +215,20 @@ export function NotificationsModal() {
             <>
               <div className="flex gap-1 pb-2 shrink-0">
                 <Button
-                  variant={pendingFilter === 'outgoing' ? 'default' : 'ghost'}
-                  size="sm"
-                  className="text-xs font-light flex-1"
-                  onClick={() => setPendingFilter('outgoing')}
-                >
-                  Outgoing
-                </Button>
-                <Button
                   variant={pendingFilter === 'incoming' ? 'default' : 'ghost'}
                   size="sm"
                   className="text-xs font-light flex-1"
                   onClick={() => setPendingFilter('incoming')}
                 >
                   Incoming
+                </Button>
+                <Button
+                  variant={pendingFilter === 'outgoing' ? 'default' : 'ghost'}
+                  size="sm"
+                  className="text-xs font-light flex-1"
+                  onClick={() => setPendingFilter('outgoing')}
+                >
+                  Outgoing
                 </Button>
               </div>
               <div className="space-y-0.5">

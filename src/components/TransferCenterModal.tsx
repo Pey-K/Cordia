@@ -9,9 +9,12 @@ import { useEphemeralMessages } from '../contexts/EphemeralMessagesContext'
 import { TransferCenterPanel } from './TransferCenterPanel'
 
 export function TransferCenterModal() {
-  const { isOpen, anchorRect, closeTransferCenter } = useTransferCenterModal()
+  const { isOpen, anchorRect, anchorRef, closeTransferCenter } = useTransferCenterModal()
   const { width, height } = useWindowSize()
-  const isSmall = width < 700
+  const effectiveAnchorRect = isOpen
+    ? (anchorRef?.current?.getBoundingClientRect() ?? anchorRect)
+    : null
+  const isSmall = width < 1080
   const { transferHistory, sharedAttachments, refreshSharedAttachments, refreshTransferHistoryAccessibility } = useEphemeralMessages()
 
   useEffect(() => {
@@ -37,28 +40,34 @@ export function TransferCenterModal() {
     [transferHistory]
   )
 
-  if (!isOpen || !anchorRect) return null
+  if (!isOpen || !effectiveAnchorRect) return null
 
   const popupWidth = Math.min(isSmall ? 430 : 760, width - 24)
-  const totalRows = Math.max(1, Math.max(downloadRowsCount, sharedAttachments.length))
-  const rowHeight = 62
+  const rowHeight = 52
+  const rowGap = 6
+  const maxListEntries = 6
+  const uploadCount = sharedAttachments.length
+  const visibleDownloadRows = downloadRowsCount === 0 ? 0 : Math.min(downloadRowsCount, maxListEntries)
+  const visibleUploadRows = uploadCount === 0 ? 0 : Math.min(uploadCount, maxListEntries)
+  const visibleRows = Math.max(visibleDownloadRows, visibleUploadRows, 1)
+  const listHeight = visibleRows * rowHeight + (visibleRows - 1) * rowGap
   const headerHeight = 40
   const footerHeight = 40
-  const sectionHeaders = 28
-  const contentPadding = 16
-  const contentHeight = Math.min(totalRows * rowHeight, 8 * rowHeight)
+  const sectionHeaders = 20
+  const contentPadding = 12
+  const contentHeight = sectionHeaders + listHeight
   const popupHeight = Math.min(
-    headerHeight + footerHeight + sectionHeaders + contentPadding + contentHeight,
+    headerHeight + footerHeight + contentPadding * 2 + contentHeight,
     height - 24
   )
   const gutter = 10
   const topBarHeight = 96
 
-  let left = Math.round(anchorRect.right - popupWidth)
+  let left = Math.round(effectiveAnchorRect.right - popupWidth)
   left = Math.max(gutter, Math.min(left, width - popupWidth - gutter))
-  let top = Math.round(anchorRect.bottom + 8)
+  let top = Math.round(effectiveAnchorRect.bottom + 8)
   if (top + popupHeight > height - gutter) {
-    top = Math.round(anchorRect.top - popupHeight - 8)
+    top = Math.round(effectiveAnchorRect.top - popupHeight - 8)
   }
   top = Math.max(topBarHeight, Math.min(top, height - popupHeight - gutter))
 
@@ -67,7 +76,7 @@ export function TransferCenterModal() {
       <div className="absolute inset-0 cursor-default" onMouseDown={closeTransferCenter} />
       <div
         className="absolute border-2 border-border bg-card/95 shadow-2xl flex flex-col overflow-hidden rounded-none"
-        style={{ left, top, width: popupWidth, height: popupHeight }}
+        style={{ left, top, width: popupWidth, height: 'auto', maxHeight: popupHeight }}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <header className="h-10 shrink-0 border-b border-border/70 px-2 flex items-center">
@@ -83,10 +92,10 @@ export function TransferCenterModal() {
           <ArrowUpDown className="h-4 w-4 mr-2" />
           <h1 className="text-xs font-light tracking-wider uppercase">Transfers</h1>
         </header>
-        <div className="flex-1 min-h-0 p-2">
+        <div className="shrink-0 px-2 pt-1.5 pb-1.5">
           <TransferCenterPanel />
         </div>
-        <div className="h-10 border-t border-border/70 px-2 flex items-center">
+        <div className="h-10 shrink-0 border-t border-border/70 px-2 flex items-center justify-center">
           <button
             type="button"
             className="text-[12px] underline underline-offset-2 hover:text-foreground/90"

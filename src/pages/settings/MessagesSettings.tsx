@@ -134,13 +134,36 @@ export function MessagesSettings() {
               Approximate disk budget for message cache.
             </p>
           </div>
+          <div className="space-y-1">
+            <Label htmlFor="msg-attachment-download" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Attachment downloads
+            </Label>
+            <Select
+              id="msg-attachment-download"
+              value={settings.attachment_download_allow}
+              disabled={!canEdit}
+              onChange={(e) =>
+                applySettings({
+                  ...settings,
+                  attachment_download_allow: e.target.value === 'ask' ? 'ask' : 'always',
+                })
+              }
+            >
+              <option value="always">Always allow</option>
+              <option value="ask">Ask every time</option>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              When someone requests to download an attachment you shared: allow automatically or show a prompt each time.
+            </p>
+          </div>
         </div>
 
         <div className="rounded-md border border-border/50 bg-muted/20 p-4">
           <p className="text-xs text-muted-foreground">
             Current behavior: <span className="text-foreground capitalize">{settings.mode}</span> mode, load all saved history on open, sync up to{' '}
             <span className="text-foreground">{settings.max_messages_on_open}</span> from peers when available,{' '}
-            <span className="text-foreground">{settings.max_storage_mb}MB</span> max storage.
+            <span className="text-foreground">{settings.max_storage_mb}MB</span> max storage. Attachment downloads:{' '}
+            <span className="text-foreground">{settings.attachment_download_allow === 'ask' ? 'Ask every time' : 'Always allow'}</span>.
           </p>
         </div>
       </div>

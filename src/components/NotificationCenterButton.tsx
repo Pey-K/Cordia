@@ -5,7 +5,7 @@ import { useFriends } from '../contexts/FriendsContext'
 import { useMemo } from 'react'
 
 export function NotificationCenterButton() {
-  const { openNotifications } = useNotificationsModal()
+  const { openNotifications, anchorRef } = useNotificationsModal()
   const { pendingIncoming, redemptions } = useFriends()
 
   const mergedIncomingCount = useMemo(() => {
@@ -19,6 +19,7 @@ export function NotificationCenterButton() {
 
   return (
     <Button
+      ref={anchorRef as React.Ref<HTMLButtonElement>}
       type="button"
       variant="ghost"
       size="icon"

@@ -157,6 +157,10 @@ export interface SharedAttachmentItem {
   can_share_now: boolean
 }
 
+export async function getFileMetadata(path: string): Promise<{ file_name: string; extension: string; size_bytes: number }> {
+  return await invoke('get_file_metadata', { path })
+}
+
 export async function registerAttachmentFromPath(
   path: string,
   storageMode: 'current_path' | 'program_copy'

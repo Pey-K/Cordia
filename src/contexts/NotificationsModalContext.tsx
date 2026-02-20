@@ -1,8 +1,10 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from 'react'
 
 type NotificationsModalContextType = {
   isOpen: boolean
   anchorRect: DOMRect | null
+  /** Ref the notifications button assigns so the modal can re-read position on resize and stay attached. */
+  anchorRef: React.RefObject<HTMLElement | null>
   openNotifications: (anchorRect: DOMRect) => void
   closeNotifications: () => void
 }
@@ -12,6 +14,7 @@ const NotificationsModalContext = createContext<NotificationsModalContextType | 
 export function NotificationsModalProvider({ children }: { children: ReactNode }) {
   const [isOpen, setIsOpen] = useState(false)
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null)
+  const anchorRef = useRef<HTMLElement | null>(null)
 
   const openNotifications = useCallback((rect: DOMRect) => {
     setAnchorRect(rect)
@@ -22,7 +25,7 @@ export function NotificationsModalProvider({ children }: { children: ReactNode }
   }, [])
 
   const value = useMemo(
-    () => ({ isOpen, anchorRect, openNotifications, closeNotifications }),
+    () => ({ isOpen, anchorRect, anchorRef, openNotifications, closeNotifications }),
     [isOpen, anchorRect, openNotifications, closeNotifications]
   )
 

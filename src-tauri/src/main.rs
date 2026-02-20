@@ -102,6 +102,13 @@ struct AttachmentIndex {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct FileMetadataResult {
+    file_name: String,
+    extension: String,
+    size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct AttachmentRegistrationResult {
     attachment_id: String,
     sha256: String,
@@ -282,6 +289,35 @@ fn extract_thumbnail(source: &PathBuf, output_path: &PathBuf, ext: &str) -> bool
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
     cmd.status().map(|s| s.success()).unwrap_or(false)
+}
+
+/// Returns file metadata without registering the file as an attachment. Used for staging attachments before send.
+#[tauri::command]
+fn get_file_metadata(path: String) -> Result<FileMetadataResult, String> {
+    let source = PathBuf::from(path.trim());
+    if !source.exists() {
+        return Err("File not found".to_string());
+    }
+    let meta = std::fs::metadata(&source).map_err(|e| format!("Failed to read file metadata: {}", e))?;
+    if !meta.is_file() {
+        return Err("Path must be a file".to_string());
+    }
+    let file_name = source
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| "Invalid file name".to_string())?
+        .to_string();
+    let extension = source
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    let size_bytes = meta.len();
+    Ok(FileMetadataResult {
+        file_name,
+        extension,
+        size_bytes,
+    })
 }
 
 #[tauri::command]
@@ -2254,6 +2290,7 @@ fn main() {
             encrypt_ephemeral_chat_message_by_signing_pubkey,
             decrypt_ephemeral_chat_message,
             decrypt_ephemeral_chat_message_by_signing_pubkey,
+            get_file_metadata,
             register_attachment_from_path,
             get_attachment_record,
             read_attachment_bytes,

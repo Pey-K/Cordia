@@ -5,7 +5,7 @@ import { useTransferCenterModal } from '../contexts/TransferCenterModalContext'
 import { useEphemeralMessages } from '../contexts/EphemeralMessagesContext'
 
 export function TransferCenterButton() {
-  const { openTransferCenter } = useTransferCenterModal()
+  const { openTransferCenter, anchorRef } = useTransferCenterModal()
   const { attachmentTransfers } = useEphemeralMessages()
   const activeDownloads = useMemo(
     () =>
@@ -23,13 +23,14 @@ export function TransferCenterButton() {
       : 0
 
   return (
-    <Button
-      type="button"
-      variant="ghost"
-      size="icon"
-      className="h-8 w-8 relative overflow-hidden rounded-none"
-      title="Open transfer center"
-      onClick={(e) => {
+<Button
+    ref={anchorRef as React.Ref<HTMLButtonElement>}
+    type="button"
+    variant="ghost"
+    size="icon"
+    className="h-8 w-8 relative overflow-hidden rounded-none"
+    title="Open transfer center"
+    onClick={(e) => {
         const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
         openTransferCenter(rect)
       }}

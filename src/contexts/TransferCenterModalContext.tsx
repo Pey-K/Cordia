@@ -1,8 +1,10 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from 'react'
 
 type TransferCenterModalContextType = {
   isOpen: boolean
   anchorRect: DOMRect | null
+  /** Ref the transfer button assigns so the modal can re-read position on resize and stay attached. */
+  anchorRef: React.RefObject<HTMLElement | null>
   openTransferCenter: (anchorRect: DOMRect) => void
   closeTransferCenter: () => void
 }
@@ -12,6 +14,7 @@ const TransferCenterModalContext = createContext<TransferCenterModalContextType 
 export function TransferCenterModalProvider({ children }: { children: ReactNode }) {
   const [isOpen, setIsOpen] = useState(false)
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null)
+  const anchorRef = useRef<HTMLElement | null>(null)
 
   const openTransferCenter = useCallback((rect: DOMRect) => {
     setAnchorRect(rect)
@@ -22,7 +25,7 @@ export function TransferCenterModalProvider({ children }: { children: ReactNode 
   }, [])
 
   const value = useMemo(
-    () => ({ isOpen, anchorRect, openTransferCenter, closeTransferCenter }),
+    () => ({ isOpen, anchorRect, anchorRef, openTransferCenter, closeTransferCenter }),
     [isOpen, anchorRect, openTransferCenter, closeTransferCenter]
   )
 

@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { createPortal } from 'react-dom'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
-import { ArrowLeft, Copy, Check, PhoneOff, Phone, Send, Paperclip, Download, Eye, EyeOff, Trash2, Play } from 'lucide-react'
+import { ArrowLeft, Copy, Check, PhoneOff, Phone, Send, Paperclip, Download, Eye, EyeOff, Trash2, Play, Plus, Minus, X } from 'lucide-react'
 import { open, confirm } from '@tauri-apps/api/dialog'
 import { listen } from '@tauri-apps/api/event'
 import { convertFileSrc } from '@tauri-apps/api/tauri'
 import { Button } from '../components/ui/button'
-import { loadServer, type Server, fetchAndImportServerHintOpaque, createTemporaryInvite, revokeActiveInvite, registerAttachmentFromPath, getAttachmentRecord } from '../lib/tauri'
+import { loadServer, type Server, fetchAndImportServerHintOpaque, createTemporaryInvite, revokeActiveInvite, getFileMetadata, registerAttachmentFromPath, getAttachmentRecord } from '../lib/tauri'
 import { UserProfileCard } from '../components/UserProfileCard'
 import { UserCard } from '../components/UserCard'
 import { useIdentity } from '../contexts/IdentityContext'
@@ -30,6 +31,11 @@ import { getDraft, setDraft, clearDraft } from '../lib/messageDrafts'
 import { FileIcon } from '../components/FileIcon'
 import { MediaPreviewModal } from '../components/MediaPreviewModal'
 import { isMediaType, getFileTypeFromExt } from '../lib/fileType'
+
+/** Strip to 8-char code for display/copy (XXXX-XXXX), same pattern as friend code. */
+function normalizeInviteCode(code: string): string {
+  return (code ?? '').replace(/\W/g, '').toUpperCase().slice(0, 8)
+}
 
 function ServerViewPage() {
   const { serverId } = useParams<{ serverId: string }>()
@@ -72,6 +78,10 @@ function ServerViewPage() {
   const [copiedInvite, setCopiedInvite] = useState(false)
   const [isCreatingInvite, setIsCreatingInvite] = useState(false)
   const [isRevokingInvite, setIsRevokingInvite] = useState(false)
+  const [showInviteCodePopover, setShowInviteCodePopover] = useState(false)
+  const [revealInviteCode, setRevealInviteCode] = useState(false)
+  const [inviteCodeButtonRect, setInviteCodeButtonRect] = useState<DOMRect | null>(null)
+  const inviteCodeButtonRef = useRef<HTMLButtonElement>(null)
   const [profileCardUserId, setProfileCardUserId] = useState<string | null>(null)
   const [profileCardAnchor, setProfileCardAnchor] = useState<DOMRect | null>(null)
   const [messageDraft, setMessageDraft] = useState('')
@@ -83,16 +93,13 @@ function ServerViewPage() {
   const draftValueRef = useRef('')
 
   type StagedAttachment = {
-    attachment_id: string
+    staged_id: string
+    path: string
     file_name: string
     extension: string
     size_bytes: number
-    sha256: string
+    storage_mode: 'current_path' | 'program_copy'
     spoiler?: boolean
-    source_path?: string | null
-    thumbnail_path?: string | null
-    file_path?: string | null
-    status?: string | null
   }
   const [stagedAttachments, setStagedAttachments] = useState<StagedAttachment[]>([])
   const [mediaPreview, setMediaPreview] = useState<{
@@ -230,16 +237,6 @@ function ServerViewPage() {
     }
   }
 
-  const copyInviteCode = () => {
-    if (!server) return
-    const code = getActiveInviteCode()
-    if (!code) return
-    // Copy just the code. Join UI will use the user's configured signaling server under the hood.
-    navigator.clipboard.writeText(code)
-    setCopiedInvite(true)
-    setTimeout(() => setCopiedInvite(false), 2000)
-  }
-
   const getActiveInviteUri = (): string | null => {
     if (!server) return null
     const uri = server.active_invite_uri || null
@@ -314,16 +311,28 @@ function ServerViewPage() {
     leaveVoice()
   }
 
+  const waitForAttachmentReady = (attachmentId: string): Promise<void> =>
+    new Promise((resolve, reject) => {
+      const unlistenRef = { current: null as (() => void) | null }
+      listen<{ attachment_id: string; ok: boolean; error?: string }>('cordia:attachment-ready', (event) => {
+        if (event.payload?.attachment_id !== attachmentId) return
+        unlistenRef.current?.()
+        if (event.payload.ok) resolve()
+        else reject(new Error(event.payload?.error ?? 'Attachment preparation failed'))
+      }).then((fn) => {
+        unlistenRef.current = fn
+      })
+    })
+
   const handleSendMessage = async () => {
     if (!server || !groupChat || !identity || !canSendMessages) return
     const text = messageDraft.trim().slice(0, MESSAGE_MAX_LENGTH)
-    const readyAttachments = stagedAttachments.filter((a) => a.status === 'ready' && a.sha256)
-    if (!text && readyAttachments.length === 0) return
+    if (!text && stagedAttachments.length === 0) return
 
     setMessageDraft('')
     if (currentAccountId) clearDraft(currentAccountId, server.signing_pubkey)
-    const toSend = [...readyAttachments]
-    setStagedAttachments((prev) => prev.filter((a) => !readyAttachments.some((r) => r.attachment_id === a.attachment_id)))
+    const toSend = [...stagedAttachments]
+    setStagedAttachments([])
 
     try {
       if (text) {
@@ -336,17 +345,21 @@ function ServerViewPage() {
         })
       }
       for (const att of toSend) {
+        const registered = await registerAttachmentFromPath(att.path, att.storage_mode)
+        await waitForAttachmentReady(registered.attachment_id)
+        const rec = await getAttachmentRecord(registered.attachment_id)
+        if (!rec?.sha256) throw new Error('Attachment not ready')
         await sendAttachmentMessage({
           serverId: server.id,
           signingPubkey: server.signing_pubkey,
           chatId: groupChat.id,
           fromUserId: identity.user_id,
           attachment: {
-            attachment_id: att.attachment_id,
-            file_name: att.file_name,
-            extension: att.extension,
-            size_bytes: att.size_bytes,
-            sha256: att.sha256,
+            attachment_id: rec.attachment_id,
+            file_name: rec.file_name,
+            extension: rec.extension,
+            size_bytes: rec.size_bytes,
+            sha256: rec.sha256,
             spoiler: att.spoiler ?? false,
           },
         })
@@ -354,7 +367,7 @@ function ServerViewPage() {
     } catch (error) {
       console.warn('Failed to send:', error)
       setMessageDraft(text)
-      setStagedAttachments((prev) => [...toSend, ...prev])
+      setStagedAttachments(toSend)
     }
   }
 
@@ -369,23 +382,22 @@ function ServerViewPage() {
       const paths = Array.isArray(selected) ? selected : [selected]
       if (paths.length === 0) return
       const copyToCordia = await confirm(
-        `Copy ${paths.length} file(s) into Cordia storage for reliable sharing?`,
+        `Copy ${paths.length} file(s) into Cordia storage when sending?`,
         { title: 'Attachment storage', okLabel: 'Copy to Cordia', cancelLabel: 'Keep current path' }
       )
+      const storage_mode = copyToCordia ? 'program_copy' : 'current_path'
       for (const p of paths) {
-        const registered = await registerAttachmentFromPath(p, copyToCordia ? 'program_copy' : 'current_path')
+        const meta = await getFileMetadata(p)
         setStagedAttachments((prev) => [
           ...prev,
           {
-            attachment_id: registered.attachment_id,
-            file_name: registered.file_name,
-            extension: registered.extension,
-            size_bytes: registered.size_bytes,
-            sha256: registered.sha256,
-            source_path: registered.source_path ?? null,
-            thumbnail_path: registered.thumbnail_path ?? null,
-            file_path: registered.file_path ?? null,
-            status: registered.status ?? 'preparing',
+            staged_id: `${p}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+            path: p,
+            file_name: meta.file_name,
+            extension: meta.extension,
+            size_bytes: meta.size_bytes,
+            storage_mode,
+            spoiler: false,
           },
         ])
       }
@@ -394,13 +406,13 @@ function ServerViewPage() {
     }
   }
 
-  const handleRemoveStagedAttachment = (attachmentId: string) => {
-    setStagedAttachments((prev) => prev.filter((a) => a.attachment_id !== attachmentId))
+  const handleRemoveStagedAttachment = (stagedId: string) => {
+    setStagedAttachments((prev) => prev.filter((a) => a.staged_id !== stagedId))
   }
 
-  const handleToggleStagedSpoiler = (attachmentId: string) => {
+  const handleToggleStagedSpoiler = (stagedId: string) => {
     setStagedAttachments((prev) =>
-      prev.map((a) => (a.attachment_id === attachmentId ? { ...a, spoiler: !a.spoiler } : a))
+      prev.map((a) => (a.staged_id === stagedId ? { ...a, spoiler: !a.spoiler } : a))
     )
   }
 
@@ -418,35 +430,6 @@ function ServerViewPage() {
     setMessageDraft(draft)
     draftValueRef.current = draft
   }, [server?.signing_pubkey, currentAccountId])
-
-  // Update staged attachment when cordia:attachment-ready fires (thumbnail, sha256, etc.)
-  useEffect(() => {
-    const unlistenPromise = listen<{ attachment_id: string; ok: boolean; error?: string }>(
-      'cordia:attachment-ready',
-      async (event) => {
-        if (!event.payload?.ok) return
-        const { attachment_id } = event.payload
-        const rec = await getAttachmentRecord(attachment_id)
-        if (!rec) return
-        setStagedAttachments((prev) =>
-          prev.map((a) =>
-            a.attachment_id === attachment_id
-              ? {
-                  ...a,
-                  sha256: rec.sha256,
-                  thumbnail_path: rec.thumbnail_path ?? null,
-                  file_path: rec.file_path ?? null,
-                  status: rec.status ?? 'ready',
-                }
-              : a
-          )
-        )
-      }
-    )
-    return () => {
-      unlistenPromise.then((u) => u()).catch(() => {})
-    }
-  }, [])
 
   // Flush draft to sessionStorage on unmount (e.g. navigate away)
   useEffect(() => {
@@ -880,7 +863,7 @@ function ServerViewPage() {
                                                                 />
                                                               )}
                                                               <span className="absolute inset-0 flex items-center justify-center bg-black/30 group-hover:bg-black/40 transition-colors pointer-events-none">
-                                                                <span className="w-12 h-12 rounded-full bg-black/50 flex items-center justify-center">
+                                                                <span className="w-12 h-12 rounded-md bg-black/50 flex items-center justify-center">
                                                                   <Play className="h-6 w-6 text-white fill-white" />
                                                                 </span>
                                                               </span>
@@ -1054,28 +1037,21 @@ function ServerViewPage() {
                         {stagedAttachments.map((att) => {
                           const category = att.file_name ? getFileTypeFromExt(att.file_name) : 'default'
                           const isMedia = att.file_name && isMediaType(category as Parameters<typeof isMediaType>[0])
-                          // For video: thumbnail_path = first-frame JPEG (display only); file_path/source_path = actual video (preview)
-                          // For image: any path works for both display and preview
-                          const isVideo = category === 'video'
-                          const mediaPreviewPath = isVideo
-                            ? (att.file_path || att.source_path)
-                            : (att.file_path || att.source_path || att.thumbnail_path)
                           return (
                             <div
-                              key={att.attachment_id}
+                              key={att.staged_id}
                               className="flex items-start gap-2 w-[165px] h-[80px] shrink-0 border-2 border-border bg-card rounded-lg px-2 py-2 overflow-hidden"
                             >
                               <FileIcon
                                 fileName={att.file_name}
-                                attachmentId={att.status === 'ready' ? att.attachment_id : null}
-                                savedPath={mediaPreviewPath ?? undefined}
-                                thumbnailPath={att.thumbnail_path ?? undefined}
-                                onMediaClick={(url, type, attachmentId, fileName) => {
+                                attachmentId={null}
+                                savedPath={att.path}
+                                onMediaClick={(url, type, _attachmentId, fileName) => {
                                   if (isMedia) {
                                     setMediaPreview({
                                       type: type as 'image' | 'video',
-                                      url: url ?? (attachmentId ? null : mediaPreviewPath ? convertFileSrc(mediaPreviewPath) : null),
-                                      attachmentId,
+                                      url: url ?? convertFileSrc(att.path),
+                                      attachmentId: undefined,
                                       fileName: fileName ?? att.file_name,
                                     })
                                   }
@@ -1086,9 +1062,6 @@ function ServerViewPage() {
                                 <FilenameEllipsis name={att.file_name} className="text-xs truncate" />
                                 <div className="flex items-center gap-1">
                                   <span className="text-[10px] text-muted-foreground">{formatBytes(att.size_bytes)}</span>
-                                  {att.status !== 'ready' && (
-                                    <span className="text-[10px] text-amber-500">preparing</span>
-                                  )}
                                 </div>
                                 <div className="flex items-center gap-1 mt-0.5">
                                   <Button
@@ -1096,7 +1069,7 @@ function ServerViewPage() {
                                     variant="ghost"
                                     size="icon"
                                     className={cn('h-6 w-6', att.spoiler && 'text-amber-500')}
-                                    onClick={() => handleToggleStagedSpoiler(att.attachment_id)}
+                                    onClick={() => handleToggleStagedSpoiler(att.staged_id)}
                                     title={att.spoiler ? 'Marked as spoiler' : 'Mark as spoiler'}
                                   >
                                     {att.spoiler ? (
@@ -1110,7 +1083,7 @@ function ServerViewPage() {
                                     variant="ghost"
                                     size="icon"
                                     className="h-6 w-6 text-red-300 hover:text-red-200"
-                                    onClick={() => handleRemoveStagedAttachment(att.attachment_id)}
+                                    onClick={() => handleRemoveStagedAttachment(att.staged_id)}
                                     title="Remove"
                                   >
                                     <Trash2 className="h-3.5 w-3.5" />
@@ -1174,7 +1147,7 @@ function ServerViewPage() {
                         className="h-11 px-4 gap-2 shrink-0"
                         disabled={
                           !canSendMessages ||
-                          (messageDraft.trim().length === 0 && !stagedAttachments.some((a) => a.status === 'ready'))
+                          (messageDraft.trim().length === 0 && stagedAttachments.length === 0)
                         }
                       >
                         <Send className="h-4 w-4" />
@@ -1195,9 +1168,33 @@ function ServerViewPage() {
         {/* Right Sidebar - Members List (same width as friends list: 12.25rem) */}
         <div className="w-[12.25rem] shrink-0 border-l-2 border-border bg-card/50 flex flex-col">
           <div className="p-4 pt-5 space-y-2 flex-1 overflow-y-auto">
-            <h2 className="text-xs font-light tracking-wider uppercase text-muted-foreground px-2">
-              Members — {(server.members ?? []).length}
-            </h2>
+            <div className="flex items-center justify-between shrink-0 h-8">
+              <h2 className="text-xs font-light tracking-wider uppercase text-muted-foreground px-2 leading-none">
+                Members — {(server.members ?? []).length}
+              </h2>
+              <div>
+                <Button
+                  ref={inviteCodeButtonRef}
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => {
+                    if (showInviteCodePopover) {
+                      setShowInviteCodePopover(false)
+                      setRevealInviteCode(false)
+                      setInviteCodeButtonRect(null)
+                    } else {
+                      const rect = inviteCodeButtonRef.current?.getBoundingClientRect()
+                      setInviteCodeButtonRect(rect ?? null)
+                      setShowInviteCodePopover(true)
+                    }
+                  }}
+                  title={showInviteCodePopover ? 'Close invite code' : 'Invite code'}
+                >
+                  {showInviteCodePopover ? <Minus className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+                </Button>
+              </div>
+            </div>
             <div className="space-y-0.5">
               {(server.members ?? []).map((member) => {
                 const rp = remoteProfiles.getProfile(member.user_id)
@@ -1241,58 +1238,121 @@ function ServerViewPage() {
               })}
             </div>
           </div>
-
-          {/* Invite Section */}
-          <div className="p-4 border-t-2 border-border">
-            <h2 className="text-xs font-light tracking-wider uppercase text-muted-foreground px-2 mb-3">
-              Invite
-            </h2>
-            {!server?.has_symmetric_key ? (
-              <p className="text-xs text-muted-foreground px-2">
-                This server cannot create invites (missing key). You can still leave it from Home.
-              </p>
-            ) : !getActiveInviteUri() ? (
-              <Button
-                onClick={handleCreateInvite}
-                size="sm"
-                className="h-9 font-light w-full"
-                disabled={isCreatingInvite || beaconStatus !== 'connected' || !beaconUrl}
-              >
-                {isCreatingInvite ? 'Creating…' : 'Create invite'}
-              </Button>
-            ) : (
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <div className="flex-1 px-3 py-2 bg-background border border-border rounded-md">
-                    <code className="text-xs font-mono break-all">{getActiveInviteCode() || ''}</code>
-                  </div>
-                  <Button
-                    onClick={copyInviteCode}
-                    variant="outline"
-                    size="icon"
-                    className="h-9 w-9 shrink-0"
-                  >
-                    {copiedInvite ? (
-                      <Check className="h-4 w-4 text-green-500" />
-                    ) : (
-                      <Copy className="h-4 w-4" />
-                    )}
-                  </Button>
-                </div>
-                <Button
-                  onClick={handleRevokeInvite}
-                  variant="outline"
-                  size="sm"
-                  className="h-9 font-light w-full"
-                  disabled={isRevokingInvite}
-                >
-                  {isRevokingInvite ? 'Revoking…' : 'Revoke invite'}
-                </Button>
-              </div>
-            )}
-          </div>
         </div>
       </div>
+
+      {/* Invite code popover portal - renders outside sidebar to avoid clipping by chat */}
+      {showInviteCodePopover &&
+        inviteCodeButtonRect &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <>
+            <div
+              className="fixed inset-0 z-[99]"
+              onMouseDown={() => {
+                setShowInviteCodePopover(false)
+                setRevealInviteCode(false)
+                setInviteCodeButtonRect(null)
+              }}
+              aria-hidden
+            />
+            <div
+              className="fixed z-[100] w-56 border-2 border-border bg-card rounded-lg p-3 shadow-lg space-y-3"
+              style={{
+                top: inviteCodeButtonRect.bottom + 4,
+                right: window.innerWidth - inviteCodeButtonRect.right,
+              }}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <div className="pb-2 border-b border-border">
+                <p className="text-xs text-muted-foreground font-light mb-1">Server invite</p>
+                {!server?.has_symmetric_key ? (
+                  <p className="text-xs text-muted-foreground">This server cannot create invites (missing key).</p>
+                ) : !getActiveInviteUri() ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full justify-start gap-2 font-light bg-white text-black border-white hover:bg-white/90 hover:text-black"
+                    disabled={isCreatingInvite || beaconStatus !== 'connected' || !beaconUrl}
+                    onClick={async () => {
+                      setIsCreatingInvite(true)
+                      try {
+                        await handleCreateInvite()
+                      } catch (e) {
+                        console.warn(e)
+                      } finally {
+                        setIsCreatingInvite(false)
+                      }
+                    }}
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    {isCreatingInvite ? 'Creating…' : 'Create invite code'}
+                  </Button>
+                ) : (
+                  <>
+                    <p className="text-xs text-muted-foreground font-light">Your code</p>
+                    <button
+                      type="button"
+                      onClick={() => setRevealInviteCode((v) => !v)}
+                      className="w-full text-left"
+                    >
+                      <div className="flex items-center gap-2">
+                        <div className="relative flex items-center gap-1 flex-1 min-w-0">
+                          <code className={cn('min-w-[6.5ch] text-sm font-mono tracking-wider uppercase text-center', revealInviteCode ? '' : 'blur-sm select-none text-muted-foreground/80')}>
+                            {normalizeInviteCode(getActiveInviteCode() ?? '').slice(0, 4)}
+                          </code>
+                          <span className="text-muted-foreground font-mono select-none" aria-hidden>-</span>
+                          <code className={cn('min-w-[6.5ch] text-sm font-mono tracking-wider uppercase text-center', revealInviteCode ? '' : 'blur-sm select-none text-muted-foreground/80')}>
+                            {normalizeInviteCode(getActiveInviteCode() ?? '').slice(4, 8)}
+                          </code>
+                          {!revealInviteCode && (
+                            <div className="absolute inset-0 flex items-center justify-center z-20">
+                              <span className="text-[11px] text-black font-light bg-white px-2 py-0.5 rounded-sm flex items-center gap-1.5 shrink-0">
+                                <EyeOff className="h-3 w-3" strokeWidth={2} />
+                                Reveal
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          className="h-8 w-8 shrink-0"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            const code = getActiveInviteCode()
+                            if (code) {
+                              navigator.clipboard.writeText(normalizeInviteCode(code))
+                              setCopiedInvite(true)
+                              setTimeout(() => setCopiedInvite(false), 2000)
+                            }
+                          }}
+                          title="Copy"
+                        >
+                          {copiedInvite ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          className="h-8 w-8 shrink-0 text-destructive hover:text-destructive"
+                          onClick={async (e) => {
+                            e.stopPropagation()
+                            await handleRevokeInvite()
+                          }}
+                          title="Revoke"
+                          disabled={isRevokingInvite}
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          </>,
+          document.body
+        )}
 
       <UserProfileCard
         open={Boolean(profileCardUserId)}

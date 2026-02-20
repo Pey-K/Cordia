@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { FolderOpen, Trash2, X } from 'lucide-react'
+import { FolderOpen, Trash2, X, MoreHorizontal } from 'lucide-react'
 import { FileIcon } from './FileIcon'
 import { MediaPreviewModal } from './MediaPreviewModal'
 import { Button } from './ui/button'
@@ -79,6 +79,12 @@ export function TransferCenterPanel() {
     return map
   }, [attachmentTransfers])
 
+  const MAX_LIST_ENTRIES = 6
+  const downloadDisplayCount = Math.min(downloadRows.length, downloadRows.length > MAX_LIST_ENTRIES ? MAX_LIST_ENTRIES - 1 : MAX_LIST_ENTRIES)
+  const downloadMoreCount = downloadRows.length > MAX_LIST_ENTRIES ? downloadRows.length - (MAX_LIST_ENTRIES - 1) : 0
+  const uploadDisplayCount = Math.min(sharedAttachments.length, sharedAttachments.length > MAX_LIST_ENTRIES ? MAX_LIST_ENTRIES - 1 : MAX_LIST_ENTRIES)
+  const uploadMoreCount = sharedAttachments.length > MAX_LIST_ENTRIES ? sharedAttachments.length - (MAX_LIST_ENTRIES - 1) : 0
+
   return (
     <>
       {mediaPreview && (
@@ -93,16 +99,16 @@ export function TransferCenterPanel() {
           }}
         />
       )}
-      <div className="flex h-full min-h-0">
-        <section className="flex-1 min-w-0 min-h-0 flex flex-col pr-2">
+      <div className="flex min-h-0">
+        <section className="flex-1 min-w-0 flex flex-col pr-2 shrink-0">
           <div className="px-1 pb-1">
             <h2 className="text-[11px] tracking-wider uppercase text-muted-foreground">Downloads</h2>
           </div>
-          <div className="space-y-1.5 overflow-y-auto pr-1">
+          <div className={`space-y-1.5 overflow-y-auto pr-1 ${downloadRows.length > 6 ? 'max-h-[342px]' : ''}`}>
             {downloadRows.length === 0 && (
               <p className="text-[11px] text-muted-foreground px-1">No downloads yet.</p>
             )}
-            {downloadRows.map((row) => {
+            {downloadRows.slice(0, downloadDisplayCount).map((row) => {
               const live = liveTransferByRequest.get(row.request_id)
               const status = live?.status ?? row.status
               const progress = live?.progress ?? row.progress
@@ -191,18 +197,28 @@ export function TransferCenterPanel() {
                 </div>
               )
             })}
+            {downloadMoreCount > 0 && (
+              <div className="border border-border/50 bg-card/40 px-2 py-1.5 flex gap-2 items-center text-muted-foreground">
+                <div className="w-10 h-10 shrink-0 grid place-items-center rounded border border-border/50 bg-muted/30">
+                  <MoreHorizontal className="h-5 w-5" />
+                </div>
+                <div className="min-w-0 flex-1 text-[11px]">
+                  {downloadMoreCount} more download{downloadMoreCount !== 1 ? 's' : ''}
+                </div>
+              </div>
+            )}
           </div>
         </section>
         <div className="w-px bg-foreground/15 mx-2" />
-        <section className="flex-1 min-w-0 min-h-0 flex flex-col pl-2">
+        <section className="flex-1 min-w-0 flex flex-col pl-2 shrink-0">
           <div className="px-1 pb-1">
             <h2 className="text-[11px] tracking-wider uppercase text-muted-foreground">Uploads</h2>
           </div>
-          <div className="space-y-1.5 overflow-y-auto pr-1">
+          <div className={`space-y-1.5 overflow-y-auto pr-1 ${sharedAttachments.length > 6 ? 'max-h-[342px]' : ''}`}>
             {sharedAttachments.length === 0 && (
               <p className="text-[11px] text-muted-foreground px-1">No shared files.</p>
             )}
-            {sharedAttachments.map((item) => {
+            {sharedAttachments.slice(0, uploadDisplayCount).map((item) => {
               const live = latestUploadByAttachment.get(item.attachment_id)
               const status = live?.status ?? (item.can_share_now ? 'available' : 'unavailable')
               const p = live?.status === 'completed' ? 100 : Math.max(0, Math.min(100, Math.round((live?.progress ?? 0) * 100)))
@@ -262,6 +278,16 @@ export function TransferCenterPanel() {
                 </div>
               )
             })}
+            {uploadMoreCount > 0 && (
+              <div className="border border-border/50 bg-card/40 px-2 py-1.5 flex gap-2 items-center text-muted-foreground">
+                <div className="w-10 h-10 shrink-0 grid place-items-center rounded border border-border/50 bg-muted/30">
+                  <MoreHorizontal className="h-5 w-5" />
+                </div>
+                <div className="min-w-0 flex-1 text-[11px]">
+                  {uploadMoreCount} more upload{uploadMoreCount !== 1 ? 's' : ''}
+                </div>
+              </div>
+            )}
           </div>
         </section>
       </div>
