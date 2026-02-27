@@ -1186,7 +1186,19 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     }
 
     listSharedAttachments()
-      .then((list) => setSharedAttachments(list))
+      .then((list) => {
+        setSharedAttachments(list)
+        setContentCacheBySha((prev) => {
+          let next = prev
+          for (const s of list) {
+            if (s.sha256 && (s.file_path ?? '').length > 0 && prev[s.sha256] !== s.file_path) {
+              if (next === prev) next = { ...prev }
+              next[s.sha256] = s.file_path!
+            }
+          }
+          return next
+        })
+      })
       .catch(() => setSharedAttachments([]))
   }, [currentAccountId])
 
@@ -2016,7 +2028,19 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     })
     ensureBucketLoaded(signingPubkey, chatId)
     listSharedAttachments()
-      .then((list) => setSharedAttachments(list))
+      .then((list) => {
+        setSharedAttachments(list)
+        setContentCacheBySha((prev) => {
+          let next = prev
+          for (const s of list) {
+            if (s.sha256 && (s.file_path ?? '').length > 0 && prev[s.sha256] !== s.file_path) {
+              if (next === prev) next = { ...prev }
+              next[s.sha256] = s.file_path!
+            }
+          }
+          return next
+        })
+      })
       .catch(() => {})
   }
 
@@ -2064,7 +2088,19 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
     setMessagesByBucket((prev) => appendAndPruneBySigning(prev, signingPubkey, chatId, localMessage))
     ensureBucketLoaded(signingPubkey, chatId)
     listSharedAttachments()
-      .then((list) => setSharedAttachments(list))
+      .then((list) => {
+        setSharedAttachments(list)
+        setContentCacheBySha((prev) => {
+          let next = prev
+          for (const s of list) {
+            if (s.sha256 && (s.file_path ?? '').length > 0 && prev[s.sha256] !== s.file_path) {
+              if (next === prev) next = { ...prev }
+              next[s.sha256] = s.file_path!
+            }
+          }
+          return next
+        })
+      })
       .catch(() => {})
   }
 
@@ -2152,6 +2188,17 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
             )
           : list
       setSharedAttachments(finalList)
+      // Persist paths by sha256 so they survive unshare (same content can be reshared or matched in chat)
+      setContentCacheBySha((prev) => {
+        let next = prev
+        for (const s of finalList) {
+          if (s.sha256 && (s.file_path ?? '').length > 0 && prev[s.sha256] !== s.file_path) {
+            if (next === prev) next = { ...prev }
+            next[s.sha256] = s.file_path!
+          }
+        }
+        return next
+      })
     } catch {
       setSharedAttachments([])
     }

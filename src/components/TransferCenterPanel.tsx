@@ -1,4 +1,5 @@
 import { useMemo, useState, useRef, useEffect } from 'react'
+import { flushSync } from 'react-dom'
 import { createPortal } from 'react-dom'
 import { FolderOpen, Trash2, X, MoreHorizontal, ChevronDown } from 'lucide-react'
 import { FileIcon } from './FileIcon'
@@ -131,8 +132,18 @@ export function TransferCenterPanel() {
     return Array.from(bySha.entries()).map(([sha, items]) => ({ sha, items, representative: items[0]! }))
   }, [sharedAttachments])
 
-  const uploadDisplayCount = Math.min(uploadsGroupedBySha.length, uploadsGroupedBySha.length > MAX_LIST_ENTRIES ? MAX_LIST_ENTRIES - 1 : MAX_LIST_ENTRIES)
-  const uploadMoreCount = uploadsGroupedBySha.length > MAX_LIST_ENTRIES ? uploadsGroupedBySha.length - (MAX_LIST_ENTRIES - 1) : 0
+  // Only show uploads that are currently shared in at least one server
+  const uploadsVisibleBySha = useMemo(
+    () => uploadsGroupedBySha.filter(({ representative }) => getServersForSha(representative.sha256).length > 0),
+    [uploadsGroupedBySha, getServersForSha]
+  )
+
+  const uploadDisplayCount = Math.min(
+    uploadsVisibleBySha.length,
+    uploadsVisibleBySha.length > MAX_LIST_ENTRIES ? MAX_LIST_ENTRIES - 1 : MAX_LIST_ENTRIES
+  )
+  const uploadMoreCount =
+    uploadsVisibleBySha.length > MAX_LIST_ENTRIES ? uploadsVisibleBySha.length - (MAX_LIST_ENTRIES - 1) : 0
 
   return (
     <>
@@ -249,11 +260,11 @@ export function TransferCenterPanel() {
           <div className="px-1 pb-1">
             <h2 className="text-[11px] tracking-wider uppercase text-muted-foreground">Uploads</h2>
           </div>
-          <div className={`space-y-1.5 overflow-y-auto pr-1 ${uploadsGroupedBySha.length > 6 ? 'max-h-[342px]' : ''}`}>
-            {uploadsGroupedBySha.length === 0 && (
+          <div className={`space-y-1.5 overflow-y-auto pr-1 ${uploadsVisibleBySha.length > 6 ? 'max-h-[342px]' : ''}`}>
+            {uploadsVisibleBySha.length === 0 && (
               <p className="text-[11px] text-muted-foreground px-1">No shared files.</p>
             )}
-            {uploadsGroupedBySha.slice(0, uploadDisplayCount).map(({ sha, representative: item }) => {
+            {uploadsVisibleBySha.slice(0, uploadDisplayCount).map(({ sha, representative: item }) => {
               const live = latestUploadByAttachment.get(item.attachment_id)
               const serverCount = getServersForSha(item.sha256).length
               const status = live?.status ?? (item.can_share_now ? 'available' : 'unavailable')
@@ -339,7 +350,7 @@ export function TransferCenterPanel() {
         </section>
       </div>
       {openUploadMenuSha && uploadMenuAnchorRect && (() => {
-        const group = uploadsGroupedBySha.find((g) => g.sha === openUploadMenuSha)
+        const group = uploadsVisibleBySha.find((g) => g.sha === openUploadMenuSha)
         const item = group?.representative
         if (!item) return null
         const rect = uploadMenuAnchorRect
@@ -353,19 +364,28 @@ export function TransferCenterPanel() {
               top: rect.bottom + 2,
             }}
           >
-            {getServersForSha(item.sha256).map((serverKey) => (
-              <button
-                key={serverKey}
-                type="button"
-                className="w-full px-2 py-1.5 text-left text-[11px] hover:bg-accent hover:text-accent-foreground truncate"
-                onClick={() => {
-                  unshareFromServer(serverKey, item.sha256)
-                  closeUploadMenu()
-                }}
-              >
-                Remove from server ({serverNameBySigningPubkey.get(serverKey) ?? `${serverKey.slice(0, 8)}…`})
-              </button>
-            ))}
+            {getServersForSha(item.sha256).map((serverKey) => {
+              const isLastServer = getServersForSha(item.sha256).length === 1
+              return (
+                <button
+                  key={serverKey}
+                  type="button"
+                  className="w-full px-2 py-1.5 text-left text-[11px] hover:bg-accent hover:text-accent-foreground truncate"
+                  onClick={() => {
+                    if (isLastServer) {
+                      unshareAttachmentById(item.attachment_id)
+                    } else {
+                      flushSync(() => {
+                        unshareFromServer(serverKey, item.sha256)
+                      })
+                    }
+                    closeUploadMenu()
+                  }}
+                >
+                  Remove from server ({serverNameBySigningPubkey.get(serverKey) ?? `${serverKey.slice(0, 8)}…`})
+                </button>
+              )
+            })}
             <button
               type="button"
               className="w-full px-2 py-1.5 text-left text-[11px] text-red-600 hover:bg-red-500/10 flex items-center gap-1.5"

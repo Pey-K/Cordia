@@ -604,13 +604,27 @@ function ServerViewPage() {
     setJustSharedKeys((prev) => new Set(prev).add(key))
     try {
       if (isOwn) {
-        await shareAttachmentAgain(att.attachment_id, existingPath ?? undefined)
-        await refreshSharedAttachments(att.attachment_id)
-        if (server?.signing_pubkey && att.sha256) markSharedInServer(server.signing_pubkey, att.sha256)
-        if (server?.signing_pubkey && groupChat?.id) {
-          await notifyAttachmentReshared(server.signing_pubkey, groupChat.id, att.attachment_id)
+        const path = existingPath ?? getCachedPathForSha(att.sha256) ?? undefined
+        try {
+          await shareAttachmentAgain(att.attachment_id, path ?? undefined)
+          await refreshSharedAttachments(att.attachment_id)
+          if (server?.signing_pubkey && att.sha256) markSharedInServer(server.signing_pubkey, att.sha256)
+          if (server?.signing_pubkey && groupChat?.id) {
+            await notifyAttachmentReshared(server.signing_pubkey, groupChat.id, att.attachment_id)
+          }
+          if (att.sha256) setJustSharedKeys((p) => new Set(p).add(`sha:${att.sha256}`))
+          return
+        } catch (err) {
+          if (!path) throw err
+          const result = await registerAttachmentFromPath(path, 'program_copy')
+          await refreshSharedAttachments()
+          if (server?.signing_pubkey && att.sha256) markSharedInServer(server.signing_pubkey, att.sha256)
+          if (server?.signing_pubkey && groupChat?.id) {
+            await notifyAttachmentReshared(server.signing_pubkey, groupChat.id, result.attachment_id)
+          }
+          if (att.sha256) setJustSharedKeys((p) => new Set(p).add(`sha:${att.sha256}`))
+          return
         }
-        return
       }
       if (!existingPath) return
       const existingBySha = att.sha256 ? sharedAttachments.find((s) => s.sha256 === att.sha256) : null
@@ -656,6 +670,7 @@ function ServerViewPage() {
     setJustSharedKeys((prev) => {
       if (prev.size === 0) return prev
       const next = new Set(prev)
+      const signingPubkey = server?.signing_pubkey ?? ''
       for (const k of prev) {
         if (k.startsWith('att:')) {
           const id = k.slice(4)
@@ -663,12 +678,14 @@ function ServerViewPage() {
           if (!item?.can_share_now) next.delete(k)
         } else if (k.startsWith('sha:')) {
           const sha = k.slice(4)
-          if (!sharedAttachments.some((s) => s.sha256 === sha)) next.delete(k)
+          const hasSharedAttachment = sharedAttachments.some((s) => s.sha256 === sha)
+          const sharedInThisServer = !!signingPubkey && isSharedInServer(signingPubkey, sha)
+          if (!hasSharedAttachment || !sharedInThisServer) next.delete(k)
         }
       }
       return next
     })
-  }, [sharedAttachments])
+  }, [sharedAttachments, server?.signing_pubkey, isSharedInServer])
 
   useEffect(() => {
     if (!server || !groupChat) return
@@ -1130,7 +1147,7 @@ function ServerViewPage() {
                                                       (t.status === 'transferring' || t.status === 'requesting' || t.status === 'connecting')
                                                   )
                                                   const hasPath = isOwn
-                                                    ? (sharedItem?.file_path ?? unsharedRec?.file_path ?? undefined)
+                                                    ? (sharedItem?.file_path ?? unsharedRec?.file_path ?? getCachedPathForSha(att.sha256) ?? undefined)
                                                     : (completedDownload?.saved_path ?? getCachedPathForSha(att.sha256) ?? undefined)
                                                   const thumbPath = isOwn
                                                     ? (sharedItem?.thumbnail_path ?? unsharedRec?.thumbnail_path ?? undefined)
@@ -1317,7 +1334,7 @@ function ServerViewPage() {
                                                                 />
                                                               </ChatMediaSlot>
                                                             </button>
-                                                            {isOwn && (!sharedItem?.can_share_now || !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '')) && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && (
+                                                            {isOwn && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
                                                               <span className="absolute top-1.5 right-1.5 z-20">
                                                                 <Tooltip content="Share again">
                                                                   <Button
@@ -1455,7 +1472,7 @@ function ServerViewPage() {
                                                                 </span>
                                                               </button>
                                                             )}
-                                                            {isOwn && (!sharedItem?.can_share_now || !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '')) && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && (
+                                                            {isOwn && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
                                                               <span className="absolute top-1.5 right-1.5 z-20">
                                                                 <Tooltip content="Share again">
                                                                   <Button
@@ -1532,7 +1549,7 @@ function ServerViewPage() {
                                                         (t.status === 'transferring' || t.status === 'requesting' || t.status === 'connecting')
                                                     )
                                                     const hasPath = isOwn
-                                                      ? (sharedItem?.file_path ?? unsharedRec?.file_path ?? undefined)
+                                                      ? (sharedItem?.file_path ?? unsharedRec?.file_path ?? getCachedPathForSha(att.sha256) ?? undefined)
                                                       : (completedDownload?.saved_path ?? getCachedPathForSha(att.sha256) ?? undefined)
                                                     const notDownloaded = !isOwn && !hasAccessibleCompletedDownload(att.attachment_id) && !hasPath
                                                     const stateLabel = attachmentStateLabelFor(att)
@@ -1642,7 +1659,7 @@ function ServerViewPage() {
                                                               title={att.file_name}
                                                               size={formatBytes(att.size_bytes)}
                                                             >
-                                                              {isOwn && (!sharedItem?.can_share_now || !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '')) && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && (
+                                                              {isOwn && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
                                                                 <span className="shrink-0">
                                                                   <Tooltip content="Share again">
                                                                     <Button
@@ -1729,7 +1746,7 @@ function ServerViewPage() {
                                                       (t.status === 'transferring' || t.status === 'requesting' || t.status === 'connecting')
                                                   )
                                                   const hasPath = isOwn
-                                                    ? (sharedItem?.file_path ?? unsharedRec?.file_path ?? undefined)
+                                                    ? (sharedItem?.file_path ?? unsharedRec?.file_path ?? getCachedPathForSha(att.sha256) ?? undefined)
                                                     : (completedDownload?.saved_path ?? getCachedPathForSha(att.sha256) ?? undefined)
                                                   const thumbPath = isOwn
                                                     ? (sharedItem?.thumbnail_path ?? unsharedRec?.thumbnail_path ?? undefined)
@@ -1919,7 +1936,7 @@ function ServerViewPage() {
                                                                   </div>
                                                                 </div>
                                                               </button>
-                                                              {isOwn && (!sharedItem?.can_share_now || !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '')) && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && (
+                                                              {isOwn && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
                                                                 <span className="absolute top-2 right-2 z-20">
                                                                   <Tooltip content="Share again">
                                                                     <Button
@@ -2045,7 +2062,7 @@ function ServerViewPage() {
                                                                   </div>
                                                                 </button>
                                                               )}
-                                                              {isOwn && (!sharedItem?.can_share_now || !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '')) && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && (
+                                                              {isOwn && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
                                                                 <span className="absolute top-2 right-2 z-20">
                                                                   <Tooltip content="Share again">
                                                                     <Button
@@ -2213,7 +2230,7 @@ function ServerViewPage() {
                                                               title={att.file_name}
                                                               size={formatBytes(att.size_bytes)}
                                                             >
-                                                              {isOwn && (!sharedItem?.can_share_now || !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '')) && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && (
+                                                              {isOwn && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
                                                                 <span className="shrink-0">
                                                                   <Tooltip content="Share again">
                                                                     <Button
