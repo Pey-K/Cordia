@@ -56,7 +56,7 @@ export function MessageBubble({
 
   return (
     <div
-      className="group/msg py-px px-1 -mx-1 cursor-default"
+      className="group/msg pt-0 pb-px pl-1 pr-6 -mx-1 cursor-default"
       style={{ backgroundColor: hovered ? 'hsl(var(--muted) / 0.875)' : undefined }}
       onMouseEnter={() => onHoverChange(true)}
       onMouseLeave={() => onHoverChange(false)}

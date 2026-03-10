@@ -849,7 +849,10 @@ function ServerViewPage() {
               ;(ref as MutableRefObject<HTMLDivElement | null>).current = node
             }
           }}
-          style={{ ...(props.style ?? {}), overflowX: 'hidden' }}
+          style={{
+            ...(props.style ?? {}),
+            overflowX: 'hidden',
+          }}
         />
       )),
     []
@@ -858,7 +861,7 @@ function ServerViewPage() {
   useEffect(() => {
     const el = virtuosoScrollerRef.current
     if (!el) return
-    const stabilizeBottom = (reason: string) => {
+    const stabilizeBottom = () => {
       if (pendingBottomStabilizeRef.current <= 0) return
       const distanceFromBottom = Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop)
       if (distanceFromBottom <= 4) return
@@ -869,12 +872,12 @@ function ServerViewPage() {
       })
     }
     const reportOverflow = () => {
-      stabilizeBottom('resize-or-scroll')
+      stabilizeBottom()
     }
     reportOverflow()
     const ro = new ResizeObserver(reportOverflow)
     ro.observe(el)
-    const mo = new MutationObserver(() => stabilizeBottom('mutation'))
+    const mo = new MutationObserver(() => stabilizeBottom())
     mo.observe(el, { childList: true, subtree: true, characterData: true })
     el.addEventListener('scroll', reportOverflow, { passive: true })
     return () => {
@@ -1049,7 +1052,6 @@ function ServerViewPage() {
                       </div>
                     )}
                     {chatMessages.length > 0 && (() => {
-                      const perfStart = performance.now()
                       type ChatItem = { type: 'day'; dateStr: string } | { type: 'group'; userId: string; messages: typeof chatMessages }
                       const items: ChatItem[] = []
                       let lastDateStr: string | null = null
@@ -1096,13 +1098,6 @@ function ServerViewPage() {
                         if (msg.delivery_status === 'delivered') lastDeliveredMessageId = msg.id
                         else lastPendingMessageId = msg.id
                       }
-                      const groupingMs = performance.now() - perfStart
-                      const attachmentMessageCount = chatMessages.reduce((acc, m) => {
-                        const c = m.attachments?.length ?? (m.attachment ? 1 : 0)
-                        return acc + (c > 0 ? 1 : 0)
-                      }, 0)
-                      const estimatedTransferScanOps = attachmentMessageCount * (attachmentTransfers.length + transferHistory.length)
-
                       return (
                         <Virtuoso
                           key={`${serverId ?? 'no-server'}:${groupChat?.id ?? 'no-chat'}:${location.key}`}
@@ -1242,7 +1237,7 @@ function ServerViewPage() {
                                         lastPendingMessageId={lastPendingMessageId}
                                       >
                                         {msg.kind === 'mixed' && msg.attachments?.length ? (
-                                            <div className="py-2 space-y-2">
+                                            <div className="pt-1 space-y-1.5">
                                               {(() => {
                                                 const mediaAttachments = msg.attachments!.filter((a) =>
                                                   isMediaType(getFileTypeFromExt(a.file_name) as Parameters<typeof isMediaType>[0])
@@ -1962,7 +1957,7 @@ function ServerViewPage() {
                                               ) : null}
                                             </div>
                                           ) : msg.kind === 'attachment' && msg.attachment ? (
-                                            <div className="py-2">
+                                            <div className="pt-1">
                                               <div
                                                 className={cn(
                                                   'relative rounded-lg transition-all',
@@ -2002,13 +1997,12 @@ function ServerViewPage() {
                                                   const thumbPath = isOwn
                                                     ? (sharedItem?.thumbnail_path ?? unsharedRec?.thumbnail_path ?? undefined)
                                                     : undefined
-                                                  const previewImagePath = thumbPath ?? hasPath
+                                                  const previewImagePath = (thumbPath ?? hasPath)!
                                                   const category = getFileTypeFromExt(att.file_name)
                                                   const isMedia = isMediaType(category as Parameters<typeof isMediaType>[0])
                                                   const mediaPreviewPath = category === 'video'
                                                     ? (thumbPath || hasPath)
                                                     : (hasPath || thumbPath)
-                                                  const singleMediaKey = `${msg.id}:${att.attachment_id}`
                                                   const notDownloaded = !isOwn && !alreadyDownloadedAccessible && !hasPath
                                                   const p = liveDownload ? Math.max(0, Math.min(100, Math.round((liveDownload.progress ?? 0) * 100))) : 0
                                                   const showProgress = !!liveDownload && (liveDownload.status === 'transferring' || liveDownload.status === 'completed')
@@ -2531,7 +2525,8 @@ function ServerViewPage() {
                     }}
                   >
                     {stagedAttachments.length > 0 && (
-                      <div className="flex flex-wrap gap-2 mb-3">
+                      <div className="mb-3 overflow-x-auto overflow-y-hidden pb-1 [scrollbar-gutter:stable]">
+                        <div className="flex flex-nowrap gap-2 min-w-max">
                         {stagedAttachments.map((att) => {
                           const category = att.file_name ? getFileTypeFromExt(att.file_name) : 'default'
                           const isMedia = att.file_name && isMediaType(category as Parameters<typeof isMediaType>[0])
@@ -2599,6 +2594,7 @@ function ServerViewPage() {
                             </div>
                           )
                         })}
+                        </div>
                       </div>
                     )}
                     <div className="flex items-end gap-2">
