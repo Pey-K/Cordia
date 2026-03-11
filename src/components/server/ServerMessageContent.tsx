@@ -12,6 +12,7 @@ import { CustomVideoPlayer } from '../CustomVideoPlayer'
 import { ChatMediaSlot, ChatFileRowSlot } from '../ChatMediaSlot'
 import { ChatSingleMediaAspect } from '../ChatSingleMediaAspect'
 import { isMediaType, getFileTypeFromExt } from '../../lib/fileType'
+import type { EphemeralAttachmentMeta } from '../../contexts/EphemeralMessagesContext'
 import {
   CHAT_MEDIA_MAX_W,
   CHAT_MEDIA_MAX_H,
@@ -89,10 +90,10 @@ export function ServerMessageContent({ msg, ctx }: { msg: any; ctx: any }) {
                                         {msg.kind === 'mixed' && msg.attachments?.length ? (
                                             <div className="pt-1 space-y-1.5">
                                               {(() => {
-                                                const mediaAttachments = msg.attachments!.filter((a) =>
+                                                const mediaAttachments = msg.attachments!.filter((a: EphemeralAttachmentMeta) =>
                                                   isMediaType(getFileTypeFromExt(a.file_name) as Parameters<typeof isMediaType>[0])
                                                 )
-                                                const otherAttachments = msg.attachments!.filter((a) =>
+                                                const otherAttachments = msg.attachments!.filter((a: EphemeralAttachmentMeta) =>
                                                   !isMediaType(getFileTypeFromExt(a.file_name) as Parameters<typeof isMediaType>[0])
                                                 )
                                                 return (
@@ -106,7 +107,7 @@ export function ServerMessageContent({ msg, ctx }: { msg: any; ctx: any }) {
                                                   mediaAttachments.length >= 3 && 'grid-cols-3 gap-1.5 max-w-[min(100%,32rem)]'
                                                 )}
                                               >
-                                                {mediaAttachments.map((att) => {
+                                                {mediaAttachments.map((att: EphemeralAttachmentMeta) => {
                                                   const count = mediaAttachments.length
                                                   const isSingle = count === 1
                                                   const isOwn = msg.from_user_id === identity?.user_id
@@ -145,7 +146,7 @@ export function ServerMessageContent({ msg, ctx }: { msg: any; ctx: any }) {
                                                           <button
                                                             type="button"
                                                             onClick={() =>
-                                                              setRevealedSpoilerIds((prev) =>
+                                                              setRevealedSpoilerIds((prev: Set<string>) =>
                                                                 new Set(prev).add(`${msg.id}:${att.attachment_id}`)
                                                               )
                                                             }
@@ -162,7 +163,7 @@ export function ServerMessageContent({ msg, ctx }: { msg: any; ctx: any }) {
                                                         key={att.attachment_id}
                                                         type="button"
                                                         onClick={() =>
-                                                          setRevealedSpoilerIds((prev) =>
+                                                          setRevealedSpoilerIds((prev: Set<string>) =>
                                                             new Set(prev).add(`${msg.id}:${att.attachment_id}`)
                                                           )
                                                         }
@@ -618,7 +619,7 @@ export function ServerMessageContent({ msg, ctx }: { msg: any; ctx: any }) {
                                               ) : null}
                                               {otherAttachments.length > 0 && (
                                                 <div className="flex flex-col gap-1 max-w-[min(100%,28rem)]">
-                                                  {otherAttachments.map((att) => {
+                                                  {otherAttachments.map((att: EphemeralAttachmentMeta) => {
                                                     const isOwn = msg.from_user_id === identity?.user_id
                                                     const {
                                                       hasPath,
@@ -804,7 +805,7 @@ export function ServerMessageContent({ msg, ctx }: { msg: any; ctx: any }) {
                                                   <button
                                                     type="button"
                                                     onClick={() =>
-                                                      setRevealedSpoilerIds((prev) => new Set(prev).add(msg.id))
+                                                      setRevealedSpoilerIds((prev: Set<string>) => new Set(prev).add(msg.id))
                                                     }
                                                     className="w-full py-4 px-4 bg-muted/80 hover:bg-muted rounded-lg text-center"
                                                   >

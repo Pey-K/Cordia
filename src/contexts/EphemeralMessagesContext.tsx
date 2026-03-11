@@ -16,6 +16,7 @@ import {
 } from '../lib/tauri'
 import { useAccount } from './AccountContext'
 import { useIdentity } from './IdentityContext'
+import { useEphemeralMessagesStore } from '../stores/ephemeralMessagesStore'
 import {
   DEFAULT_MESSAGE_STORAGE_SETTINGS,
   getMessageStorageSettings,
@@ -419,18 +420,22 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
   const { identity } = useIdentity()
   const [settingsBySigningPubkey, setSettingsBySigningPubkey] = useState<Record<string, MessageStorageSettings>>({})
   const [downloadSettings, setDownloadSettingsState] = useState<DownloadSettings>(DEFAULT_DOWNLOAD_SETTINGS)
-  const [messagesByBucket, setMessagesByBucket] = useState<MessageBuckets>({})
+  const messagesByBucket = useEphemeralMessagesStore((s) => s.messagesByBucket)
+  const setMessagesByBucket = useEphemeralMessagesStore((s) => s.setMessagesByBucket)
   const [unreadState, setUnreadState] = useState<UnreadState>({
     unread_count_by_server: {},
     last_seen_at_by_server: {},
   })
-  const [attachmentTransfers, setAttachmentTransfers] = useState<AttachmentTransferState[]>([])
-  const [transferHistory, setTransferHistory] = useState<TransferHistoryEntry[]>([])
-  const [sharedAttachments, setSharedAttachments] = useState<SharedAttachmentItem[]>([])
-  /** Per server (signing_pubkey) -> set of sha256 that user has shared in that server. Persisted. */
-  const [serverSharedSha, setServerSharedSha] = useState<Record<string, string[]>>({})
-  /** Content cache: sha256 -> local path (from completed downloads). Avoids re-downloading same file. Persisted. */
-  const [contentCacheBySha, setContentCacheBySha] = useState<Record<string, string>>({})
+  const attachmentTransfers = useEphemeralMessagesStore((s) => s.attachmentTransfers)
+  const setAttachmentTransfers = useEphemeralMessagesStore((s) => s.setAttachmentTransfers)
+  const transferHistory = useEphemeralMessagesStore((s) => s.transferHistory)
+  const setTransferHistory = useEphemeralMessagesStore((s) => s.setTransferHistory)
+  const sharedAttachments = useEphemeralMessagesStore((s) => s.sharedAttachments)
+  const setSharedAttachments = useEphemeralMessagesStore((s) => s.setSharedAttachments)
+  const serverSharedSha = useEphemeralMessagesStore((s) => s.serverSharedSha)
+  const setServerSharedSha = useEphemeralMessagesStore((s) => s.setServerSharedSha)
+  const contentCacheBySha = useEphemeralMessagesStore((s) => s.contentCacheBySha)
+  const setContentCacheBySha = useEphemeralMessagesStore((s) => s.setContentCacheBySha)
   const [hydrated, setHydrated] = useState(false)
   const transferPeersRef = useRef<Map<string, RTCPeerConnection>>(new Map())
   const transferDataChannelsRef = useRef<Map<string, RTCDataChannel>>(new Map())
