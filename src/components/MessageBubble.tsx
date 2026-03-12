@@ -18,8 +18,6 @@ export interface MessageBubbleProps {
   isFirstInGroup: boolean
   displayName: string
   levelColor: string
-  hovered: boolean
-  onHoverChange: (hovered: boolean) => void
   currentUserId: string | undefined
   lastDeliveredMessageId: string | null
   lastPendingMessageId: string | null
@@ -35,8 +33,6 @@ export function MessageBubble({
   isFirstInGroup,
   displayName,
   levelColor,
-  hovered,
-  onHoverChange,
   currentUserId,
   lastDeliveredMessageId,
   lastPendingMessageId,
@@ -55,12 +51,7 @@ export function MessageBubble({
     (msg.delivery_status === 'bundling' || msg.id === lastDeliveredMessageId || msg.id === lastPendingMessageId)
 
   return (
-    <div
-      className="group/msg pt-0 pb-px pl-1 pr-6 -mx-1 cursor-default"
-      style={{ backgroundColor: hovered ? 'hsl(var(--muted) / 0.875)' : undefined }}
-      onMouseEnter={() => onHoverChange(true)}
-      onMouseLeave={() => onHoverChange(false)}
-    >
+    <div className="group/msg pt-0 pb-px pl-1 pr-6 -mx-1 cursor-default hover:bg-muted/80">
       {isFirstInGroup ? (
         <div className="flex items-baseline gap-2 flex-wrap">
           <span className={cn('text-sm font-medium', levelColor)}>{displayName}</span>

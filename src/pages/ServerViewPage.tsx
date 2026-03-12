@@ -148,7 +148,6 @@ function ServerViewPage() {
   const [voiceVolumeMenu, setVoiceVolumeMenu] = useState<{ userId: string; displayName: string; x: number; y: number } | null>(null)
   const voiceVolumeMenuRef = useRef<HTMLDivElement>(null)
   const [composerHasText, setComposerHasText] = useState(false)
-  const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null)
   const virtuosoScrollerRef = useRef<HTMLDivElement | null>(null)
   const virtuosoRef = useRef<VirtuosoHandle | null>(null)
   const lastInitialBottomScrollChatKeyRef = useRef<string | null>(null)
@@ -253,18 +252,26 @@ function ServerViewPage() {
   }, [chatMessages, sharedAttachments, identity?.user_id])
   const canSendMessages = Boolean(groupChat && server?.connection_mode === 'Signaling' && beaconStatus === 'connected')
 
-  const fallbackNameForUser = (userId: string) => {
-    const m = server?.members?.find(mm => mm.user_id === userId)
-    return m?.display_name ?? `User ${userId.slice(0, 8)}`
-  }
+  const getProfile = useCallback(
+    (userId: string) => remoteProfiles.getProfile(userId),
+    [remoteProfiles]
+  )
 
-  const getInitials = (name: string) => {
+  const fallbackNameForUser = useCallback(
+    (userId: string) => {
+      const m = server?.members?.find((mm) => mm.user_id === userId)
+      return m?.display_name ?? `User ${userId.slice(0, 8)}`
+    },
+    [server?.members]
+  )
+
+  const getInitials = useCallback((name: string) => {
     const cleaned = name.trim()
     if (!cleaned) return '?'
     const parts = cleaned.split(/\s+/).filter(Boolean)
     if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
     return (parts[0][0] + parts[1][0]).toUpperCase()
-  }
+  }, [])
 
   const hashId = (s: string) => {
     let hash = 0
@@ -272,13 +279,27 @@ function ServerViewPage() {
     return hash
   }
 
-  const avatarStyleForUser = (userId: string): CSSProperties => {
+  const avatarStyleForUser = useCallback((userId: string): CSSProperties => {
     const h = hashId(userId) % 360
     return {
       backgroundColor: `hsl(${h}, 45%, 35%)`,
       color: '#fff',
     }
-  }
+  }, [])
+
+  const onProfileClick = useCallback((userId: string, element: HTMLElement) => {
+    setProfileCardUserId(userId)
+    profileCardAnchorRef.current = element
+    setProfileCardAnchor(element.getBoundingClientRect())
+  }, [])
+
+  const isUserInVoiceForServer = useCallback(
+    (userId: string) => {
+      if (!server?.signing_pubkey) return false
+      return voicePresence.isUserInVoice(server.signing_pubkey, userId)
+    },
+    [voicePresence, server?.signing_pubkey]
+  )
 
   const PresenceSquare = ({ level, size = 'default' }: { level: 'active' | 'online' | 'offline' | 'in_call'; size?: 'default' | 'small' }) => {
     const cls =
@@ -845,35 +866,36 @@ function ServerViewPage() {
     const el = virtuosoScrollerRef.current
     if (!el) return
     const runStabilize = () => {
-      if (pendingBottomStabilizeRef.current <= 0) return
-      if (userScrolledAwayRef.current) return
-      const scrollHeight = el.scrollHeight
-      const clientHeight = el.clientHeight
-      const scrollTop = el.scrollTop
-      const distanceFromBottom = Math.max(0, scrollHeight - clientHeight - scrollTop)
+      if (pendingBottomStabilizeRef.current <= 0 || userScrolledAwayRef.current) return false
+      const distanceFromBottom = Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop)
       if (distanceFromBottom <= 4) {
         userScrolledAwayRef.current = false
-        return
+        pendingBottomStabilizeRef.current = 0
+        return false
       }
       pendingBottomStabilizeRef.current -= 1
       virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
       requestAnimationFrame(() => {
         virtuosoRef.current?.autoscrollToBottom()
       })
+      return pendingBottomStabilizeRef.current > 0
     }
-    const scheduleStabilize = () => {
+    const MAX_SETTLE_FRAMES = 16
+    let settleCount = 0
+    const tick = () => {
+      coalescedStabilizeRafRef.current = null
+      settleCount += 1
+      const shouldContinue = runStabilize()
+      if (shouldContinue && settleCount < MAX_SETTLE_FRAMES) {
+        coalescedStabilizeRafRef.current = requestAnimationFrame(tick)
+      }
+    }
+    coalescedStabilizeRafRef.current = requestAnimationFrame(tick)
+    const onScroll = () => {
+      if (pendingBottomStabilizeRef.current <= 0) return
       if (coalescedStabilizeRafRef.current != null) return
-      coalescedStabilizeRafRef.current = requestAnimationFrame(() => {
-        coalescedStabilizeRafRef.current = null
-        runStabilize()
-      })
+      coalescedStabilizeRafRef.current = requestAnimationFrame(tick)
     }
-    scheduleStabilize()
-    const ro = new ResizeObserver(scheduleStabilize)
-    ro.observe(el)
-    const mo = new MutationObserver(scheduleStabilize)
-    mo.observe(el, { childList: true, subtree: true, characterData: true })
-    const onScroll = () => scheduleStabilize()
     el.addEventListener('scroll', onScroll, { passive: true })
     const onWheel = () => {
       const distanceFromBottom = Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop)
@@ -881,8 +903,6 @@ function ServerViewPage() {
     }
     el.addEventListener('wheel', onWheel, { passive: true })
     return () => {
-      ro.disconnect()
-      mo.disconnect()
       el.removeEventListener('scroll', onScroll)
       el.removeEventListener('wheel', onWheel)
       if (coalescedStabilizeRafRef.current != null) cancelAnimationFrame(coalescedStabilizeRafRef.current)
@@ -916,14 +936,18 @@ function ServerViewPage() {
     return () => cancelAnimationFrame(raf)
   }, [groupChat?.id, latestOwnReceiptKey])
 
-  type ChatItem = { type: 'day'; dateStr: string } | { type: 'group'; userId: string; messages: typeof chatMessages }
+  type ChatItem =
+    | { type: 'day'; id: string; dateStr: string }
+    | { type: 'group'; id: string; userId: string; messages: typeof chatMessages }
   const { chatItems, lastDeliveredMessageId, lastPendingMessageId } = useMemo(() => {
     const items: ChatItem[] = []
     let lastDateStr: string | null = null
     let currentGroup: { userId: string; messages: typeof chatMessages } | null = null
     const flushGroup = () => {
       if (currentGroup && currentGroup.messages.length > 0) {
-        items.push({ type: 'group', userId: currentGroup.userId, messages: currentGroup.messages })
+        const firstMsg = currentGroup.messages[0]
+        const groupId = firstMsg ? firstMsg.id : `${currentGroup.userId}:${items.length}`
+        items.push({ type: 'group', id: groupId, userId: currentGroup.userId, messages: currentGroup.messages })
         currentGroup = null
       }
     }
@@ -937,7 +961,8 @@ function ServerViewPage() {
       if (dateStr !== lastDateStr) {
         flushGroup()
         lastDateStr = dateStr
-        items.push({ type: 'day', dateStr })
+        const dayId = `day:${dateStr}`
+        items.push({ type: 'day', id: dayId, dateStr })
       }
       const prevMsg = currentGroup?.messages[currentGroup.messages.length - 1]
       const isContinuation =
@@ -1016,17 +1041,13 @@ function ServerViewPage() {
                 webrtcIsInVoice={webrtcIsInVoice}
                 currentRoomId={currentRoomId}
                 getMemberLevel={getMemberLevel}
-                isUserInVoice={(userId) => voicePresence.isUserInVoice(server.signing_pubkey, userId)}
+                isUserInVoice={isUserInVoiceForServer}
                 isUserSpeaking={isUserSpeaking}
                 getRemoteUserPrefs={getRemoteUserPrefs}
-                getProfile={remoteProfiles.getProfile.bind(remoteProfiles)}
+                getProfile={getProfile}
                 getInitials={getInitials}
                 avatarStyleForUser={avatarStyleForUser}
-                onProfileClick={(userId, element) => {
-                  setProfileCardUserId(userId)
-                  profileCardAnchorRef.current = element
-                  setProfileCardAnchor(element.getBoundingClientRect())
-                }}
+                onProfileClick={onProfileClick}
                 onVoiceVolumeMenu={(userId, displayName, x, y) =>
                   setVoiceVolumeMenu({ userId, displayName, x, y })
                 }
@@ -1054,19 +1075,13 @@ function ServerViewPage() {
                         groupChat={groupChat}
                         identity={identity}
                         profile={profile}
-                        getProfile={remoteProfiles.getProfile.bind(remoteProfiles)}
+                        getProfile={getProfile}
                         getMemberLevel={getMemberLevel}
-                        isUserInVoice={(userId) => voicePresence.isUserInVoice(server.signing_pubkey, userId)}
+                        isUserInVoice={isUserInVoiceForServer}
                         fallbackNameForUser={fallbackNameForUser}
                         getInitials={getInitials}
                         avatarStyleForUser={avatarStyleForUser}
-                        onProfileClick={(userId, element) => {
-                          setProfileCardUserId(userId)
-                          profileCardAnchorRef.current = element
-                          setProfileCardAnchor(element.getBoundingClientRect())
-                        }}
-                        hoveredMsgId={hoveredMsgId}
-                        setHoveredMsgId={setHoveredMsgId}
+                        onProfileClick={onProfileClick}
                         lastDeliveredMessageId={lastDeliveredMessageId}
                         lastPendingMessageId={lastPendingMessageId}
                         attachmentTransfers={attachmentTransfers}

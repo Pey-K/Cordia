@@ -341,6 +341,33 @@ fn is_image_ext(ext: &str) -> bool {
     ["jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "tiff", "tif"].contains(&e.as_str())
 }
 
+fn extract_image_thumbnail(source: &PathBuf, output_path: &PathBuf, max_edge: i32) -> bool {
+    let ffmpeg = if cfg!(target_os = "windows") { "ffmpeg.exe" } else { "ffmpeg" };
+    let output = output_path.to_string_lossy();
+    let input = source.to_string_lossy();
+    let scale = format!("scale={0}:{0}:force_original_aspect_ratio=decrease", max_edge);
+    let args: Vec<&str> = vec![
+        "-i",
+        &input,
+        "-vf",
+        &scale,
+        "-q:v",
+        "3",
+        "-y",
+        &output,
+    ];
+    let mut cmd = Command::new(ffmpeg);
+    cmd.args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd.status().map(|s| s.success()).unwrap_or(false)
+}
+
 fn extract_thumbnail(source: &PathBuf, output_path: &PathBuf, ext: &str) -> bool {
     let ffmpeg = if cfg!(target_os = "windows") { "ffmpeg.exe" } else { "ffmpeg" };
     let output = output_path.to_string_lossy();
@@ -348,7 +375,7 @@ fn extract_thumbnail(source: &PathBuf, output_path: &PathBuf, ext: &str) -> bool
     let args: Vec<&str> = if is_video_ext(ext) {
         vec!["-i", &input, "-vframes", "1", "-y", &output]
     } else if is_image_ext(ext) {
-        vec!["-i", &input, "-vf", "scale=128:-1", "-y", &output]
+        return extract_image_thumbnail(source, output_path, 720);
     } else {
         return false;
     };
@@ -639,8 +666,24 @@ fn prepare_attachment_background(
         } else {
             source
         };
-        let thumb_path = base.join("thumbs").join(format!("{}.jpg", attachment_id));
-        if extract_thumbnail(&extract_from, &thumb_path, extension) {
+        let thumb_path = if is_image_ext(extension) {
+            base.join("thumbs").join(format!("{}_720.jpg", attachment_id))
+        } else {
+            base.join("thumbs").join(format!("{}.jpg", attachment_id))
+        };
+        let ok = if is_image_ext(extension) {
+            // Tiered image thumbs for UI policy: single=720, 2-grid=576, 3+-grid=480.
+            let thumb_720 = base.join("thumbs").join(format!("{}_720.jpg", attachment_id));
+            let thumb_576 = base.join("thumbs").join(format!("{}_576.jpg", attachment_id));
+            let thumb_480 = base.join("thumbs").join(format!("{}_480.jpg", attachment_id));
+            let ok720 = extract_image_thumbnail(&extract_from, &thumb_720, 720);
+            let _ = extract_image_thumbnail(&extract_from, &thumb_576, 576);
+            let _ = extract_image_thumbnail(&extract_from, &thumb_480, 480);
+            ok720
+        } else {
+            extract_thumbnail(&extract_from, &thumb_path, extension)
+        };
+        if ok {
             with_attachment_index_lock(|| {
                 let mut index = load_attachment_index(&base);
                 if let Some(rec) = index.records.get_mut(attachment_id) {

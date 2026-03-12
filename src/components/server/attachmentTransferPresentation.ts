@@ -20,6 +20,8 @@ export function buildAttachmentTransferPresentation({
   attachmentTransferRows,
   transferHistory,
   sharedAttachments,
+  sharedByAttachmentId,
+  completedDownloadPathByAttachmentId,
   unsharedAttachmentRecords,
   hasAccessibleCompletedDownload,
   getCachedPathForSha,
@@ -29,19 +31,25 @@ export function buildAttachmentTransferPresentation({
   attachmentTransferRows: AttachmentTransferState[]
   transferHistory: TransferHistoryEntry[]
   sharedAttachments: SharedAttachmentItem[]
+  sharedByAttachmentId?: Record<string, SharedAttachmentItem | undefined>
+  completedDownloadPathByAttachmentId?: Record<string, string | undefined>
   unsharedAttachmentRecords: Record<string, UnsharedRecord | null | undefined>
   hasAccessibleCompletedDownload: (id: string | null | undefined) => boolean
   getCachedPathForSha: (sha: string | undefined) => string | null
 }) {
-  const sharedItem = sharedAttachments.find((s) => s.attachment_id === att.attachment_id)
+  const sharedItem = sharedByAttachmentId
+    ? sharedByAttachmentId[att.attachment_id]
+    : sharedAttachments.find((s) => s.attachment_id === att.attachment_id)
   const unsharedRec = unsharedAttachmentRecords[att.attachment_id]
-  const completedDownload = transferHistory.find(
-    (h) =>
-      h.direction === 'download' &&
-      h.attachment_id === att.attachment_id &&
-      h.status === 'completed' &&
-      h.saved_path
-  )
+  const completedDownloadPath = completedDownloadPathByAttachmentId
+    ? completedDownloadPathByAttachmentId[att.attachment_id]
+    : transferHistory.find(
+        (h) =>
+          h.direction === 'download' &&
+          h.attachment_id === att.attachment_id &&
+          h.status === 'completed' &&
+          h.saved_path
+      )?.saved_path
   const liveDownload = attachmentTransferRows.find(
     (t) =>
       t.direction === 'download' &&
@@ -50,7 +58,7 @@ export function buildAttachmentTransferPresentation({
   )
   const hasPath = isOwn
     ? (sharedItem?.file_path ?? unsharedRec?.file_path ?? getCachedPathForSha(att.sha256) ?? att.preview_path ?? undefined)
-    : (completedDownload?.saved_path ?? getCachedPathForSha(att.sha256) ?? undefined)
+    : (completedDownloadPath ?? getCachedPathForSha(att.sha256) ?? undefined)
   const thumbPath = isOwn
     ? (sharedItem?.thumbnail_path ?? unsharedRec?.thumbnail_path ?? undefined)
     : undefined

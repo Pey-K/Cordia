@@ -20,9 +20,20 @@ import {
   getSingleAttachmentSize,
   getSingleAttachmentAspectRatio,
 } from '../../lib/chatMessageLayout'
-import { buildAttachmentTransferPresentation } from './attachmentTransferPresentation'
 
 const NOT_DOWNLOADED_CARD_NARROW_PX = 110
+
+function imageTierPreviewPath(
+  thumbPath: string | undefined,
+  hasPath: string | undefined,
+  imageCount: number
+): string | undefined {
+  if (!thumbPath) return hasPath
+  const target = imageCount >= 3 ? 480 : imageCount === 2 ? 576 : 720
+  const base = thumbPath.replace(/_(720|576|480)\.jpg$/i, '.jpg')
+  const tiered = base.replace(/\.jpg$/i, `_${target}.jpg`)
+  return tiered || thumbPath
+}
 
 function NotDownloadedCardByWidth({
   threshold,
@@ -55,25 +66,32 @@ function NotDownloadedCardByWidth({
   )
 }
 
-export function ServerMessageContent({ msg, ctx }: { msg: any; ctx: any }) {
+export function ServerMessageContent({
+  msg,
+  rowModel,
+  callbacks,
+}: {
+  msg: any
+  rowModel: any
+  callbacks: any
+}) {
   const {
     identity,
-    sharedAttachments,
     unsharedAttachmentRecords,
-    transferHistory,
-    attachmentTransferRows,
+    attachmentTransfersByMessageId,
+    rejectedDownloadByAttachmentId,
+    activeUploadByAttachmentId,
+    sharedByAttachmentId,
+    completedDownloadPathByAttachmentId,
     getCachedPathForSha,
     hasAccessibleCompletedDownload,
-    attachmentStateLabelFor,
     revealedSpoilerIds,
     setRevealedSpoilerIds,
     server,
     groupChat,
     updateAttachmentAspect,
     requestAttachmentDownload,
-    unavailableReasonFor,
     isSharedInServer,
-    hasActiveUploadForAttachment,
     justSharedKeys,
     handleShareAgainAttachment,
     setMediaPreview,
@@ -82,8 +100,71 @@ export function ServerMessageContent({ msg, ctx }: { msg: any; ctx: any }) {
     videoScrollTargetsRef,
     setInlineVideoShowControls,
     inlineVideoShowControls,
-    attachmentStateLabel,
-  } = ctx
+  } = callbacks || {}
+
+  const attachmentStateLabel: string | null = rowModel?.attachmentStateLabel ?? null
+  const hostOnlineForAttachment: boolean = rowModel?.hostOnlineForAttachment ?? false
+
+  const attachmentTransferRows =
+    attachmentTransfersByMessageId && msg ? attachmentTransfersByMessageId[msg.id] ?? [] : []
+
+  const getAttachmentPresentation = (att: { attachment_id: string; sha256?: string; preview_path?: string | null }) => {
+    const sharedItem = sharedByAttachmentId?.[att.attachment_id]
+    const unsharedRec = unsharedAttachmentRecords?.[att.attachment_id]
+    const completedDownloadPath = completedDownloadPathByAttachmentId?.[att.attachment_id]
+    const cachedPath = att.sha256 ? getCachedPathForSha?.(att.sha256) ?? undefined : undefined
+    const liveDownload = attachmentTransferRows.find(
+      (t: any) =>
+        t.direction === 'download' &&
+        t.attachment_id === att.attachment_id &&
+        (t.status === 'transferring' || t.status === 'requesting' || t.status === 'connecting')
+    )
+    const isOwn = msg.from_user_id === identity?.user_id
+    const hasPath = isOwn
+      ? (sharedItem?.file_path ?? unsharedRec?.file_path ?? cachedPath ?? att.preview_path ?? undefined)
+      : (completedDownloadPath ?? cachedPath ?? undefined)
+    const thumbPath = isOwn
+      ? (sharedItem?.thumbnail_path ?? unsharedRec?.thumbnail_path ?? undefined)
+      : undefined
+    const notDownloaded = !isOwn && !hasAccessibleCompletedDownload?.(att.attachment_id) && !hasPath
+    const downloadProgress = liveDownload
+      ? Math.max(0, Math.min(100, Math.round((liveDownload.progress ?? 0) * 100)))
+      : 0
+    const showDownloadProgress =
+      !!liveDownload && (liveDownload.status === 'transferring' || liveDownload.status === 'completed')
+    return { sharedItem, hasPath, thumbPath, notDownloaded, liveDownload, downloadProgress, showDownloadProgress }
+  }
+
+  const hasRejectedDownloadForAttachment = (att: { attachment_id: string }) =>
+    !!(rejectedDownloadByAttachmentId && rejectedDownloadByAttachmentId[att.attachment_id])
+
+  const hasActiveUploadForAttachment = (a: { attachment_id: string }) =>
+    !!(activeUploadByAttachmentId && activeUploadByAttachmentId[a.attachment_id])
+
+  const attachmentStateLabelFor = (att: { attachment_id: string; sha256?: string }) => {
+    if (hasAccessibleCompletedDownload?.(att.attachment_id)) return 'Cached'
+    if (att.sha256 && getCachedPathForSha && getCachedPathForSha(att.sha256)) return 'Cached'
+    const isOwn = msg.from_user_id === identity?.user_id
+    if (isOwn) {
+      const sharedItem = sharedByAttachmentId?.[att.attachment_id]
+      return sharedItem && sharedItem.can_share_now ? 'Available' : 'Unavailable'
+    }
+    return hasRejectedDownloadForAttachment(att) || !hostOnlineForAttachment ? 'Unavailable' : 'Available'
+  }
+
+  const unavailableReasonFor = (a: { attachment_id: string }) => {
+    const isOwn = msg.from_user_id === identity?.user_id
+    if (isOwn) {
+      const sharedItem = sharedByAttachmentId?.[a.attachment_id]
+      return !sharedItem || !sharedItem.can_share_now ? 'No longer shared' : null
+    }
+    const removed = hasRejectedDownloadForAttachment(a)
+    const offline = !hostOnlineForAttachment
+    if (removed && offline) return 'Removed • Offline'
+    if (removed) return 'Removed'
+    if (offline) return 'Offline'
+    return null
+  }
 
   return (
     <>
@@ -118,17 +199,9 @@ export function ServerMessageContent({ msg, ctx }: { msg: any; ctx: any }) {
                                                     notDownloaded,
                                                     downloadProgress,
                                                     showDownloadProgress,
-                                                  } = buildAttachmentTransferPresentation({
-                                                    att,
-                                                    isOwn,
-                                                    attachmentTransferRows,
-                                                    transferHistory,
-                                                    sharedAttachments,
-                                                    unsharedAttachmentRecords,
-                                                    hasAccessibleCompletedDownload,
-                                                    getCachedPathForSha,
-                                                  })
+                                                  } = getAttachmentPresentation(att)
                                                   const stateLabel = attachmentStateLabelFor(att)
+                                                  const gridImagePath = imageTierPreviewPath(thumbPath, hasPath, count)
                                                   const spoilerRevealed = revealedSpoilerIds.has(`${msg.id}:${att.attachment_id}`) || revealedSpoilerIds.has(msg.id)
                                                   if (att.spoiler && !spoilerRevealed) {
                                                     return isSingle ? (
@@ -326,11 +399,18 @@ export function ServerMessageContent({ msg, ctx }: { msg: any; ctx: any }) {
                                                                 aspectClass={!isSingle ? 'aspect-square' : undefined}
                                                               >
                                                                 <img
-                                                                  src={convertFileSrc(hasPath)}
+                                                                  src={convertFileSrc(gridImagePath || hasPath)}
                                                                   alt=""
                                                                   loading="lazy"
+                                                                  decoding="async"
                                                                   className="object-cover"
                                                                   onLoad={onImageLoad}
+                                                                  onError={(e) => {
+                                                                    const fallback = thumbPath || hasPath
+                                                                    if (!fallback) return
+                                                                    const fallbackSrc = convertFileSrc(fallback)
+                                                                    if (e.currentTarget.src !== fallbackSrc) e.currentTarget.src = fallbackSrc
+                                                                  }}
                                                                 />
                                                               </ChatMediaSlot>
                                                             </button>
@@ -561,7 +641,15 @@ export function ServerMessageContent({ msg, ctx }: { msg: any; ctx: any }) {
                                                           <div className="relative w-full h-full min-h-0">
                                                             <button type="button" className="block w-full h-full min-h-0 focus:outline-none" onClick={() => setMediaPreview({ type: 'image', url: convertFileSrc(hasPath), fileName: att.file_name })}>
                                                               <ChatMediaSlot fillParent aspectClass="aspect-square">
-                                                                <img src={convertFileSrc(hasPath)} alt="" loading="lazy" className="object-cover" />
+                                                                <img
+                                                                  src={convertFileSrc(gridImagePath || hasPath)}
+                                                                  alt=""
+                                                                  loading="lazy"
+                                                                  decoding="async"
+                                                                  fetchPriority="low"
+                                                                  className="object-cover"
+                                                                  draggable={false}
+                                                                />
                                                               </ChatMediaSlot>
                                                             </button>
                                                             {isOwn && msg.delivery_status !== 'bundling' && !isSharedInServer(server?.signing_pubkey ?? '', att.sha256 ?? '') && !hasActiveUploadForAttachment(att) && !justSharedKeys.has(`att:${att.attachment_id}`) && !justSharedKeys.has(`sha:${att.sha256 ?? ''}`) && (
@@ -627,16 +715,7 @@ export function ServerMessageContent({ msg, ctx }: { msg: any; ctx: any }) {
                                                       liveDownload,
                                                       downloadProgress,
                                                       showDownloadProgress,
-                                                    } = buildAttachmentTransferPresentation({
-                                                      att,
-                                                      isOwn,
-                                                      attachmentTransferRows,
-                                                      transferHistory,
-                                                      sharedAttachments,
-                                                      unsharedAttachmentRecords,
-                                                      hasAccessibleCompletedDownload,
-                                                      getCachedPathForSha,
-                                                    })
+                                                    } = getAttachmentPresentation(att)
                                                     const stateLabel = attachmentStateLabelFor(att)
                                                     const category = getFileTypeFromExt(att.file_name) as Parameters<typeof IconForCategory>[0]['cat']
                                                     return (
@@ -823,17 +902,8 @@ export function ServerMessageContent({ msg, ctx }: { msg: any; ctx: any }) {
                                                     thumbPath,
                                                     notDownloaded,
                                                     liveDownload,
-                                                  } = buildAttachmentTransferPresentation({
-                                                    att,
-                                                    isOwn,
-                                                    attachmentTransferRows,
-                                                    transferHistory,
-                                                    sharedAttachments,
-                                                    unsharedAttachmentRecords,
-                                                    hasAccessibleCompletedDownload,
-                                                    getCachedPathForSha,
-                                                  })
-                                                  const previewImagePath = (thumbPath ?? hasPath)!
+                                                  } = getAttachmentPresentation(att)
+                                                  const previewImagePath = imageTierPreviewPath(thumbPath, hasPath, 1) ?? (thumbPath ?? hasPath)!
                                                   const category = getFileTypeFromExt(att.file_name)
                                                   const isMedia = isMediaType(category as Parameters<typeof isMediaType>[0])
                                                   const mediaPreviewPath = category === 'video'
