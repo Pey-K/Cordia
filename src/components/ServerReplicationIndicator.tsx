@@ -62,10 +62,8 @@ export const ServerReplicationIndicator = memo(function ServerReplicationIndicat
             <span
               key={i}
               className={cn(
-                'h-1.5 w-1.5 shrink-0 rounded-[1px] ring-1',
-                isActive
-                  ? 'bg-sky-500/85 ring-sky-500/25'
-                  : 'bg-emerald-500/80 ring-emerald-500/15'
+                'h-1.5 w-1.5 shrink-0 rounded-[1px]',
+                isActive ? 'bg-sky-500' : 'bg-emerald-500'
               )}
             />
           )

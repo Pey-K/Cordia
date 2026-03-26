@@ -28,7 +28,7 @@ import type { SharedAttachmentItem } from '../lib/tauri'
 import { cn } from '../lib/utils'
 import { TransferCenterDownloadRow } from './TransferCenterDownloadRow'
 import { TransferCenterActiveUploadStripRow } from './TransferCenterActiveUploadStripRow'
-import { TransferCenterSeedingRow } from './TransferCenterSeedingRow'
+import { TransferCenterSeedingRow, type SeedingDownloaderEntry } from './TransferCenterSeedingRow'
 
 const HISTORY_ROW_H = 48
 const SEED_ROW_H = 48
@@ -376,6 +376,39 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
       }),
     [uploadsGroupedBySha, serversBySha]
   )
+
+  const attachmentIdToSeedingGroupSha = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const { sha, items } of uploadsGroupedBySha) {
+      for (const it of items) {
+        m.set(it.attachment_id, sha)
+      }
+    }
+    return m
+  }, [uploadsGroupedBySha])
+
+  /** Completed uploads you finished, grouped by seeding SHA key (for downloader count + menu). */
+  const seedingDownloadersByGroupSha = useMemo(() => {
+    const map = new Map<string, SeedingDownloaderEntry[]>()
+    for (const h of transferHistory) {
+      if (h.direction !== 'upload' || h.status !== 'completed') continue
+      const shaKey = attachmentIdToSeedingGroupSha.get(h.attachment_id)
+      if (!shaKey) continue
+      const row: SeedingDownloaderEntry = {
+        requestId: h.request_id,
+        toUserId: h.to_user_id,
+        serverSigningPubkey: h.server_signing_pubkey,
+        updatedAt: h.updated_at,
+      }
+      const list = map.get(shaKey) ?? []
+      list.push(row)
+      map.set(shaKey, list)
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+    }
+    return map
+  }, [transferHistory, attachmentIdToSeedingGroupSha])
 
   const dashboardStats = useMemo(() => {
     let completedCount = 0
@@ -788,6 +821,7 @@ export function TransferCenterPanel({ variant = 'full' }: { variant?: TransferCe
                           serversBySha={serversBySha}
                           serverNameBySigningPubkey={serverNameBySigningPubkey}
                           activeSigningPubkeys={activeSigningForSha}
+                          downloaderEntries={seedingDownloadersByGroupSha.get(group.sha) ?? []}
                           setMediaPreview={setMediaPreview}
                           unshareFromServer={unshareFromServer}
                           unshareAttachmentById={unshareAttachmentById}

@@ -252,6 +252,8 @@ export interface TransferHistoryEntry {
   is_inaccessible?: boolean
   created_at: string
   updated_at: string
+  /** Cordia server for this session (uploads you sent); persisted for seeding downloader list. */
+  server_signing_pubkey?: string
 }
 
 const EphemeralMessagesContext = createContext<EphemeralMessagesContextType | null>(null)
@@ -1265,6 +1267,7 @@ export function EphemeralMessagesProvider({ children }: { children: ReactNode })
         is_inaccessible: prev?.is_inaccessible,
         created_at: prev?.created_at || now,
         updated_at: now,
+        server_signing_pubkey: t.server_signing_pubkey ?? prev?.server_signing_pubkey,
         }
       })
     }
