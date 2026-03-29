@@ -10,6 +10,7 @@ import {
   FileVideo,
   File,
   Play,
+  AudioLines,
 } from 'lucide-react'
 import { convertFileSrc } from '@tauri-apps/api/tauri'
 import { ensureMusicCoverThumbnail, getCachedMusicCoverPath, readAttachmentBytes } from '../lib/tauri'
@@ -84,6 +85,8 @@ export function FileIcon({
   const [loading, setLoading] = useState(false)
   /** Stale `thumbnailPath` in DB can point at a missing file — skip thumb and use `ensure` like chat. */
   const [musicThumbPathFailed, setMusicThumbPathFailed] = useState(false)
+  /** Music cover `<img>` decoded — until then show note icon (composer / slow disk). */
+  const [musicCoverImgLoaded, setMusicCoverImgLoaded] = useState(false)
   /** True while the current `mediaUrl` came from `thumbnailPath` (so `onError` can retry with ensure). */
   const musicCoverFromThumbRef = useRef(false)
   const blobUrlRef = useRef<string | null>(null)
@@ -91,6 +94,11 @@ export function FileIcon({
   useEffect(() => {
     setMusicThumbPathFailed(false)
   }, [thumbnailPath, attachmentId, savedPath, fileName])
+
+  useEffect(() => {
+    if (category !== 'music') return
+    setMusicCoverImgLoaded(false)
+  }, [category, mediaUrl])
 
   useEffect(() => {
     if (category !== 'image' && category !== 'video' && category !== 'music') return
@@ -333,6 +341,7 @@ export function FileIcon({
           alt=""
           className="h-full w-full object-cover"
           draggable={false}
+          onLoad={() => setMusicCoverImgLoaded(true)}
           onError={() => {
             setMediaUrl(null)
             if (musicCoverFromThumbRef.current) {
@@ -343,7 +352,24 @@ export function FileIcon({
         />
         <span
           aria-hidden
-          className="pointer-events-none absolute inset-0 bg-black/0 transition-colors group-hover:bg-black/20"
+          className="pointer-events-none absolute inset-0 z-[2] flex items-center justify-center rounded-md bg-black/30 transition-opacity duration-150 opacity-100 group-hover:opacity-0"
+        >
+          <AudioLines
+            className="h-6 w-6 text-white drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)]"
+            strokeWidth={2}
+          />
+        </span>
+        {!musicCoverImgLoaded ? (
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-0 z-[3] flex items-center justify-center bg-muted/50 opacity-0 transition-opacity duration-150 group-hover:opacity-100"
+          >
+            <IconForCategory cat="music" className="text-muted-foreground" />
+          </span>
+        ) : null}
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-0 z-[4] bg-black/0 transition-colors group-hover:bg-black/20"
         />
       </button>
     )
@@ -360,13 +386,27 @@ export function FileIcon({
           className={`${boxCls} relative cursor-pointer group`}
           style={{ width: boxSize, height: boxSize }}
           onClick={() =>
-            onMediaClick?.(null, 'audio', aid, fileName, { musicCoverFullSourcePath: null, localPath: sp })
+            onMediaClick?.(null, 'audio', aid, fileName, { musicCoverFullSourcePath: sp, localPath: sp })
           }
         >
-          <IconForCategory cat="music" className="text-muted-foreground" />
           <span
             aria-hidden
-            className="pointer-events-none absolute inset-0 bg-black/0 transition-colors group-hover:bg-black/20"
+            className="pointer-events-none absolute inset-0 z-0 flex items-center justify-center opacity-0 transition-opacity duration-150 group-hover:opacity-100"
+          >
+            <IconForCategory cat="music" className="text-muted-foreground" />
+          </span>
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-0 z-[1] flex items-center justify-center rounded-md bg-black/30 transition-opacity duration-150 opacity-100 group-hover:opacity-0"
+          >
+            <AudioLines
+              className="h-6 w-6 text-white drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)]"
+              strokeWidth={2}
+            />
+          </span>
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-0 z-[2] bg-black/0 transition-colors group-hover:bg-black/20"
           />
         </button>
       )
@@ -378,13 +418,27 @@ export function FileIcon({
           className={`${boxCls} relative cursor-pointer group`}
           style={{ width: boxSize, height: boxSize }}
           onClick={() =>
-            onMediaClick?.(null, 'audio', undefined, fileName, { musicCoverFullSourcePath: null, localPath: sp })
+            onMediaClick?.(null, 'audio', undefined, fileName, { musicCoverFullSourcePath: sp, localPath: sp })
           }
         >
-          <IconForCategory cat="music" className="text-muted-foreground" />
           <span
             aria-hidden
-            className="pointer-events-none absolute inset-0 bg-black/0 transition-colors group-hover:bg-black/20"
+            className="pointer-events-none absolute inset-0 z-0 flex items-center justify-center opacity-0 transition-opacity duration-150 group-hover:opacity-100"
+          >
+            <IconForCategory cat="music" className="text-muted-foreground" />
+          </span>
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-0 z-[1] flex items-center justify-center rounded-md bg-black/30 transition-opacity duration-150 opacity-100 group-hover:opacity-0"
+          >
+            <AudioLines
+              className="h-6 w-6 text-white drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)]"
+              strokeWidth={2}
+            />
+          </span>
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-0 z-[2] bg-black/0 transition-colors group-hover:bg-black/20"
           />
         </button>
       )

@@ -18,6 +18,8 @@ export interface StagedAttachment {
   storage_mode: 'current_path' | 'program_copy'
   spoiler?: boolean
   attachment_id?: string
+  /** After prep (e.g. ffmpeg 144px music cover `*_music.jpg`), same as chat `thumbnail_path`. */
+  thumbnail_path?: string | null
   ready?: boolean
   preparePercent?: number
 }
@@ -43,6 +45,10 @@ export interface ServerComposerProps {
     fileName: string
     localPath: string
     sizeBytes: number
+    /** Staged audio: required for full-size cover extraction in the player modal. */
+    attachmentId?: string
+    /** Audio file path for ffmpeg embed extraction; defaults to `localPath` when omitted. */
+    musicCoverFullSourcePath?: string | null
   }) => void
 }
 
@@ -85,18 +91,23 @@ function ServerComposerImpl({
                   >
                     <FileIcon
                       fileName={att.file_name}
-                      attachmentId={null}
+                      attachmentId={att.attachment_id ?? null}
                       savedPath={att.path}
-                      onMediaClick={(url, type, _attachmentId, fileName, opts) => {
+                      thumbnailPath={att.thumbnail_path ?? null}
+                      onMediaClick={(url, type, clickAttachmentId, fileName, opts) => {
                         if (type === 'audio') {
                           const lp = opts?.localPath?.trim() ?? att.path
                           if (!lp) return
+                          const aid = (clickAttachmentId ?? att.attachment_id)?.trim()
+                          const coverSrc = (opts?.musicCoverFullSourcePath?.trim() || lp) as string
                           onMediaPreview({
                             type: 'audio',
                             url: null,
                             fileName: fileName ?? att.file_name,
                             localPath: lp,
                             sizeBytes: att.size_bytes,
+                            attachmentId: aid || undefined,
+                            musicCoverFullSourcePath: coverSrc,
                           })
                           return
                         }

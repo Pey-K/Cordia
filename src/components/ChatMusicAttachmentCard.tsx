@@ -133,7 +133,7 @@ function ChatMusicAttachmentCardInner({
 
   const coverBody =
     showPlayerChrome && !coverFailed ? (
-      coverGateOpen && displayCoverSrc ? (
+      displayCoverSrc ? (
         <ChatMediaSlot fillParent className="rounded-md">
           <img
             src={displayCoverSrc}
@@ -146,9 +146,14 @@ function ChatMusicAttachmentCardInner({
           />
         </ChatMediaSlot>
       ) : (
-        <ChatMediaSlot fillParent className="rounded-md">
-          {null}
-        </ChatMediaSlot>
+        <div
+          className={cn(
+            'flex h-full w-full items-center justify-center bg-muted',
+            compact ? '[&>svg]:size-8' : '[&>svg]:size-10'
+          )}
+        >
+          <IconForCategory cat="music" className="text-muted-foreground" />
+        </div>
       )
     ) : (
       <div

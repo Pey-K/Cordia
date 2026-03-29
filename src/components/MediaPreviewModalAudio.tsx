@@ -1101,8 +1101,18 @@ export function MediaPreviewModalAudio({
                           {thumb ? (
                             <img src={thumb} alt="" className="h-full w-full object-cover" draggable={false} />
                           ) : (
-                            <div className="flex h-full w-full items-center justify-center bg-muted">
-                              <IconForCategory cat="music" className="h-6 w-6 text-muted-foreground" />
+                            <div className="relative flex h-full w-full items-center justify-center bg-muted">
+                              <span
+                                aria-hidden
+                                className={cn(
+                                  'pointer-events-none absolute inset-0 z-0 flex items-center justify-center transition-opacity duration-150',
+                                  isActiveThumb
+                                    ? 'opacity-0'
+                                    : 'opacity-0 group-hover/gthumb:opacity-100'
+                                )}
+                              >
+                                <IconForCategory cat="music" className="h-6 w-6 text-muted-foreground" />
+                              </span>
                             </div>
                           )}
                           {isActiveThumb ? (

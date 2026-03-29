@@ -489,11 +489,24 @@ function ServerViewPage() {
       (event) => {
         const { attachment_id, ok } = event.payload ?? {}
         if (attachment_id == null || !ok) return
-        setStagedAttachments((prev) =>
-          prev.some((a) => a.attachment_id === attachment_id)
-            ? prev.map((a) => (a.attachment_id === attachment_id ? { ...a, ready: true } : a))
-            : prev
-        )
+        void (async () => {
+          let thumbnail_path: string | null = null
+          try {
+            const rec = await getAttachmentRecord(attachment_id)
+            thumbnail_path = rec?.thumbnail_path ?? null
+          } catch {
+            /* keep null */
+          }
+          setStagedAttachments((prev) =>
+            prev.some((a) => a.attachment_id === attachment_id)
+              ? prev.map((a) =>
+                  a.attachment_id === attachment_id
+                    ? { ...a, ready: true, thumbnail_path }
+                    : a
+                )
+              : prev
+          )
+        })()
       }
     )
     return () => {
@@ -672,6 +685,7 @@ function ServerViewPage() {
             storage_mode,
             spoiler: false,
             attachment_id,
+            thumbnail_path: rec?.thumbnail_path ?? null,
             ready: ready ?? false,
           },
         ])
@@ -1138,22 +1152,32 @@ function ServerViewPage() {
                   onAddAttachment={handleAddAttachment}
                   onRemoveStagedAttachment={handleRemoveStagedAttachment}
                   onToggleStagedSpoiler={handleToggleStagedSpoiler}
-                  onMediaPreview={({ type, url, fileName, localPath, sizeBytes }) => {
+                  onMediaPreview={({
+                    type,
+                    url,
+                    fileName,
+                    localPath,
+                    sizeBytes,
+                    attachmentId: previewAttachmentId,
+                    musicCoverFullSourcePath: previewCoverSource,
+                  }) => {
                     if (!identity?.user_id) return
                     if (type === 'audio') {
                       const lp = localPath?.trim()
                       if (!lp) return
+                      const aid = previewAttachmentId?.trim()
+                      const coverSrc = (previewCoverSource?.trim() || lp) as string
                       setMediaPreview({
                         type: 'audio',
                         localPath: lp,
-                        attachmentId: undefined,
+                        attachmentId: aid || undefined,
                         fileName,
                         source: 'chat',
                         originUserId: identity.user_id,
                         originSentAtIso: new Date().toISOString(),
                         originDisplayName: identity.display_name ?? 'You',
                         originAvatarDataUrl: profile.avatar_data_url ?? null,
-                        musicCoverFullSourcePath: null,
+                        musicCoverFullSourcePath: coverSrc,
                         sizeBytes,
                         showShareInChat: false,
                       })
