@@ -150,6 +150,8 @@ export interface AttachmentRegistrationResult {
   piece_count?: number | null
   piece_hashes?: string[]
   waveform_peaks?: AttachmentWaveformPeaks | null
+  /** Present for audio after native prep (ffprobe). */
+  audio_duration_secs?: number | null
 }
 
 export interface SharedAttachmentItem {

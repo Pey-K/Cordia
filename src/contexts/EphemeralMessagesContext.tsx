@@ -54,6 +54,8 @@ export interface EphemeralAttachmentMeta {
   preview_path?: string
   /** When set (audio attachments from Cordia prep), waveform UI uses this instead of Web Audio decode. */
   waveform_peaks?: WaveformPeaksPayload
+  /** ffprobe duration from prep; chat can show clocks without loading `<audio>` metadata. */
+  audio_duration_secs?: number
   /** Embedded album art from prep (data URL); sent with the message so receivers can show it without local FFmpeg. */
   music_cover_data_url?: string
 }

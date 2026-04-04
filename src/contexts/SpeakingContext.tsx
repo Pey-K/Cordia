@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useMemo, type ReactNode, useEffect } from 'react'
+import { createContext, useContext, useState, useCallback, useMemo, useRef, type ReactNode, useEffect } from 'react'
 
 type SpeakingState = Record<string, boolean> // userId -> isSpeaking
 
@@ -11,6 +11,8 @@ const SpeakingContext = createContext<SpeakingContextType | null>(null)
 
 export function SpeakingProvider({ children }: { children: ReactNode }) {
   const [speakingState, setSpeakingState] = useState<SpeakingState>({})
+  const speakingStateRef = useRef(speakingState)
+  speakingStateRef.current = speakingState
 
   const setUserSpeaking = useCallback((userId: string, isSpeaking: boolean) => {
     setSpeakingState((prev) => {
@@ -19,10 +21,6 @@ export function SpeakingProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
-  const isUserSpeaking = useCallback((userId: string) => {
-    return speakingState[userId] === true
-  }, [speakingState])
-
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -30,9 +28,13 @@ export function SpeakingProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const value = useMemo(
-    () => ({ isUserSpeaking, setUserSpeaking }),
-    [isUserSpeaking, setUserSpeaking]
+  /** Stable value – isUserSpeaking reads from ref so speaking ticks don't re-render consumers. */
+  const value = useMemo<SpeakingContextType>(
+    () => ({
+      isUserSpeaking: (userId: string) => speakingStateRef.current[userId] === true,
+      setUserSpeaking: (...args) => setUserSpeaking(...args),
+    }),
+    [] // stable forever
   )
 
   return <SpeakingContext.Provider value={value}>{children}</SpeakingContext.Provider>

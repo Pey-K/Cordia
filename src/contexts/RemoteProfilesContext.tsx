@@ -65,6 +65,10 @@ export function RemoteProfilesProvider({ children }: { children: ReactNode }) {
   const [profiles, setProfiles] = useState<Map<string, RemoteProfile>>(new Map())
   const [hydrated, setHydrated] = useState(false)
   const persistTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const profilesRef = useRef(profiles)
+  profilesRef.current = profiles
+  const hydratedRef = useRef(hydrated)
+  hydratedRef.current = hydrated
 
   // Hydrate from persisted known_profiles on load / account switch so we never show "Unknown"
   useEffect(() => {
@@ -141,14 +145,15 @@ export function RemoteProfilesProvider({ children }: { children: ReactNode }) {
     })
   }
 
+  /** Stable value – getProfile reads from ref so profile updates don't cascade to all consumers. */
   const value = useMemo<RemoteProfilesContextType>(() => {
     return {
-      profiles,
-      hydrated,
-      applyUpdate,
-      getProfile: (userId) => profiles.get(userId),
+      get profiles() { return profilesRef.current },
+      get hydrated() { return hydratedRef.current },
+      applyUpdate: (...args) => applyUpdate(...args),
+      getProfile: (userId) => profilesRef.current.get(userId),
     }
-  }, [profiles, hydrated])
+  }, [])
 
   return <RemoteProfilesContext.Provider value={value}>{children}</RemoteProfilesContext.Provider>
 }

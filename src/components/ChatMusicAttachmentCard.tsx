@@ -30,6 +30,8 @@ type Props = {
   waveformSeed: string
   /** From attachment prep / message JSON — skips fetch + Web Audio decode when valid. */
   waveformPeaks?: WaveformPeaksPayload | null
+  /** From prep / message JSON — total duration without probing `<audio>`. */
+  audioDurationSecs?: number
   /** Album art from prep (file URL or embedded data URL); same slot size as the default music icon. */
   coverSrc?: string | null
   /** Message attachment id — used to cache extracted art next to prep thumbnails. */
@@ -49,6 +51,7 @@ function ChatMusicAttachmentCardInner({
   audioSrc,
   waveformSeed,
   waveformPeaks,
+  audioDurationSecs,
   coverSrc,
   attachmentId,
   localMediaPathForCover,
@@ -108,6 +111,7 @@ function ChatMusicAttachmentCardInner({
     audioSrc,
     waveformSeed,
     waveformPeaks,
+    audioDurationSecs: audioDurationSecs ?? null,
     attachmentId,
     lazyLoadMedia: true,
     compact,

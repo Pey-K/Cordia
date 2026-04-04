@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, useMemo, ReactNode } from 'react';
 import {
   AccountInfo,
   listAccounts,
@@ -35,11 +35,7 @@ export function AccountProvider({ children }: { children: ReactNode }) {
   
   const { setIdentity, clearIdentity } = useIdentity();
 
-  useEffect(() => {
-    initializeSession();
-  }, []);
-
-  async function initializeSession() {
+  const initializeSession = useCallback(async () => {
     setIsLoading(true);
     setAuthError(null);
     try {
@@ -96,9 +92,13 @@ export function AccountProvider({ children }: { children: ReactNode }) {
       setSessionLoaded(true);
       setIsLoading(false);
     }
-  }
+  }, [setIdentity, clearIdentity]);
 
-  async function refreshAccounts() {
+  useEffect(() => {
+    initializeSession();
+  }, [initializeSession]);
+
+  const refreshAccounts = useCallback(async () => {
     try {
       const accountList = await listAccounts();
       setAccounts(accountList);
@@ -119,9 +119,9 @@ export function AccountProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       console.error('Failed to refresh accounts:', error);
     }
-  }
+  }, []);
 
-  async function switchToAccount(accountId: string) {
+  const switchToAccount = useCallback(async (accountId: string) => {
     try {
       setAuthError(null);
       // Set session first so listServers() reads the new account's data
@@ -153,9 +153,9 @@ export function AccountProvider({ children }: { children: ReactNode }) {
       );
       throw error;
     }
-  }
+  }, [setIdentity, clearIdentity]);
 
-  async function logout() {
+  const logout = useCallback(async () => {
     try {
       // Clear session state
       await logoutAccount();
@@ -173,22 +173,32 @@ export function AccountProvider({ children }: { children: ReactNode }) {
       setCurrentAccountId(null);
       window.location.href = '/account/select';
     }
-  }
+  }, [clearIdentity]);
+
+  const value = useMemo(() => ({
+    accounts,
+    accountInfoMap,
+    currentAccountId,
+    sessionLoaded,
+    isLoading,
+    authError,
+    refreshAccounts,
+    switchToAccount,
+    logout,
+  }), [
+    accounts,
+    accountInfoMap,
+    currentAccountId,
+    sessionLoaded,
+    isLoading,
+    authError,
+    refreshAccounts,
+    switchToAccount,
+    logout,
+  ]);
 
   return (
-    <AccountContext.Provider
-      value={{
-        accounts,
-        accountInfoMap,
-        currentAccountId,
-        sessionLoaded,
-        isLoading,
-        authError,
-        refreshAccounts,
-        switchToAccount,
-        logout,
-      }}
-    >
+    <AccountContext.Provider value={value}>
       {children}
     </AccountContext.Provider>
   );

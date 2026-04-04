@@ -38,6 +38,7 @@ import { ServerComposer, type StagedAttachment } from '../components/server/Serv
 import { useMediaPreview } from '../contexts/MediaPreviewContext'
 import { ChatInlineAudioProvider } from '../contexts/ChatInlineAudioContext'
 import { isMediaType, getFileTypeFromExt } from '../lib/fileType'
+import { isValidWaveformPeaksPayload } from '../lib/attachmentAudioMeta'
 import { useRenderCount } from '../lib/useRenderCount'
 
 /** Get intrinsic dimensions for a media URL so we can store aspect on the message (shimmer correct on load). */
@@ -603,6 +604,9 @@ function ServerViewPage() {
         const allAttachments = records.map((rec, i) => {
           if (!rec?.sha256) throw new Error('Attachment not ready')
           const dim = dimensions[i]
+          const isMusic = getFileTypeFromExt(rec.file_name) === 'music'
+          const peaks = rec.waveform_peaks
+          const dur = rec.audio_duration_secs
           return {
             attachment_id: rec.attachment_id,
             file_name: rec.file_name,
@@ -611,6 +615,10 @@ function ServerViewPage() {
             sha256: rec.sha256,
             spoiler: toSend[i].spoiler ?? false,
             ...(dim && { aspect_ratio_w: dim.w, aspect_ratio_h: dim.h }),
+            ...(isMusic && peaks && isValidWaveformPeaksPayload(peaks)
+              ? { waveform_peaks: { top: [...peaks.top], bottom: [...peaks.bottom] } }
+              : {}),
+            ...(isMusic && dur != null && Number.isFinite(dur) && dur > 0 ? { audio_duration_secs: dur } : {}),
           }
         })
         bundlingProgressRef.current = null

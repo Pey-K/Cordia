@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useRef, ReactNode, useEffect } from 'react'
+import { createContext, useContext, useState, useCallback, useRef, ReactNode, useEffect, useMemo } from 'react'
 import { InputLevelMeter } from '../lib/audio'
 import {
   createPeerConnection,
@@ -107,6 +107,12 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
   const [currentRoomId, setCurrentRoomId] = useState<string | null>(null)
   const [inputLevelMeter, setInputLevelMeter] = useState<InputLevelMeter | null>(null)
   const [remoteAudioPrefs, setRemoteAudioPrefs] = useState<Record<string, PerUserAudioPrefs>>({})
+  const isInVoiceStateRef = useRef(isInVoice); isInVoiceStateRef.current = isInVoice
+  const isLocalMutedRef = useRef(isLocalMuted); isLocalMutedRef.current = isLocalMuted
+  const peersStateRef = useRef(peers); peersStateRef.current = peers
+  const currentRoomIdRef = useRef(currentRoomId); currentRoomIdRef.current = currentRoomId
+  const inputLevelMeterStateRef = useRef(inputLevelMeter); inputLevelMeterStateRef.current = inputLevelMeter
+  const remoteAudioPrefsRef = useRef(remoteAudioPrefs); remoteAudioPrefsRef.current = remoteAudioPrefs
 
   // Refs
   const inputLevelMeterRef = useRef<InputLevelMeter | null>(null)
@@ -1347,28 +1353,37 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
 
   const getRemoteUserPrefs = useCallback((userId: string) => getReceiverPrefs(userId), [])
 
+  /** Stable value – state is read from refs so voice events don't cascade re-renders to consumers. */
+  const fnsRef = useRef<any>({})
+  Object.assign(fnsRef.current, {
+    joinVoice, leaveVoice, toggleMute, setOutputDevice,
+    ensureAudioInitialized, reinitializeAudio, hotSwapInputDevice, stopAudio,
+    setRemoteUserVolume, setRemoteUserMuted, getRemoteUserPrefs,
+  })
+
+  const value = useMemo<WebRTCContextType>(() => {
+    const proxy: any = {}
+    const fnKeys = [
+      'joinVoice','leaveVoice','toggleMute','setOutputDevice',
+      'ensureAudioInitialized','reinitializeAudio','hotSwapInputDevice','stopAudio',
+      'setRemoteUserVolume','setRemoteUserMuted','getRemoteUserPrefs',
+    ]
+    for (const key of fnKeys) {
+      proxy[key] = (...args: any[]) => fnsRef.current[key](...args)
+    }
+    Object.defineProperties(proxy, {
+      isInVoice: { get: () => isInVoiceStateRef.current, enumerable: true },
+      isLocalMuted: { get: () => isLocalMutedRef.current, enumerable: true },
+      peers: { get: () => peersStateRef.current, enumerable: true },
+      currentRoomId: { get: () => currentRoomIdRef.current, enumerable: true },
+      inputLevelMeter: { get: () => inputLevelMeterStateRef.current, enumerable: true },
+      remoteAudioPrefs: { get: () => remoteAudioPrefsRef.current, enumerable: true },
+    })
+    return proxy as WebRTCContextType
+  }, [])
+
   return (
-    <WebRTCContext.Provider
-      value={{
-        joinVoice,
-        leaveVoice,
-        toggleMute,
-        setOutputDevice,
-        isInVoice,
-        isLocalMuted,
-        peers,
-        currentRoomId,
-        inputLevelMeter,
-        ensureAudioInitialized,
-        reinitializeAudio,
-        hotSwapInputDevice,
-        stopAudio,
-        remoteAudioPrefs,
-        setRemoteUserVolume,
-        setRemoteUserMuted,
-        getRemoteUserPrefs
-      }}
-    >
+    <WebRTCContext.Provider value={value}>
       {children}
     </WebRTCContext.Provider>
   )

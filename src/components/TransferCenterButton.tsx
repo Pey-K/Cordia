@@ -1,13 +1,12 @@
 import { useMemo } from 'react'
+import { useEphemeralMessagesStore } from '../stores/ephemeralMessagesStore'
 import { ArrowUpDown } from 'lucide-react'
 import { Button } from './ui/button'
 import { Tooltip } from './Tooltip'
 import { useTransferCenterModal } from '../contexts/TransferCenterModalContext'
-import { useEphemeralMessages } from '../contexts/EphemeralMessagesContext'
-
 export function TransferCenterButton() {
   const { openTransferCenter, anchorRef } = useTransferCenterModal()
-  const { attachmentTransfers } = useEphemeralMessages()
+  const attachmentTransfers = useEphemeralMessagesStore(s => s.attachmentTransfers)
   const activeDownloads = useMemo(
     () =>
       attachmentTransfers.filter(

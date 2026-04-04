@@ -266,3 +266,10 @@ select:focus option:checked {
 .rmmt-cropper.rmmt-cropper--grid .reactEasyCrop_Grid {
   opacity: 1;
 }
+
+/* NotDownloadedCardByWidth: container-query replacement for ResizeObserver.
+   Threshold = NOT_DOWNLOADED_CARD_NARROW_PX (110px). */
+@container (max-width: 109px) {
+  .ndcbw-narrow { display: block !important; }
+  .ndcbw-wide   { display: none  !important; }
+}

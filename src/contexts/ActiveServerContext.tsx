@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, type ReactNode } from 'react'
+import { createContext, useContext, useState, useEffect, useMemo, type ReactNode } from 'react'
 
 interface ActiveServerContextType {
   /** Current active server signing_pubkey, or null when in Home (server list / settings). */
@@ -19,7 +19,7 @@ export function ActiveServerProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('cordia:active-server-changed', handler)
   }, [])
 
-  const value: ActiveServerContextType = { activeSigningPubkey }
+  const value = useMemo(() => ({ activeSigningPubkey }), [activeSigningPubkey])
 
   return (
     <ActiveServerContext.Provider value={value}>

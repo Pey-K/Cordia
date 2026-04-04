@@ -946,6 +946,7 @@ export function ServerMessageContent({
                                                                     audioSrc={chatMusicAudioSrc(hasPath)}
                                                                     waveformSeed={att.attachment_id}
                                                                     waveformPeaks={att.waveform_peaks}
+                                                                    audioDurationSecs={att.audio_duration_secs}
                                                                     coverSrc={musicCoverSrc(att, thumbPath)}
                                                                     attachmentId={att.attachment_id}
                                                                     localMediaPathForCover={hasPath ?? undefined}
@@ -1035,6 +1036,7 @@ export function ServerMessageContent({
                                                                 audioSrc={chatMusicAudioSrc(hasPath)}
                                                                 waveformSeed={att.attachment_id}
                                                                     waveformPeaks={att.waveform_peaks}
+                                                                    audioDurationSecs={att.audio_duration_secs}
                                                                 coverSrc={musicCoverSrc(att, thumbPath)}
                                                                 attachmentId={att.attachment_id}
                                                                 localMediaPathForCover={hasPath ?? undefined}
@@ -1596,6 +1598,7 @@ export function ServerMessageContent({
                                                                 audioSrc={chatMusicAudioSrc(hasPath)}
                                                                 waveformSeed={att.attachment_id}
                                                                     waveformPeaks={att.waveform_peaks}
+                                                                    audioDurationSecs={att.audio_duration_secs}
                                                                 coverSrc={musicCoverSrc(att, thumbPath)}
                                                                 attachmentId={att.attachment_id}
                                                                 localMediaPathForCover={hasPath ?? undefined}
@@ -1680,6 +1683,7 @@ export function ServerMessageContent({
                                                                 audioSrc={chatMusicAudioSrc(hasPath)}
                                                                 waveformSeed={att.attachment_id}
                                                                     waveformPeaks={att.waveform_peaks}
+                                                                    audioDurationSecs={att.audio_duration_secs}
                                                                 coverSrc={musicCoverSrc(att, thumbPath)}
                                                                 attachmentId={att.attachment_id}
                                                                 localMediaPathForCover={hasPath ?? undefined}

@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useCallback, ReactNode, useRef } from 'react'
+import { createContext, useContext, useState, useEffect, useCallback, ReactNode, useRef, useMemo } from 'react'
 import { checkBeacon, getBeaconUrl } from '../lib/tauri'
 import { useAccount } from './AccountContext'
 
@@ -83,8 +83,18 @@ export function BeaconProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(interval)
   }, [beaconUrl, checkHealth, checkHealthSilent])
 
+  const value = useMemo<BeaconContextType>(
+    () => ({
+      status,
+      beaconUrl,
+      checkHealth,
+      reloadUrl,
+    }),
+    [status, beaconUrl, checkHealth, reloadUrl]
+  );
+
   return (
-    <BeaconContext.Provider value={{ status, beaconUrl, checkHealth, reloadUrl }}>
+    <BeaconContext.Provider value={value}>
       {children}
     </BeaconContext.Provider>
   )

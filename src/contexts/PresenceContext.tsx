@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useContext, useMemo, useRef, useState, type ReactNode } from 'react'
 
 export type PresenceLevel = 'active' | 'online' | 'offline' | 'in_call'
 
@@ -24,6 +24,8 @@ const PresenceContext = createContext<PresenceContextType | null>(null)
 
 export function PresenceProvider({ children }: { children: ReactNode }) {
   const [byHouse, setByHouse] = useState<PresenceByHouse>({})
+  const byHouseRef = useRef(byHouse)
+  byHouseRef.current = byHouse
 
   const applySnapshot: PresenceContextType['applySnapshot'] = (signingPubkey, users) => {
     setByHouse((prev) => {
@@ -54,20 +56,19 @@ export function PresenceProvider({ children }: { children: ReactNode }) {
     })
   }
 
-  const getLevel: PresenceContextType['getLevel'] = (signingPubkey, userId, isInCall = false) => {
-    const u = byHouse[signingPubkey]?.[userId]
-    if (!u) return 'offline'
-    // If user is in a call, show in_call status (blue) - this overrides all other states
-    if (isInCall) {
-      return 'in_call'
-    }
-    return u.active_signing_pubkey === signingPubkey ? 'active' : 'online'
-  }
-
-  const value = useMemo(
-    () => ({ applySnapshot, applyUpdate, getLevel }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [byHouse]
+  /** Stable value – functions close over ref so consumers never re-render from presence ticks. */
+  const value = useMemo<PresenceContextType>(
+    () => ({
+      applySnapshot: (...args) => applySnapshot(...args),
+      applyUpdate: (...args) => applyUpdate(...args),
+      getLevel: (signingPubkey, userId, isInCall = false) => {
+        const u = byHouseRef.current[signingPubkey]?.[userId]
+        if (!u) return 'offline'
+        if (isInCall) return 'in_call'
+        return u.active_signing_pubkey === signingPubkey ? 'active' : 'online'
+      },
+    }),
+    [] // stable forever – reads latest state via ref
   )
 
   return <PresenceContext.Provider value={value}>{children}</PresenceContext.Provider>

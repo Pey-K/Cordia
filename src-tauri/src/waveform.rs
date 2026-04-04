@@ -50,7 +50,8 @@ fn sample_rate_hz_for_duration(duration_secs: f64) -> u64 {
     }
 }
 
-fn ffprobe_duration(path: &Path) -> Option<f64> {
+/// Media container duration in seconds (ffprobe `format=duration`).
+pub fn ffprobe_duration(path: &Path) -> Option<f64> {
     let bin = if cfg!(target_os = "windows") {
         "ffprobe.exe"
     } else {
@@ -90,11 +91,12 @@ fn normalize_to_band(raw: &[f64], min_h: f64, max_h: f64) -> Vec<f32> {
 
 /// Decode mono f32 @ 44.1kHz via FFmpeg, bucket RMS into `bars` segments (matches TS `extractSplitPeaksFromChannelData`).
 pub fn compute_waveform_peaks(path: &Path, bars: usize) -> Option<WaveformPeaks> {
-    compute_waveform_peaks_with_progress(path, bars, |_| {})
+    compute_waveform_peaks_with_progress(path, bars, |_| {}).map(|(p, _)| p)
 }
 
 /// `on_progress` receives 0–100 of samples decoded (long files: this is most of prep time after SHA/piece hashing).
-pub fn compute_waveform_peaks_with_progress<F>(path: &Path, bars: usize, mut on_progress: F) -> Option<WaveformPeaks>
+/// Returns peaks and **container duration in seconds** (same as ffprobe) for chat metadata without WebView touching the file.
+pub fn compute_waveform_peaks_with_progress<F>(path: &Path, bars: usize, mut on_progress: F) -> Option<(WaveformPeaks, f64)>
 where
     F: FnMut(u8),
 {
@@ -201,10 +203,13 @@ where
         raw_bottom.push(bot_rms);
     }
 
-    Some(WaveformPeaks {
-        top: normalize_to_band(&raw_top, 0.04, 0.98),
-        bottom: normalize_to_band(&raw_bottom, 0.04, 0.48),
-    })
+    Some((
+        WaveformPeaks {
+            top: normalize_to_band(&raw_top, 0.04, 0.98),
+            bottom: normalize_to_band(&raw_bottom, 0.04, 0.48),
+        },
+        duration,
+    ))
 }
 
 /// First audio stream info from ffprobe (local files). `bits_per_sample` is often absent for lossy codecs.

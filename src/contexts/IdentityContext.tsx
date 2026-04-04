@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, ReactNode } from 'react';
+import { createContext, useContext, useState, useMemo, useCallback, ReactNode } from 'react';
 import { UserIdentity } from '../lib/tauri';
 
 interface IdentityContextType {
@@ -12,18 +12,18 @@ const IdentityContext = createContext<IdentityContextType | undefined>(undefined
 export function IdentityProvider({ children }: { children: ReactNode }) {
   const [identity, setIdentity] = useState<UserIdentity | null>(null);
 
-  function clearIdentity() {
-      setIdentity(null);
-  }
+  const clearIdentity = useCallback(() => {
+    setIdentity(null);
+  }, []);
+
+  const value = useMemo(() => ({
+    identity,
+    setIdentity,
+    clearIdentity,
+  }), [identity, clearIdentity]);
 
   return (
-    <IdentityContext.Provider
-      value={{
-        identity,
-        setIdentity,
-        clearIdentity,
-      }}
-    >
+    <IdentityContext.Provider value={value}>
       {children}
     </IdentityContext.Provider>
   );

@@ -109,6 +109,9 @@ struct AttachmentRecord {
     /// Precomputed music waveform (top/bottom bands); packaged into chat metadata for receivers.
     #[serde(default)]
     waveform_peaks: Option<waveform::WaveformPeaks>,
+    /// ffprobe duration (seconds); lets chat show clocks without loading `<audio>` until play.
+    #[serde(default)]
+    audio_duration_secs: Option<f64>,
 }
 
 fn default_true() -> bool {
@@ -163,6 +166,8 @@ struct AttachmentRegistrationResult {
     piece_hashes: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     waveform_peaks: Option<waveform::WaveformPeaks>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    audio_duration_secs: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -782,6 +787,7 @@ fn register_attachment_from_path(
             piece_count: None,
             piece_hashes: Vec::new(),
             waveform_peaks: None,
+            audio_duration_secs: None,
         };
         index.records.insert(attachment_id.clone(), record);
         save_attachment_index(&base, &index)?;
@@ -848,6 +854,7 @@ fn register_attachment_from_path(
         piece_count: None,
         piece_hashes: Vec::new(),
         waveform_peaks: None,
+        audio_duration_secs: None,
     })
 }
 
@@ -980,15 +987,31 @@ fn prepare_attachment_background(
     };
 
     let mut waveform_peaks_opt: Option<waveform::WaveformPeaks> = None;
+    let mut audio_duration_secs_opt: Option<f64> = None;
     if is_audio_ext(extension) {
-        waveform_peaks_opt = waveform::compute_waveform_peaks_with_progress(&extract_from_media, waveform::WAVE_BARS, {
+        match waveform::compute_waveform_peaks_with_progress(&extract_from_media, waveform::WAVE_BARS, {
             let last_prep_pct = last_prep_pct.clone();
             let pe = pe.clone();
             move |wf_pct| {
                 let overall = (65.0_f64 + (wf_pct as f64) * 0.3).min(95.0);
                 emit_prep_pct(&last_prep_pct, &pe, overall);
             }
-        });
+        }) {
+            Some((peaks, dur)) => {
+                if dur.is_finite() && dur > 0.0 {
+                    audio_duration_secs_opt = Some(dur);
+                }
+                waveform_peaks_opt = Some(peaks);
+            }
+            None => {
+                // Waveform failed (e.g. FFmpeg) — still try duration for chat metadata.
+                if let Some(d) = waveform::ffprobe_duration(&extract_from_media) {
+                    if d.is_finite() && d > 0.0 {
+                        audio_duration_secs_opt = Some(d);
+                    }
+                }
+            }
+        }
     }
 
     let mut thumb_path_str: Option<String> = None;
@@ -1034,6 +1057,9 @@ fn prepare_attachment_background(
         if let Some(rec) = index.records.get_mut(attachment_id) {
             if let Some(wave) = waveform_peaks_opt {
                 rec.waveform_peaks = Some(wave);
+            }
+            if let Some(dur) = audio_duration_secs_opt {
+                rec.audio_duration_secs = Some(dur);
             }
             if let Some(ref thumb) = thumb_path_str {
                 rec.thumbnail_path = Some(thumb.clone());
@@ -1095,6 +1121,7 @@ fn get_attachment_record(attachment_id: String) -> Result<Option<AttachmentRegis
         piece_count: rec.piece_count,
         piece_hashes: rec.piece_hashes.clone(),
         waveform_peaks: rec.waveform_peaks.clone(),
+        audio_duration_secs: rec.audio_duration_secs,
     }))
 }
 

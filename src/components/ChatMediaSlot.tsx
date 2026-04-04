@@ -1,7 +1,7 @@
 import { type ReactNode } from 'react'
 import { cn } from '../lib/utils'
 
-/** 4:1 aspect file row with shimmer: icon on left, title and size (below) on the right. Used for non-media attachments (e.g. zip). */
+/** 4:1 aspect file row; used for non-media attachments (e.g. zip). */
 export function ChatFileRowSlot({
   className,
   icon,
@@ -22,10 +22,7 @@ export function ChatFileRowSlot({
         className
       )}
     >
-      <div
-        className="absolute inset-0 bg-gradient-to-r from-muted via-muted-foreground/10 to-muted bg-[length:200%_100%] animate-shimmer"
-        aria-hidden
-      />
+      {/* Shimmer removed — bg-card content div fully occludes it, so it only wastes paint budget */}
       <div className="absolute inset-0 flex items-center gap-3 px-3 py-2 bg-card">
         <span className="shrink-0 flex items-center justify-center text-muted-foreground [&>svg]:size-5">
           {icon}
@@ -68,6 +65,7 @@ export function ChatMediaSlot({
         !fillParent && maxHClass,
         className
       )}
+      style={{ contentVisibility: 'auto' }}
     >
       <div
         className="absolute inset-0 bg-gradient-to-r from-muted via-muted-foreground/10 to-muted bg-[length:200%_100%] animate-shimmer"

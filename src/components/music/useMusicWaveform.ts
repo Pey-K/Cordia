@@ -22,7 +22,6 @@ import {
   WAVE_BARS,
   barRect,
   computeSeekTimeSeconds,
-  extractSplitPeaksFromChannelData,
   hslFromVar,
   scrubRatioFromClientX,
   seededSplitPeaks,
@@ -33,12 +32,9 @@ import {
   type WaveformStatus,
 } from './musicWaveformShared'
 import {
-  clearDecodeInFlight,
   getCachedWaveformPeaks,
-  getDecodeInFlight,
-  getSharedDecodeAudioContext,
   setCachedWaveformPeaks,
-  setDecodeInFlight,
+  subscribeWaveformDecode,
 } from './waveformDecodeCache'
 
 function isValidPackedPeaks(w: { top: number[]; bottom: number[] } | null | undefined): w is WaveformPeaksPayload {
@@ -81,6 +77,8 @@ export type UseMusicWaveformOptions = {
   claimPlaybackForScrub?: (() => HTMLAudioElement | null) | null
   /** Cap canvas backing store DPR (e.g. `1` in chat lists on retina — big win vs 100 bars × 2× pixels). */
   maxCanvasDpr?: number
+  /** From attachment prep / message JSON — show total time without loading `<audio>` metadata. */
+  audioDurationSecs?: number | null
 }
 
 export function useMusicWaveform({
@@ -97,6 +95,7 @@ export function useMusicWaveform({
   requestChatPlayback = null,
   claimPlaybackForScrub = null,
   maxCanvasDpr,
+  audioDurationSecs: audioDurationSecsProp,
 }: UseMusicWaveformOptions) {
   const cardRootRef = useRef<HTMLDivElement | null>(null)
   const internalAudioRef = useRef<HTMLAudioElement | null>(null)
@@ -214,8 +213,12 @@ export function useMusicWaveform({
     setPlaybackEnded(false)
     setProgress(0)
     setCurrentSec(0)
-    setDurationSec(0)
-  }, [audioSrc, waveformSeed, lazyLoadMediaProp, cancelScrubEndSeek])
+    setDurationSec(
+      audioDurationSecsProp != null && Number.isFinite(audioDurationSecsProp) && audioDurationSecsProp > 0
+        ? audioDurationSecsProp
+        : 0
+    )
+  }, [audioSrc, waveformSeed, lazyLoadMediaProp, audioDurationSecsProp, cancelScrubEndSeek])
 
   useEffect(() => {
     const root = cardRootRef.current
@@ -476,6 +479,7 @@ export function useMusicWaveform({
     if (packagedPeaks) return
     if (!shouldLoadMedia || !audioSrc) return
     let cancelled = false
+    const releaseDecodeRef: { current: (() => void) | null } = { current: null }
     const stagger = staggerMsForAudioRow(attachmentId ?? audioSrc)
     const staggerId = window.setTimeout(() => {
       if (cancelled) return
@@ -511,32 +515,19 @@ export function useMusicWaveform({
           return
         }
 
-        let decodePromise = getDecodeInFlight(src)
-        if (!decodePromise) {
-          decodePromise = (async (): Promise<SplitPeaks> => {
-            const ac = getSharedDecodeAudioContext()
-            if (ac.state === 'suspended') await ac.resume()
-            // No AbortSignal: decodes may be shared across mounts; aborting would break waiters.
-            const res = await fetch(src)
-            if (!res.ok) throw new Error(`fetch ${res.status}`)
-            const buf = await res.arrayBuffer()
-            const audioBuffer = await ac.decodeAudioData(buf.slice(0))
-            onDecodedSampleRate?.(audioBuffer.sampleRate)
-            const ch = audioBuffer.getChannelData(0)
-            const peaks = extractSplitPeaksFromChannelData(ch, WAVE_BARS)
-            setCachedWaveformPeaks(src, peaks)
-            return peaks
-          })()
-          setDecodeInFlight(src, decodePromise)
-          void decodePromise.finally(() => clearDecodeInFlight(src))
-        }
-
-        const peaks = await decodePromise
+        const sub = subscribeWaveformDecode(src, onDecodedSampleRate)
+        releaseDecodeRef.current = sub.release
+        const peaks = await sub.promise
         if (!cancelled) {
           setPeaks({ top: [...peaks.top], bottom: [...peaks.bottom] })
           setWaveformStatus('ready')
         }
-      } catch {
+      } catch (e) {
+        const aborted =
+          cancelled ||
+          (e instanceof DOMException && e.name === 'AbortError') ||
+          (typeof e === 'object' && e !== null && 'name' in e && (e as { name?: string }).name === 'AbortError')
+        if (aborted) return
         if (!cancelled) {
           setPeaks(seededRef.current)
           setWaveformStatus('error')
@@ -547,6 +538,8 @@ export function useMusicWaveform({
     return () => {
       cancelled = true
       window.clearTimeout(staggerId)
+      releaseDecodeRef.current?.()
+      releaseDecodeRef.current = null
     }
   }, [audioSrc, attachmentId, packagedPeaks, shouldLoadMedia, onDecodedSampleRate])
 

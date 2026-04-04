@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useContext, useMemo, useRef, useState, type ReactNode } from 'react'
 
 type VoicePresenceByServer = Record<string, Record<string, Set<string>>> // signing_pubkey -> chat_id -> Set of user_ids
 
@@ -14,6 +14,8 @@ const VoicePresenceContext = createContext<VoicePresenceContextType | null>(null
 
 export function VoicePresenceProvider({ children }: { children: ReactNode }) {
   const [byServer, setByServer] = useState<VoicePresenceByServer>({})
+  const byServerRef = useRef(byServer)
+  byServerRef.current = byServer
 
   const applyUpdate: VoicePresenceContextType['applyUpdate'] = (signingPubkey, userId, chatId, inVoice) => {
     setByServer((prev) => {
@@ -65,25 +67,6 @@ export function VoicePresenceProvider({ children }: { children: ReactNode }) {
     })
   }
 
-  const getVoiceParticipants: VoicePresenceContextType['getVoiceParticipants'] = (signingPubkey, chatId) => {
-    const server = byServer[signingPubkey]
-    if (!server) return []
-    const chat = server[chatId]
-    if (!chat) return []
-    return Array.from(chat)
-  }
-
-  const isUserInVoice: VoicePresenceContextType['isUserInVoice'] = (signingPubkey, userId) => {
-    const server = byServer[signingPubkey]
-    if (!server) return false
-    for (const chat of Object.values(server)) {
-      if (chat.has(userId)) {
-        return true
-      }
-    }
-    return false
-  }
-
   const removeUserFromAllRooms: VoicePresenceContextType['removeUserFromAllRooms'] = (signingPubkey, userId) => {
     setByServer((prev) => {
       const server = prev[signingPubkey]
@@ -115,10 +98,29 @@ export function VoicePresenceProvider({ children }: { children: ReactNode }) {
     })
   }
 
-  const value = useMemo(
-    () => ({ applyUpdate, applySnapshot, getVoiceParticipants, isUserInVoice, removeUserFromAllRooms }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [byServer]
+  /** Stable value – functions close over ref so consumers never re-render from voice presence ticks. */
+  const value = useMemo<VoicePresenceContextType>(
+    () => ({
+      applyUpdate: (...args) => applyUpdate(...args),
+      applySnapshot: (...args) => applySnapshot(...args),
+      removeUserFromAllRooms: (...args) => removeUserFromAllRooms(...args),
+      getVoiceParticipants: (signingPubkey, chatId) => {
+        const server = byServerRef.current[signingPubkey]
+        if (!server) return []
+        const chat = server[chatId]
+        if (!chat) return []
+        return Array.from(chat)
+      },
+      isUserInVoice: (signingPubkey, userId) => {
+        const server = byServerRef.current[signingPubkey]
+        if (!server) return false
+        for (const chat of Object.values(server)) {
+          if (chat.has(userId)) return true
+        }
+        return false
+      },
+    }),
+    [] // stable forever – reads latest state via ref
   )
 
   return <VoicePresenceContext.Provider value={value}>{children}</VoicePresenceContext.Provider>
